@@ -54,7 +54,7 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         self.URVisual.load(QUrl(self.viz_visual.url))
 
         # self.URIP = NetWorkSet.get_local_ip()
-        self.URIP = '127.0.0.1'
+        self.URIP = '192.168.3.15'
         self.lineEdit_IP.setText(self.URIP)
         self.label_IP_now.setText(self.URIP)
 
