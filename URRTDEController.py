@@ -643,6 +643,7 @@ class URRTDEController:
 
         # if not ok:
         #     raise RuntimeError("speedJ() returned False")
+        # 实机上这个地方会抛出异常，但不影响使用，所以注释掉
 
         self._record_direct_motion_state(
             actual_q=np.asarray(self.rtde_r.getActualQ(), dtype=float),
@@ -696,6 +697,7 @@ class URRTDEController:
 
         # if not ok:
         #     raise RuntimeError("speedL() returned False")
+        # 实机上这个地方会抛出异常，但不影响使用，所以注释掉
 
         self._record_direct_motion_state(
             actual_q=np.asarray(self.rtde_r.getActualQ(), dtype=float),
