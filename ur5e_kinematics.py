@@ -14,12 +14,12 @@ ArrayLike = Union[np.ndarray, list, tuple]
 
 class UR5eKinematics:
     """
-    UR5e kinematics based on the local MJCF model and Pinocchio.
+    基于本地 MJCF 模型和 Pinocchio 的 UR5e 运动学类。
 
-    The returned 6D UR pose follows Universal Robots' p[x, y, z, rx, ry, rz]
-    convention: position in meters, orientation as a rotation vector in radians.
+    返回的 6 维 UR 位姿遵循 Universal Robots 的 p[x, y, z, rx, ry, rz]
+    约定：位置单位为米，姿态为旋转向量，单位为弧度。
 
-    Jacobian rows use Pinocchio's motion-vector order:
+    雅可比矩阵行顺序使用 Pinocchio 的空间速度向量顺序：
         [vx, vy, vz, wx, wy, wz]
     """
 
@@ -36,20 +36,19 @@ class UR5eKinematics:
         correct_ur_base: bool = True,
     ) -> None:
         """
-        Parameters
+        参数
         ----------
         mjcf_path:
-            MJCF file path. Defaults to universal_robots_ur5e/ur5e.xml.
+            MJCF 文件路径。默认使用 universal_robots_ur5e/ur5e.xml。
         end_frame_name:
-            Pinocchio frame used as the flange/end frame. The MJCF's
-            attachment_site matches the UR flange with zero TCP offset.
+            作为法兰/末端的 Pinocchio 坐标系。MJCF 中的 attachment_site
+            对应零 TCP 偏置下的 UR 法兰。
         tcp_offset:
-            Optional TCP translation [x, y, z] in end-frame coordinates, meters.
+            可选 TCP 平移 [x, y, z]，在末端坐标系下表示，单位为米。
         tcp_rotation:
-            Optional TCP rotation relative to the end frame. Accepts either a
-            3-vector rotation vector or a 3x3 rotation matrix.
+            可选 TCP 姿态，相对于末端坐标系。支持 3 维旋转向量或 3x3 旋转矩阵。
         correct_ur_base:
-            Apply the same base-frame correction used by ur5e_visualizer.py.
+            是否应用与 ur5e_visualizer.py 相同的基坐标系修正。
         """
         self.mjcf_path = (
             Path(mjcf_path) if mjcf_path is not None else self.DEFAULT_MJCF_PATH
@@ -69,7 +68,7 @@ class UR5eKinematics:
             )
 
         if not self.model.existFrame(end_frame_name):
-            raise ValueError(f"Frame '{end_frame_name}' not found in {self.mjcf_path}")
+            raise ValueError(f"在 {self.mjcf_path} 中找不到坐标系 '{end_frame_name}'")
 
         self._base_end_frame_id = self.model.getFrameId(end_frame_name)
         self.tcp_offset = self._as_vector3(tcp_offset, default=np.zeros(3))
@@ -82,23 +81,23 @@ class UR5eKinematics:
         q: ArrayLike,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
-        Compute forward kinematics.
+        计算正运动学。
 
-        Parameters
+        参数
         ----------
         q:
-            Six UR5e joint angles in radians.
+            6 个 UR5e 关节角，单位为弧度。
 
-        Returns
+        返回
         -------
         T:
-            4x4 homogeneous transform of the end frame in the base frame.
+            末端坐标系相对于基坐标系的 4x4 齐次变换矩阵。
         R:
-            3x3 rotation matrix.
+            3x3 旋转矩阵。
         P:
-            3D translation vector in meters.
+            3 维平移向量，单位为米。
         ur_pose:
-            6D UR pose [x, y, z, rx, ry, rz], with rx/ry/rz as a rotation vector.
+            6 维 UR 位姿 [x, y, z, rx, ry, rz]，其中 rx/ry/rz 为旋转向量。
         """
         q = self._as_q(q)
         pin.framesForwardKinematics(self.model, self.data, q)
@@ -117,11 +116,10 @@ class UR5eKinematics:
         update_frames: bool = False,
     ) -> pin.Data:
         """
-        Update Pinocchio forward kinematics for callers that manage their own Data.
+        为自行管理 Data 对象的调用方更新 Pinocchio 正运动学。
 
-        Visualizers commonly need separate Data objects for multiple displayed
-        robot states. This wrapper keeps those callers on the same corrected
-        model used by this class.
+        可视化器通常需要为多个显示状态维护不同的 Data 对象。这个包装函数保证
+        这些调用方使用本类中已经修正过坐标系的同一个模型。
         """
         q = self._as_q(q)
         data = self.data if data is None else data
@@ -133,34 +131,34 @@ class UR5eKinematics:
 
     def jacobian_base(self, q: ArrayLike) -> np.ndarray:
         """
-        Compute the 6x6 geometric Jacobian in the robot base frame.
+        计算机器人基坐标系下的 6x6 几何雅可比矩阵。
 
-        The returned linear velocity is the end-frame origin velocity expressed
-        in the base frame. This uses Pinocchio LOCAL_WORLD_ALIGNED, which is the
-        usual geometric Jacobian convention for base-frame robot control.
+        返回的线速度部分是末端坐标系原点在基坐标系下表达的速度。
+        这里使用 Pinocchio 的 LOCAL_WORLD_ALIGNED，符合基坐标系机器人控制中
+        常用的几何雅可比约定。
         """
         return self._jacobian(q, pin.LOCAL_WORLD_ALIGNED)
 
     def jacobian_end(self, q: ArrayLike) -> np.ndarray:
-        """Compute the 6x6 geometric Jacobian expressed in the end frame."""
+        """计算在末端坐标系下表达的 6x6 几何雅可比矩阵。"""
         return self._jacobian(q, pin.LOCAL)
 
     def jacobian(self, q: ArrayLike, reference: str = "base") -> np.ndarray:
         """
-        Compute the end-frame Jacobian.
+        计算末端雅可比矩阵。
 
-        Parameters
+        参数
         ----------
         q:
-            Six UR5e joint angles in radians.
+            6 个 UR5e 关节角，单位为弧度。
         reference:
-            "base" for base-frame Jacobian, "end" for end-frame Jacobian.
+            "base" 表示基坐标系雅可比，"end" 表示末端坐标系雅可比。
         """
         if reference == "base":
             return self.jacobian_base(q)
         if reference in ("end", "tool", "local"):
             return self.jacobian_end(q)
-        raise ValueError("reference must be 'base' or 'end'")
+        raise ValueError("reference 必须为 'base' 或 'end'")
 
     def inverse_kinematics(
         self,
@@ -179,46 +177,48 @@ class UR5eKinematics:
         return_info: bool = False,
     ) -> Union[np.ndarray, Tuple[np.ndarray, dict]]:
         """
-        Solve inverse kinematics with damped least squares iteration.
+        使用阻尼最小二乘迭代法求逆运动学。
 
-        Parameters
+        阻尼项可以降低奇异位形附近雅可比病态导致的关节增量放大，但它不是
+        完整的奇异规避策略；目标不可达或初值不合适时仍可能不收敛。
+
+        参数
         ----------
         target:
-            Either a 4x4 homogeneous transform T, or a UR-style 6D pose
-            [x, y, z, rx, ry, rz].
+            目标位姿，可以是 4x4 齐次变换矩阵 T，也可以是 UR 风格 6 维位姿
+            [x, y, z, rx, ry, rz]。
         q_ref:
-            Six joint angles in radians. Iteration starts from this reference.
+            6 个参考关节角，单位为弧度。迭代从这个参考关节角开始。
         max_iterations:
-            Maximum number of solver iterations.
+            最大迭代次数。
         tolerance:
-            Default tolerance used for both position and orientation if their
-            dedicated tolerances are not provided.
+            当未单独指定位置/姿态容差时，两者共同使用的默认容差。
         position_tolerance:
-            Position convergence tolerance in meters.
+            位置收敛容差，单位为米。
         orientation_tolerance:
-            Orientation convergence tolerance in radians.
+            姿态收敛容差，单位为弧度。
         damping:
-            Damping coefficient for the least-squares solve.
+            最小二乘求解的阻尼系数。
         step_size:
-            Multiplier applied to each joint update.
+            每次关节更新量的倍率。
         max_step:
-            Maximum Euclidean norm of one joint update, in radians.
+            单次关节更新量的最大欧氏范数，单位为弧度。
         position_weight:
-            Weight applied to position error rows.
+            位置误差行的权重。
         orientation_weight:
-            Weight applied to orientation error rows.
+            姿态误差行的权重。
         pose_position_unit:
-            Unit for target[0:3] when target is a 6D pose: "m", "mm", or
-            "auto". UR official pose uses meters.
+            当 target 为 6 维位姿时，target[0:3] 的位置单位："m"、"mm" 或
+            "auto"。UR 官方位姿使用米。
         return_info:
-            If True, return (q, info). Otherwise return q only.
+            为 True 时返回 (q, info)，否则只返回 q。
 
-        Returns
+        返回
         -------
         q:
-            Solved six joint angles in radians.
+            求解得到的 6 个关节角，单位为弧度。
         info:
-            Optional dict with convergence diagnostics.
+            可选的收敛诊断信息字典。
         """
         target_T = self._as_target_transform(target, pose_position_unit)
         target_R = target_T[:3, :3]
@@ -288,7 +288,7 @@ class UR5eKinematics:
         return q
 
     def ik(self, *args, **kwargs) -> Union[np.ndarray, Tuple[np.ndarray, dict]]:
-        """Short alias for inverse_kinematics()."""
+        """inverse_kinematics() 的短别名。"""
         return self.inverse_kinematics(*args, **kwargs)
 
     def _jacobian(self, q: ArrayLike, reference_frame: pin.ReferenceFrame) -> np.ndarray:
@@ -325,12 +325,12 @@ class UR5eKinematics:
         if target.shape == (4, 4):
             T = target.copy()
             if not np.allclose(T[3, :], np.array([0.0, 0.0, 0.0, 1.0])):
-                raise ValueError("Target transform last row must be [0, 0, 0, 1]")
+                raise ValueError("目标变换矩阵的最后一行必须为 [0, 0, 0, 1]")
             return T
 
         target = target.reshape(-1)
         if target.size != 6:
-            raise ValueError("target must be a 4x4 transform or a 6D UR pose")
+            raise ValueError("target 必须是 4x4 变换矩阵或 6 维 UR 位姿")
 
         unit = pose_position_unit.lower()
         position = target[:3].copy()
@@ -342,7 +342,7 @@ class UR5eKinematics:
             if float(np.linalg.norm(position)) > 10.0:
                 position *= 1e-3
         else:
-            raise ValueError("pose_position_unit must be 'm', 'mm', or 'auto'")
+            raise ValueError("pose_position_unit 必须为 'm'、'mm' 或 'auto'")
 
         T = np.eye(4, dtype=np.float64)
         T[:3, :3] = rotvec_to_matrix(target[3:6])
@@ -353,7 +353,7 @@ class UR5eKinematics:
     def _as_q(q: ArrayLike) -> np.ndarray:
         q = np.asarray(q, dtype=np.float64).reshape(-1)
         if q.size != 6:
-            raise ValueError(f"Expected 6 joint angles, got {q.size}")
+            raise ValueError(f"期望输入 6 个关节角，实际为 {q.size} 个")
         return q
 
     @staticmethod
@@ -362,7 +362,7 @@ class UR5eKinematics:
             return default.astype(np.float64)
         value = np.asarray(value, dtype=np.float64).reshape(-1)
         if value.size != 3:
-            raise ValueError(f"Expected a 3-vector, got shape {value.shape}")
+            raise ValueError(f"期望输入 3 维向量，实际形状为 {value.shape}")
         return value
 
     @staticmethod
@@ -375,4 +375,4 @@ class UR5eKinematics:
             return rotvec_to_matrix(value)
         if value.shape == (3, 3):
             return value
-        raise ValueError("tcp_rotation must be a 3-vector or a 3x3 matrix")
+        raise ValueError("tcp_rotation 必须为 3 维向量或 3x3 矩阵")
