@@ -1398,7 +1398,7 @@
       <x>790</x>
       <y>480</y>
       <width>101</width>
-      <height>61</height>
+      <height>41</height>
      </rect>
     </property>
     <property name="font">
@@ -1505,6 +1505,45 @@
       <bool>true</bool>
      </property>
     </widget>
+   </widget>
+   <widget class="QCheckBox" name="checkBox_UDPVisual">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>220</y>
+      <width>161</width>
+      <height>23</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>可视化显示外源目标</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="pushButton_UDPSync">
+    <property name="enabled">
+     <bool>true</bool>
+    </property>
+    <property name="geometry">
+     <rect>
+      <x>790</x>
+      <y>530</y>
+      <width>101</width>
+      <height>41</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>12</pointsize>
+     </font>
+    </property>
+    <property name="styleSheet">
+     <string notr="true">QPushButton {
+    background-color: rgb(143, 240, 164)
+}</string>
+    </property>
+    <property name="text">
+     <string>同步到主端</string>
+    </property>
    </widget>
   </widget>
   <widget class="QMenuBar" name="menubar">

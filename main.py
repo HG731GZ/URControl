@@ -8,7 +8,7 @@ import time
 import numpy as np
 from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout
-from PyQt5.QtCore import QUrl
+from PyQt5.QtCore import QUrl, Qt
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 from ui_main_window import Ui_MainWindow
 from URDashboardClient import URDashboardClient
@@ -40,6 +40,8 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
 
         self.timer_URTCPControl = QtCore.QTimer(self)
 
+        self.timer_URUDPControl = QtCore.QTimer(self)
+
         # 创建可视化界面（Meshcat服务器在此启动）
         mjcf_path = os.path.join(os.path.dirname(__file__), 'universal_robots_ur5e', 'ur5e.xml')
         self.viz_visual = UR5eDualVisualizer(mjcf_path)
@@ -66,11 +68,16 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         self.pushButton_Shutdown.clicked.connect(self.on_URShutdown_Button)
         self.pushButton_Stop.clicked.connect(self.on_URStop_Button)
         self.pushButton_URScriptMoveJ.clicked.connect(self.on_URScriptMoveJ_Button)
+        self.pushButton_RTDEUDP.clicked.connect(self.on_RTDEUDP_Button)
+        self.pushButton_StopRTDE.clicked.connect(self.on_RTDEStop_Button)
+        self.pushButton_HOME.clicked.connect(self.on_HOME_Button)
+        self.pushButton_UDPSync.clicked.connect(self.on_UDPSync_Button)
         self.horizontalSlider_SpeedSlider.valueChanged.connect(self.on_SpeedSliderValueChanged)
 
         self.timer_URStatus.timeout.connect(self.on_timerURStatus_timeout)
         self.timer_URStatus_RT.timeout.connect(self.on_timerURStatus_RT_timeout)
         self.timer_URTCPControl.timeout.connect(self.on_timerURRTDE_UI_timeout)
+        self.timer_URUDPControl.timeout.connect(self.on_timerURUDP_timeout)
         self.control_button_events_connect()
         self.lineedits_qtarget_bind_validation()
 
@@ -164,6 +171,30 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         q = [np.deg2rad(self.get_valid_qtarget_degree(i + 1, commit=True)) for i in range(6)]
         self.URScriptClient.movej(q)
 
+    def on_HOME_Button(self):
+        q = [-np.pi / 2, -np.pi / 2, -np.pi / 2, -np.pi / 2, np.pi / 2, 0]
+        self.URScriptClient.movej(q)
+
+    def on_RTDEUDP_Button(self):
+        self.URRTDEController.start()
+        self.timer_URUDPControl.start(2)
+
+    def on_RTDEStop_Button(self):
+        self.URRTDEController.stop()
+        self.timer_URUDPControl.stop()
+
+    def on_UDPSync_Button(self):
+        udp_err = self.ur_udp_client.get_last_error()
+        if udp_err is not None:
+            self.udp_command = None
+            for i in range(1, 9):
+                getattr(self, f"lineEdit_UDP{i}").setText("UDP ERR")
+        else:
+            cmd = self.ur_udp_client.get_latest()
+            if cmd is not None:
+                self.udp_command = cmd
+                self.URScriptClient.movej(cmd.q_arm)
+
     def on_SpeedSliderValueChanged(self):
         self.label_SpeedSlider.setText(f'限速: {self.horizontalSlider_SpeedSlider.value()}%')
         if self.URRTDEController is not None:
@@ -182,9 +213,10 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
                 self.pushButton_Stop.setEnabled(True)
                 self.pushButton_RTDEUDP.setEnabled(True)
                 self.pushButton_StopRTDE.setEnabled(True)
+                self.pushButton_HOME.setEnabled(True)
             if self.URRTDEController is not None:
                 message = message + "\t RTDE Connected;"
-                if self.URRTDEController.is_running():
+                if self.URRTDEController.is_running():  # 需要注意如果线程暂停了这个地方还是会显示true
                     message = message + "\t RTDE Running;"
             self.statusbar.showMessage(udp_info + message)
         else:
@@ -204,8 +236,12 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
                 mode_cn = UDPControlMode.cn_name(cmd.mode)
                 self.lineEdit_UDP1.setText(mode_cn)
                 for i in range(6):
-                    getattr(self, f"lineEdit_UDP{i + 2}").setText(f"{cmd.q_arm[i]:.4f}")
+                    getattr(self, f"lineEdit_UDP{i + 2}").setText(f"{cmd.q_arm[i] * 180 / np.pi:.4f}")
                 self.lineEdit_UDP8.setText(f"{cmd.q_gripper[0]:.4f}")
+                if self.checkBox_UDPVisual.checkState() == Qt.Checked:
+                    q_target_rad = cmd.q_arm
+                    q_target_7 = np.append(q_target_rad, 0.0)
+                    self.viz_visual.update_virtual(q_target_7)
             else:
                 for i in range(1, 9):
                     getattr(self, f"lineEdit_UDP{i}").setText("")
@@ -235,18 +271,18 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
                 # 更新可视化：真实机械臂=当前关节角，虚拟机械臂=目标关节角
                 q_actual_7 = np.append(state.q_actual, 0.0)
                 self.viz_visual.update_actual(q_actual_7)
-
-                q_target_deg = [self.get_valid_qtarget_degree(i + 1) for i in range(6)]
-                q_target_rad = np.deg2rad(q_target_deg)
-                q_target_7 = np.append(q_target_rad, 0.0)
-                self.viz_visual.update_virtual(q_target_7)
-                if self.GripperController is not None:
-                    fb = self.GripperController.feedback
-                    self.ur_udp_client.send_to(('192.168.3.4', 7002), q_arm=state.q_actual, mode=0,
-                                               q_gripper=[fb.position, fb.current, 0])
-                else:
-                    self.ur_udp_client.send_to(('192.168.3.4', 7002), q_arm=state.q_actual, mode=0,
-                                               q_gripper=[0, 0, 0])
+                if self.checkBox_UDPVisual.checkState() != Qt.Checked:
+                    q_target_deg = [self.get_valid_qtarget_degree(i + 1) for i in range(6)]
+                    q_target_rad = np.deg2rad(q_target_deg)
+                    q_target_7 = np.append(q_target_rad, 0.0)
+                    self.viz_visual.update_virtual(q_target_7)
+                # if self.GripperController is not None:
+                #     fb = self.GripperController.feedback
+                #     self.ur_udp_client.send_to(('192.168.3.5', 7002), q_arm=state.q_actual, mode=0,
+                #                                q_gripper=[fb.position, fb.current, 0])
+                # else:
+                #     self.ur_udp_client.send_to(('192.168.3.5', 7002), q_arm=state.q_actual, mode=0,
+                #                                q_gripper=[0, 0, 0])
 
         # 夹钳实时反馈
         if self.GripperController is not None:
@@ -266,6 +302,20 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         elif self._control_mode == 'joint':
             # self.URRTDEController.move_joint_delta(delta_q=self._control_dq, dq_max=10)
             self.URRTDEController.speedJ(qd=self._control_dq, time_s=999)
+
+    def on_timerURUDP_timeout(self):
+        udp_err = self.ur_udp_client.get_last_error()
+        if udp_err is not None:
+            self.udp_command = None
+            for i in range(1, 9):
+                getattr(self, f"lineEdit_UDP{i}").setText("UDP ERR")
+        else:
+            cmd = self.ur_udp_client.get_latest()
+            self.udp_command = cmd
+            if cmd is not None:
+                mode_cn = UDPControlMode.cn_name(cmd.mode)
+                if cmd.mode == 1:  # 关节跟踪
+                    self.URRTDEController.track_joint(cmd.q_arm, dq_max=2)
 
     # 其他辅助函数
     def message_append_to_textbox(self, message):
