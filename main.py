@@ -1,0 +1,370 @@
+# PyQt5 QtWebEngine bundles libexpat which shadows Python's pyexpat symbols.
+# Force pyexpat to load first so meshcat can import it without conflict.
+import xml.etree.ElementTree  # noqa: F401
+
+import sys
+import os
+import time
+import numpy as np
+from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout
+from PyQt5.QtCore import QUrl
+from PyQt5.QtWebEngineWidgets import QWebEngineView
+from ui_main_window import Ui_MainWindow
+from URDashboardClient import URDashboardClient
+from URScriptClient import URScriptClient
+from URRealtimeClient import URRealtimeClient
+from URRTDEController import URRTDEController
+from URUdpClient import URUDPClient, UDPControlMode
+from GripperController import GripperController
+
+import NetWorkSet
+
+from ur5e_visualizer import UR5eDualVisualizer
+
+QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling, True)
+QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps, True)
+
+
+class UI_MainWindow(QMainWindow, Ui_MainWindow):
+    def __init__(self):
+        super().__init__()
+
+        # 窗口控件
+        self.setupUi(self)
+        self.timer_URStatus = QtCore.QTimer(self)
+        self.timer_URStatus.start(100)
+
+        self.timer_URStatus_RT = QtCore.QTimer(self)
+        self.timer_URStatus_RT.start(10)
+
+        self.timer_URTCPControl = QtCore.QTimer(self)
+
+        # 创建可视化界面（Meshcat服务器在此启动）
+        mjcf_path = os.path.join(os.path.dirname(__file__), 'universal_robots_ur5e', 'ur5e.xml')
+        self.viz_visual = UR5eDualVisualizer(mjcf_path)
+
+        self.URVisual = QWebEngineView(self.widget_WebView)
+        layout = self.widget_WebView.layout()
+        if layout is None:
+            layout = QVBoxLayout(self.widget_WebView)
+            layout.setContentsMargins(0, 0, 0, 0)
+
+        layout.addWidget(self.URVisual)
+        self.URVisual.load(QUrl(self.viz_visual.url))
+
+        # self.URIP = NetWorkSet.get_local_ip()
+        self.URIP = '127.0.0.1'
+        self.lineEdit_IP.setText(self.URIP)
+        self.label_IP_now.setText(self.URIP)
+
+        # 控件事件
+        self.pushButton_IP.clicked.connect(self.on_IP_Button_Clicked)
+        self.pushButton_ConnectUR.clicked.connect(self.on_Connect_UR_Button)
+        self.pushButton_URPowerOn.clicked.connect(self.on_URPowerOn_Button)
+        self.pushButton_URBrakeRelease.clicked.connect(self.on_URBrakeRelease_Button)
+        self.pushButton_Shutdown.clicked.connect(self.on_URShutdown_Button)
+        self.pushButton_Stop.clicked.connect(self.on_URStop_Button)
+        self.pushButton_URScriptMoveJ.clicked.connect(self.on_URScriptMoveJ_Button)
+        self.horizontalSlider_SpeedSlider.valueChanged.connect(self.on_SpeedSliderValueChanged)
+
+        self.timer_URStatus.timeout.connect(self.on_timerURStatus_timeout)
+        self.timer_URStatus_RT.timeout.connect(self.on_timerURStatus_RT_timeout)
+        self.timer_URTCPControl.timeout.connect(self.on_timerURRTDE_UI_timeout)
+        self.control_button_events_connect()
+        self.lineedits_qtarget_bind_validation()
+
+        # UR相关
+        self.URDashboardClient = None
+        self.URScriptClient = None
+        self.URRealtimeClient = None
+        self.URRTDEController = None
+        self.GripperController = None
+        self.UR_J_Control_Speed = 0.1  # 关节控制按钮的速度
+        self.UR_TCP_Control_Speed = 0.01  # 末端控制按钮的速度
+
+        # UDP 外源控制
+        self._udp_bind_port = 5005
+        self._udp_local_ip = NetWorkSet.get_local_ip(self.URIP) or '0.0.0.0'
+        self.ur_udp_client = URUDPClient(bind_host='0.0.0.0', bind_port=self._udp_bind_port)
+        self.ur_udp_client.start()
+        self.udp_command = None
+
+        # 遥操作控制状态（timer 回调时读取，避免每次按下按钮重复 connect）
+        self._control_dq = None
+        self._control_mode = None
+
+    # 控件事件函数
+    def on_IP_Button_Clicked(self):
+        if NetWorkSet.is_valid_ipv4(self.lineEdit_IP.text()):
+            self.URIP = self.lineEdit_IP.text()
+            self.label_IP_now.setText(self.URIP)
+        else:
+            self.label_IP_now.setText("请输入合法的IP")
+
+    def on_Connect_UR_Button(self):
+        self.URDashboardClient = URDashboardClient(self.URIP, auto_connect=False)
+        self.message_append_to_textbox(self.URDashboardClient.connect())
+        self.URScriptClient = URScriptClient(self.URIP, auto_connect=True)
+        self.URRealtimeClient = URRealtimeClient(self.URIP, auto_connect=True)
+        if self.URDashboardClient.robot_mode() == 'Robotmode: RUNNING':
+            self.URRTDEController = URRTDEController(self.URIP, frequency=500.0, default_dq_max=0.5,
+                                                     lookahead_time=0.08,
+                                                     gain=300, use_safety_check=False)
+
+        # 创建夹钳控制器连接 (TCP 串口服务器)
+        try:
+            self.GripperController = GripperController(
+                port=self.URIP + ":54321", slave_id=1, connection_type="tcp")
+            self.GripperController.start(interval=0.05)
+            self.message_append_to_textbox("夹钳控制器已连接并启动")
+        except Exception as e:
+            self.message_append_to_textbox(f"夹钳控制器连接失败: {e}")
+
+    def on_URPowerOn_Button(self):
+        self.message_append_to_textbox(self.URDashboardClient.power_on())
+
+    def on_URBrakeRelease_Button(self):
+        self.message_append_to_textbox(self.URDashboardClient.brake_release())
+        if self.URRTDEController is None:
+            self.URRTDEController = URRTDEController(self.URIP, frequency=500.0, default_dq_max=0.5,
+                                                     lookahead_time=0.08,
+                                                     gain=300, use_safety_check=False)
+
+    def on_URShutdown_Button(self):
+        self.message_append_to_textbox(self.URDashboardClient.power_off())
+
+    def on_URStop_Button(self):
+        self.URScriptClient.stopj(a=10)
+
+    def on_RTControl_Button_Pressed(self, control_mode, index, direction):
+        control_delta = [0, 0, 0, 0, 0, 0]
+        if control_mode == 'joint':
+            control_delta[index - 1] = direction * self.UR_J_Control_Speed
+        elif control_mode in ('tcp_tool', 'tcp_base'):
+            tcp_speed = self.UR_TCP_Control_Speed if index <= 3 else self.UR_TCP_Control_Speed * 10
+            control_delta[index - 1] = direction * tcp_speed
+        else:
+            return
+
+        self._control_dq = control_delta
+        self._control_mode = control_mode
+        self.URRTDEController.start()
+        self.timer_URTCPControl.start(2)
+        self.lineedits_qtarget_setreadonly(True)
+
+    def on_Control_Button_Released(self):
+        self.timer_URTCPControl.stop()
+        self._control_dq = None
+        self._control_mode = None
+        self.URRTDEController.stop()
+        self.lineedits_qtarget_setreadonly(False)
+
+    def on_URScriptMoveJ_Button(self):
+        q = [np.deg2rad(self.get_valid_qtarget_degree(i + 1, commit=True)) for i in range(6)]
+        self.URScriptClient.movej(q)
+
+    def on_SpeedSliderValueChanged(self):
+        self.label_SpeedSlider.setText(f'限速: {self.horizontalSlider_SpeedSlider.value()}%')
+        if self.URRTDEController is not None:
+            self.URRTDEController.set_speed_slider(self.horizontalSlider_SpeedSlider.value() / 100)
+
+    def on_timerURStatus_timeout(self):
+        message = ''
+        udp_info = f"UDP: {self._udp_local_ip}:{self._udp_bind_port} | "
+        if self.URDashboardClient is not None:
+            robot_status = self.URDashboardClient.robot_mode()
+            if robot_status is not None:
+                message = message + robot_status + ";"
+                self.pushButton_Shutdown.setEnabled(True)
+                self.pushButton_URPowerOn.setEnabled(True)
+                self.pushButton_URBrakeRelease.setEnabled(True)
+                self.pushButton_Stop.setEnabled(True)
+                self.pushButton_RTDEUDP.setEnabled(True)
+                self.pushButton_StopRTDE.setEnabled(True)
+            if self.URRTDEController is not None:
+                message = message + "\t RTDE Connected;"
+                if self.URRTDEController.is_running():
+                    message = message + "\t RTDE Running;"
+            self.statusbar.showMessage(udp_info + message)
+        else:
+            self.statusbar.showMessage(udp_info + 'UR未连接')
+
+    def on_timerURStatus_RT_timeout(self):
+        # UDP 外源数据显示
+        udp_err = self.ur_udp_client.get_last_error()
+        if udp_err is not None:
+            self.udp_command = None
+            for i in range(1, 9):
+                getattr(self, f"lineEdit_UDP{i}").setText("UDP ERR")
+        else:
+            cmd = self.ur_udp_client.get_latest()
+            self.udp_command = cmd
+            if cmd is not None:
+                mode_cn = UDPControlMode.cn_name(cmd.mode)
+                self.lineEdit_UDP1.setText(mode_cn)
+                for i in range(6):
+                    getattr(self, f"lineEdit_UDP{i + 2}").setText(f"{cmd.q_arm[i]:.4f}")
+                self.lineEdit_UDP8.setText(f"{cmd.q_gripper[0]:.4f}")
+            else:
+                for i in range(1, 9):
+                    getattr(self, f"lineEdit_UDP{i}").setText("")
+
+        if self.URRealtimeClient is not None:
+            state = self.URRealtimeClient.get_latest_state()
+            if state is not None:
+                for i in range(6):
+                    # 实时关节角
+                    line_edit = getattr(self, f"lineEdit_QA{i + 1}")
+                    line_edit.setText(f"{state.q_actual[i] * 180 / np.pi:.3f}")
+                    # TCP
+                    line_edit = getattr(self, f"lineEdit_TA{i + 1}")
+                    if i < 3:
+                        line_edit.setText(f"{state.tcp_pose[i] * 1000:.3f}")
+                    else:
+                        line_edit.setText(f"{state.tcp_pose[i] * 180 / np.pi:.3f}")
+                    # TCP Force
+                    line_edit = getattr(self, f"lineEdit_Fex{i + 1}")
+                    line_edit.setText(f"{state.tcp_force[i] :.3f}")
+
+                    # 目标关节角
+                    line_edit = getattr(self, f"lineEdit_QT{i + 1}")
+                    if line_edit.isReadOnly():
+                        line_edit.setText(f"{state.fields['q_target'][i] * 180 / np.pi:.3f}")
+
+                # 更新可视化：真实机械臂=当前关节角，虚拟机械臂=目标关节角
+                q_actual_7 = np.append(state.q_actual, 0.0)
+                self.viz_visual.update_actual(q_actual_7)
+
+                q_target_deg = [self.get_valid_qtarget_degree(i + 1) for i in range(6)]
+                q_target_rad = np.deg2rad(q_target_deg)
+                q_target_7 = np.append(q_target_rad, 0.0)
+                self.viz_visual.update_virtual(q_target_7)
+                if self.GripperController is not None:
+                    fb = self.GripperController.feedback
+                    self.ur_udp_client.send_to(('192.168.3.4', 7002), q_arm=state.q_actual, mode=0,
+                                               q_gripper=[fb.position, fb.current, 0])
+                else:
+                    self.ur_udp_client.send_to(('192.168.3.4', 7002), q_arm=state.q_actual, mode=0,
+                                               q_gripper=[0, 0, 0])
+
+        # 夹钳实时反馈
+        if self.GripperController is not None:
+            fb = self.GripperController.feedback
+            self.lineEdit_Clamp1.setText(f"{fb.position}")
+            self.lineEdit_Clamp2.setText(f"{fb.current}")
+
+    def on_timerURRTDE_UI_timeout(self):
+        if self._control_dq is None or self._control_mode is None:
+            return
+        if self._control_mode == 'tcp_tool':
+            # self.URRTDEController.move_tcp_delta(delta_pose=self._control_dq, dq_max=10, frame="tool")
+            self.URRTDEController.speedL(xd=self._control_dq, time_s=999, frame='tool')
+        elif self._control_mode == 'tcp_base':
+            # self.URRTDEController.move_tcp_delta(delta_pose=self._control_dq, dq_max=10, frame="base_add")
+            self.URRTDEController.speedL(xd=self._control_dq, time_s=999, frame='base_add')
+        elif self._control_mode == 'joint':
+            # self.URRTDEController.move_joint_delta(delta_q=self._control_dq, dq_max=10)
+            self.URRTDEController.speedJ(qd=self._control_dq, time_s=999)
+
+    # 其他辅助函数
+    def message_append_to_textbox(self, message):
+        if message is not None:
+            message = time.strftime("%H:%M:%S", time.localtime()) + ': ' + message
+            self.plainTextEdit_DashboardMessage.appendPlainText(message)
+
+    def control_button_events_connect(self):
+        for i in range(1, 7):
+            getattr(self, f"pushButton_JUp{i}").pressed.connect(
+                lambda checked=False, idx=i: self.on_RTControl_Button_Pressed('joint', idx, 1))
+            getattr(self, f"pushButton_JDown{i}").pressed.connect(
+                lambda checked=False, idx=i: self.on_RTControl_Button_Pressed('joint', idx, -1))
+            getattr(self, f"pushButton_JUp{i}").released.connect(self.on_Control_Button_Released)
+            getattr(self, f"pushButton_JDown{i}").released.connect(self.on_Control_Button_Released)
+
+            getattr(self, f"pushButton_TUp{i}").pressed.connect(
+                lambda checked=False, idx=i: self.on_RTControl_Button_Pressed('tcp_tool', idx, 1))
+            getattr(self, f"pushButton_TDown{i}").pressed.connect(
+                lambda checked=False, idx=i: self.on_RTControl_Button_Pressed('tcp_tool', idx, -1))
+            getattr(self, f"pushButton_TUp{i}").released.connect(self.on_Control_Button_Released)
+            getattr(self, f"pushButton_TDown{i}").released.connect(self.on_Control_Button_Released)
+
+            getattr(self, f"pushButton_TWUp{i}").pressed.connect(
+                lambda checked=False, idx=i: self.on_RTControl_Button_Pressed('tcp_base', idx, 1))
+            getattr(self, f"pushButton_TWDown{i}").pressed.connect(
+                lambda checked=False, idx=i: self.on_RTControl_Button_Pressed('tcp_base', idx, -1))
+            getattr(self, f"pushButton_TWUp{i}").released.connect(self.on_Control_Button_Released)
+            getattr(self, f"pushButton_TWDown{i}").released.connect(self.on_Control_Button_Released)
+
+    def lineedits_qtarget_bind_validation(self):
+        for i in range(1, 7):
+            getattr(self, f"lineEdit_QT{i}").editingFinished.connect(
+                lambda idx=i: self.validate_qtarget_input(idx))
+
+    def validate_qtarget_input(self, index: int) -> None:
+        line_edit = getattr(self, f"lineEdit_QT{index}")
+        if line_edit.isReadOnly():
+            return
+        self.get_valid_qtarget_degree(index, commit=True)
+
+    def get_actual_q_degree(self, index: int) -> float:
+        actual_edit = getattr(self, f"lineEdit_QA{index}")
+        actual_text = actual_edit.text().strip()
+        try:
+            return float(actual_text)
+        except ValueError:
+            return 0.0
+
+    def get_valid_qtarget_degree(self, index: int, commit: bool = False) -> float:
+        target_edit = getattr(self, f"lineEdit_QT{index}")
+        actual_value = self.get_actual_q_degree(index)
+        actual_text = f"{actual_value:.3f}"
+
+        target_text = target_edit.text().strip()
+        try:
+            target_value = float(target_text)
+        except ValueError:
+            if commit:
+                target_edit.setText(actual_text)
+            return actual_value
+
+        if not (-360.0 <= target_value <= 360.0):
+            if commit:
+                target_edit.setText(actual_text)
+            return actual_value
+
+        if commit:
+            target_edit.setText(f"{target_value:.3f}")
+
+        return target_value
+
+    def lineedits_qtarget_setreadonly(self, flag: bool) -> None:
+        for i in range(6):
+            line_edit = getattr(self, f"lineEdit_QT{i + 1}")
+            line_edit.setReadOnly(flag)
+
+    def closeEvent(self, event):
+        self.timer_URStatus.stop()
+        self.timer_URStatus_RT.stop()
+        self.timer_URTCPControl.stop()
+        self.ur_udp_client.stop()
+        if self.URRTDEController is not None:
+            self.URRTDEController.shutdown()
+        if self.URRealtimeClient is not None:
+            self.URRealtimeClient.close()
+        if self.URScriptClient is not None:
+            self.URScriptClient.close()
+        if self.URDashboardClient is not None:
+            self.URDashboardClient.close()
+        if self.GripperController is not None:
+            self.GripperController.close()
+        if hasattr(self, 'viz_visual'):
+            self.viz_visual.close()
+        event.accept()
+
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = UI_MainWindow()
+    window.show()
+    sys.exit(app.exec_())
