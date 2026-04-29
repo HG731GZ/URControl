@@ -641,8 +641,8 @@ class URRTDEController:
         with self._rtde_c_lock:
             ok = bool(self.rtde_c.speedJ(qd_arr.tolist(), acceleration, time_s))
 
-        if not ok:
-            raise RuntimeError("speedJ() returned False")
+        # if not ok:
+        #     raise RuntimeError("speedJ() returned False")
 
         self._record_direct_motion_state(
             actual_q=np.asarray(self.rtde_r.getActualQ(), dtype=float),
@@ -694,8 +694,8 @@ class URRTDEController:
         with self._rtde_c_lock:
             ok = bool(self.rtde_c.speedL(xd_base.tolist(), acceleration, time_s))
 
-        if not ok:
-            raise RuntimeError("speedL() returned False")
+        # if not ok:
+        #     raise RuntimeError("speedL() returned False")
 
         self._record_direct_motion_state(
             actual_q=np.asarray(self.rtde_r.getActualQ(), dtype=float),
