@@ -116,8 +116,8 @@ class GripperController:
 
         # ---- 目标参数 ----
         self._target_position = 0
-        self._target_speed = 0
-        self._target_force = 0
+        self._target_speed = 20
+        self._target_force = 20
         self._target_accel = 60
         self._target_decel = 60
         self._dirty = False  # 参数变更标记，下一周期触发运动
@@ -273,7 +273,7 @@ class GripperController:
                     force = self._target_force
                     accel = self._target_accel
                     decel = self._target_decel
-
+                # print(pos)
                 # ---- 1. 批量写: 目标参数 + 触发 (0x0102 → 0x0108) ----
                 pos_hi = (pos >> 16) & 0xFFFF
                 pos_lo = pos & 0xFFFF

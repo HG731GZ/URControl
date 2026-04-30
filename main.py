@@ -122,7 +122,7 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         # 创建夹钳控制器连接 (TCP 串口服务器)
         try:
             self.GripperController = GripperController(
-                port=self.URIP + ":54321", slave_id=1, connection_type="tcp")
+                port=self.URIP + ":54321", slave_id=1, connection_type="tcp", debug=False)
             self.GripperController.start(interval=0.05)
             self.message_append_to_textbox("夹钳控制器已连接并启动")
         except Exception as e:
@@ -317,7 +317,8 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
                 mode_cn = UDPControlMode.cn_name(cmd.mode)
                 if cmd.mode == 1:  # 关节跟踪
                     self.URRTDEController.track_joint(cmd.q_arm, dq_max=1)
-                    print(cmd.q_arm[4])
+                if self.GripperController is not None:
+                    self.GripperController.set_target_position(int(9000 - cmd.q_gripper[0] * 9000))
 
     # 其他辅助函数
     def message_append_to_textbox(self, message):
