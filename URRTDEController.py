@@ -19,7 +19,7 @@ class URRTDEController:
     暴露接口：
     1. track_joint(q, dq_max)：闭环跟踪关节角 q，并限制每个关节速度 dq_max
     2. move_joint_delta(delta_q, dq_max)：调用时读取当前实际关节角 q_actual，目标为 q_actual + delta_q
-    3. move_tcp_delta(delta_pose, dq_max)：默认以上一目标 TCP pose 为基准生成新目标，并直接用 servoL 跟踪该 TCP 目标
+    3. move_tcp_delta(delta_pose, dq_max)：以当前实际 TCP pose 为基准生成新目标，并直接用 servoL 跟踪该 TCP 目标
     4. moveL(delta_pose, speed, acceleration, frame)：以当前实际 TCP pose 为基准执行线性运动
     5. speedJ(qd, acceleration, time)：关节速度控制
     6. speedL(xd, acceleration, time, frame)：TCP 速度控制
@@ -31,8 +31,7 @@ class URRTDEController:
 
     重要行为：
         - move_joint_delta() 每次调用都会立即读取实际关节角，并生成新的目标关节角。
-        - move_tcp_delta() 默认以上一目标 TCP pose 为连续增量基准，而不是实际 TCP pose，
-          从而避免未到位中间姿态被反复读取后造成末端增量参考漂移。
+        - move_tcp_delta() 每次调用都会立即读取实际 TCP pose，并以该实际位姿为增量基准。
         - 关节目标由控制线程用 servoJ 按 dq_max 进行限速跟踪。
         - TCP 增量目标由控制线程直接用 servoL 跟踪，不再依赖 UR 控制柜逆解。
         - 如果 auto_start_on_command=True，则首次调用 track_joint()/move_*_delta() 时会自动 start()。
@@ -84,7 +83,7 @@ class URRTDEController:
         self.rtde_io = rtde_io.RTDEIOInterface(robot_ip)
 
         # RTDE 连接建立后，立即保存一次初始实际状态。
-        # 用于首次 TCP 增量命令时兜底，避免 reference 为空。
+        # 用于首次状态查询时兜底。
         self._initial_actual_q: Optional[np.ndarray] = None
         self._initial_actual_tcp_pose: Optional[np.ndarray] = None
 
@@ -128,12 +127,6 @@ class URRTDEController:
         )
         self._last_target_tcp_pose: Optional[np.ndarray] = (
             None if self._initial_actual_tcp_pose is None else self._initial_actual_tcp_pose.copy()
-        )
-        self._last_tcp_delta_base_pose: Optional[np.ndarray] = (
-            None if self._initial_actual_tcp_pose is None else self._initial_actual_tcp_pose.copy()
-        )
-        self._last_tcp_delta_reference: Optional[str] = (
-            "initial_actual" if self._initial_actual_tcp_pose is not None else None
         )
 
         # TCP 增量命令在外部 API 调用时先生成 target_pose；
@@ -249,8 +242,6 @@ class URRTDEController:
                 self._last_target_q = q_now.copy()
                 self._last_actual_tcp_pose = pose_now.copy()
                 self._last_target_tcp_pose = pose_now.copy()
-                self._last_tcp_delta_base_pose = pose_now.copy()
-                self._last_tcp_delta_reference = "start_actual"
                 self._target_tcp_pose = None
                 self._pending_tcp_cmd_seq = None
                 self._pending_tcp_servo_deadline = None
@@ -324,8 +315,6 @@ class URRTDEController:
                 if pose_now is not None:
                     self._last_actual_tcp_pose = pose_now.copy()
                     self._last_target_tcp_pose = pose_now.copy()
-                    self._last_tcp_delta_base_pose = pose_now.copy()
-                self._last_tcp_delta_reference = "stop_actual"
 
                 self._target_tcp_pose = None
                 self._pending_tcp_cmd_seq = None
@@ -451,34 +440,22 @@ class URRTDEController:
         delta_pose: Sequence[float],
         dq_max: Optional[float | Sequence[float]] = None,
         frame: Literal["tool", "base_add"] = "base_add",
-        reference: Literal["target", "actual", "rtde_target"] = "target",
     ) -> np.ndarray:
         """
         末端增量控制。
 
-        默认 reference="target"：
-            连续调用时，基准 pose 使用上一条 TCP 增量命令生成的目标 TCP pose。
-            target_pose = last_target_pose +/⊕ delta_pose
-
-        这样做的目的，是避免机器人还没有到达上一目标时，反复读取 getActualTCPPose()
-        造成实际跟踪中间态被一轮轮叠加，进而导致末端增量参考漂移。
-
-        reference="actual"：
-            每次都以 getActualTCPPose() 为基准。
-            这保留旧版行为，适合确实希望目标严格跟随实际位姿滚动的场景。
-
-        reference="rtde_target"：
-            尝试以 rtde_receive.getTargetTCPPose() 为基准；如果当前 ur_rtde 版本
-            不支持该接口或读取失败，则回退到 reference="target" 的逻辑。
+        每次调用本函数时立即读取当前实际 TCP pose，并以该实际位姿为基准：
+            pose_actual = getActualTCPPose()
+            target_pose = pose_actual +/⊕ delta_pose
 
         frame="base_add"：
-            target_pose = reference_pose + delta_pose
+            target_pose = actual_pose + delta_pose
             对 xyz 小位移直观；旋转向量只建议小角度使用。
 
         frame="tool"：
-            target_pose = poseTrans(reference_pose, delta_pose)
-            即 delta_pose 表示参考 TCP 坐标系下的增量。
-            若 delta_pose 的旋转部分为 0，则目标姿态会保持 reference_pose 的姿态。
+            target_pose = poseTrans(actual_pose, delta_pose)
+            即 delta_pose 表示当前 TCP 坐标系下的增量。
+            若 delta_pose 的旋转部分为 0，则目标姿态会保持 actual_pose 的姿态。
             控制线程随后会直接把这个 base frame 下的 target_pose 交给 servoL。
 
         参数：
@@ -489,16 +466,12 @@ class URRTDEController:
                 仅为兼容旧接口保留；TCP servoL 模式下不再参与限速。
             frame:
                 "base_add" 或 "tool"。
-            reference:
-                "target"、"actual" 或 "rtde_target"。
 
         返回：
             本次调用生成的目标 TCP 位姿 target_pose。
         """
         if frame not in ("tool", "base_add"):
             raise ValueError("frame must be 'tool' or 'base_add'")
-        if reference not in ("target", "actual", "rtde_target"):
-            raise ValueError("reference must be 'target', 'actual', or 'rtde_target'")
 
         delta_pose = self._parse_vec6(delta_pose, "delta_pose")
         if dq_max is not None:
@@ -509,24 +482,10 @@ class URRTDEController:
         q_now = np.asarray(self.rtde_r.getActualQ(), dtype=float)
         pose_actual = np.asarray(self.rtde_r.getActualTCPPose(), dtype=float)
 
-        # 取快照，避免拿锁期间访问 RTDE。
-        with self._lock:
-            tcp_target_active = self._target_tcp_pose is not None
-            last_target_tcp_pose = (
-                None if self._last_target_tcp_pose is None else self._last_target_tcp_pose.copy()
-            )
-
-        pose_base, reference_used = self._select_tcp_delta_reference_pose(
-            requested_reference=reference,
-            tcp_target_active=tcp_target_active,
-            pose_actual=pose_actual,
-            last_target_tcp_pose=last_target_tcp_pose,
-        )
-
         # 不在外部 API 线程里调用 RTDEControlInterface。
-        # 这里仅基于选定参考 pose 生成 servoL 需要的 base frame target_pose。
+        # 这里仅基于当前实际 pose 生成 servoL 需要的 base frame target_pose。
         target_pose = self._compute_target_pose(
-            pose_now=pose_base,
+            pose_now=pose_actual,
             delta_pose=delta_pose,
             frame=frame,
         )
@@ -536,8 +495,6 @@ class URRTDEController:
             self._target_tcp_pose = target_pose.copy()
             self._last_actual_q = q_now.copy()
             self._last_actual_tcp_pose = pose_actual.copy()
-            self._last_tcp_delta_base_pose = pose_base.copy()
-            self._last_tcp_delta_reference = reference_used
             self._last_target_q = None
             self._last_target_tcp_pose = target_pose.copy()
             self._target_reached = False
@@ -626,6 +583,15 @@ class URRTDEController:
                 关节加速度，单位 rad/s^2。
             time_s:
                 函数返回前阻塞时间，单位 s。0 表示沿用 ur_rtde 默认行为。
+
+        返回：
+            ur_rtde.speedJ() 的返回值，True 表示成功。
+
+        注意：
+            实机上 ur_rtde.speedJ() 可能返回 False 并抛出异常，但运动命令通常仍然
+            生效，因此本函数没有对返回值做异常检查。在遥操作场景中，speedJ 下发失败
+            时是静默的——调用者应自行检查本函数的返回值 ok，或通过 get_status() 监控
+            实际关节状态，避免误判机器人正在按预期速度运动。
         """
         qd_arr = self._parse_vec6(qd, "qd")
         acceleration = float(acceleration)
@@ -670,6 +636,13 @@ class URRTDEController:
 
         返回：
             实际下发给 ur_rtde.speedL() 的 base 坐标系速度向量。
+
+        注意：
+            实机上 ur_rtde.speedL() 可能返回 False 并抛出异常，但运动命令通常仍然
+            生效，因此本函数没有对返回值做异常检查。在遥操作场景中，speedL 下发失败
+            时是静默的——本函数不返回 speedL 的调用结果（只返回转换后的速度向量），
+            调用者应通过 get_actual_tcp_pose() 或外部手段验证机器人实际运动状态，
+            避免误判机器人正在按预期速度运动。
         """
         if frame not in ("tool", "base_add"):
             raise ValueError("frame must be 'tool' or 'base_add'")
@@ -796,8 +769,6 @@ class URRTDEController:
                 "last_target_q": None if self._last_target_q is None else self._last_target_q.copy(),
                 "last_actual_tcp_pose": None if self._last_actual_tcp_pose is None else self._last_actual_tcp_pose.copy(),
                 "last_target_tcp_pose": None if self._last_target_tcp_pose is None else self._last_target_tcp_pose.copy(),
-                "last_tcp_delta_base_pose": None if self._last_tcp_delta_base_pose is None else self._last_tcp_delta_base_pose.copy(),
-                "last_tcp_delta_reference": self._last_tcp_delta_reference,
                 "pending_tcp_cmd_seq": self._pending_tcp_cmd_seq,
                 "cmd_seq": self._cmd_seq,
                 "loop_count": self._loop_count,
@@ -817,7 +788,6 @@ class URRTDEController:
             f"reached={st['target_reached']}, error={st['last_error']}, "
             f"cmd_seq={st['cmd_seq']}, loop={st['loop_count']}, servo={st['servo_count']}, "
             f"rtde_safety={st['use_rtde_safety_check']}, "
-            f"tcp_ref={st['last_tcp_delta_reference']}, "
             f"tcp_pending={st['pending_tcp_cmd_seq']}, "
             f"actual_q={None if st['last_actual_q'] is None else np.round(st['last_actual_q'], 4)}, "
             f"cmd_q={None if st['last_commanded_q'] is None else np.round(st['last_commanded_q'], 4)}, "
@@ -835,13 +805,11 @@ class URRTDEController:
             self._set_error_and_stop(f"Failed to read initial q: {repr(exc)}")
             return
 
-        active_target_q = q_cmd.copy()
         last_control_kind: Optional[str] = None
         last_cmd_seq = -1
 
         while self._running.is_set():
             t_start = None
-            wait_after_cycle = True
 
             try:
                 with self._lock:
@@ -895,6 +863,9 @@ class URRTDEController:
 
                 if control_kind == "joint":
                     with self._rtde_c_lock:
+                        # initPeriod()/waitPeriod() pair keeps servoJ cycles aligned
+                        # with the RTDE control frequency instead of running Python
+                        # as fast as possible.
                         t_start = self.rtde_c.initPeriod()
 
                     active_target_q = target_q.copy()
@@ -911,6 +882,11 @@ class URRTDEController:
                     last_cmd_seq = snap["cmd_seq"]
 
                 elif control_kind == "tcp":
+                    with self._rtde_c_lock:
+                        # Use the same RTDE period pacing for servoL as servoJ.
+                        # t_start is a cycle handle consumed by waitPeriod() below.
+                        t_start = self.rtde_c.initPeriod()
+
                     last_cmd_seq = snap["cmd_seq"]
 
                     if is_new_command and self.use_rtde_safety_check:
@@ -938,8 +914,6 @@ class URRTDEController:
                         ):
                             continue
                         raise RuntimeError("servoL() returned False")
-
-                    wait_after_cycle = False
 
                     with self._lock:
                         self._servo_count += 1
@@ -1031,11 +1005,10 @@ class URRTDEController:
                 if t_start is not None:
                     try:
                         with self._rtde_c_lock:
+                            # Sleep the remaining part of this RTDE control period.
                             self.rtde_c.waitPeriod(t_start)
                     except Exception:
                         time.sleep(self.dt)
-                elif wait_after_cycle:
-                    time.sleep(self.dt)
 
         try:
             with self._rtde_c_lock:
@@ -1202,58 +1175,6 @@ class URRTDEController:
             self._pending_tcp_cmd_seq = None
             self._pending_tcp_servo_deadline = None
             self._cmd_seq += 1
-
-    def _select_tcp_delta_reference_pose(
-        self,
-        requested_reference: Literal["target", "actual", "rtde_target"],
-        tcp_target_active: bool,
-        pose_actual: np.ndarray,
-        last_target_tcp_pose: Optional[np.ndarray],
-    ) -> tuple[np.ndarray, str]:
-        """
-        为 move_tcp_delta() 选择增量基准 pose。
-
-        默认策略：
-            - 当前仍有 TCP active target 并且有上一目标 pose：使用上一目标 pose；
-            - 否则使用当前实际 pose 初始化基准。
-
-        这样既能避免连续增量时的姿态漂移，也避免从空闲或关节目标切入 TCP 增量时
-        沿用过期的旧目标 pose。
-        """
-        if requested_reference == "actual":
-            return pose_actual.copy(), "actual"
-
-        if requested_reference == "rtde_target":
-            try:
-                pose_rtde_target = np.asarray(self.rtde_r.getTargetTCPPose(), dtype=float)
-                if pose_rtde_target.shape == (6,) and np.all(np.isfinite(pose_rtde_target)):
-                    return pose_rtde_target.copy(), "rtde_target"
-            except Exception:
-                # 当前 ur_rtde 版本不支持 getTargetTCPPose()，或暂时读取失败时，回退到内部目标 pose。
-                pass
-
-        # 只有当前仍有 TCP active target 时，才继续沿用上一条 TCP 目标位姿。
-        # 如果当前为空闲或关节目标，则说明这是切入 TCP 增量的第一条命令，
-        # 必须以当前实际 TCP pose 作为基准，避免使用 __init__/start 中留下的过期目标 pose。
-        if tcp_target_active and last_target_tcp_pose is not None:
-            return last_target_tcp_pose.copy(), "last_target_tcp_pose"
-
-        if pose_actual is not None:
-            pose_actual = np.asarray(pose_actual, dtype=float)
-            if pose_actual.shape == (6,) and np.all(np.isfinite(pose_actual)):
-                return pose_actual.copy(), "actual_initial"
-
-        with self._lock:
-            initial_tcp_pose = (
-                None
-                if self._initial_actual_tcp_pose is None
-                else self._initial_actual_tcp_pose.copy()
-            )
-
-        if initial_tcp_pose is not None:
-            return initial_tcp_pose.copy(), "initial_actual"
-
-        raise RuntimeError("No valid TCP reference pose available for move_tcp_delta()")
 
     def _compute_target_pose(
         self,
