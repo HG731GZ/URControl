@@ -282,12 +282,13 @@ _control_loop():
 `button_events_def()` 方法中有 **24 个按钮 × 2 种事件 (pressed/released) = 48 行重复的信号连接**，影响可维护性。
 
 **建议**: 使用循环批量绑定，例如：
+
 ```python
 for i in range(1, 7):
     getattr(self, f"pushButton_JUp{i}").pressed.connect(
         lambda idx=i: self.on_JUp_Button_Pressed(idx))
     getattr(self, f"pushButton_JUp{i}").released.connect(
-        self.on_Control_Button_Released)
+        self.on_RTControl_Button_Released)
     # ... 同理 JDown, TUp, TDown
 ```
 可将 `button_events_def()` 从约55行缩减到约15行。

@@ -160,7 +160,7 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         self.timer_URRTDEControl_UI.start(2)
         self.lineedits_qtarget_setreadonly(True)
 
-    def on_Control_Button_Released(self):
+    def on_RTControl_Button_Released(self):
         # 这里直接停的时候会顿一下，暂时不知道怎么处理
         self.URRTDEController.stop()
         self.timer_URRTDEControl_UI.stop()
@@ -332,22 +332,22 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
                 lambda checked=False, idx=i: self.on_RTControl_Button_Pressed('joint', idx, 1))
             getattr(self, f"pushButton_JDown{i}").pressed.connect(
                 lambda checked=False, idx=i: self.on_RTControl_Button_Pressed('joint', idx, -1))
-            getattr(self, f"pushButton_JUp{i}").released.connect(self.on_Control_Button_Released)
-            getattr(self, f"pushButton_JDown{i}").released.connect(self.on_Control_Button_Released)
+            getattr(self, f"pushButton_JUp{i}").released.connect(self.on_RTControl_Button_Released)
+            getattr(self, f"pushButton_JDown{i}").released.connect(self.on_RTControl_Button_Released)
 
             getattr(self, f"pushButton_TUp{i}").pressed.connect(
                 lambda checked=False, idx=i: self.on_RTControl_Button_Pressed('tcp_tool', idx, 1))
             getattr(self, f"pushButton_TDown{i}").pressed.connect(
                 lambda checked=False, idx=i: self.on_RTControl_Button_Pressed('tcp_tool', idx, -1))
-            getattr(self, f"pushButton_TUp{i}").released.connect(self.on_Control_Button_Released)
-            getattr(self, f"pushButton_TDown{i}").released.connect(self.on_Control_Button_Released)
+            getattr(self, f"pushButton_TUp{i}").released.connect(self.on_RTControl_Button_Released)
+            getattr(self, f"pushButton_TDown{i}").released.connect(self.on_RTControl_Button_Released)
 
             getattr(self, f"pushButton_TWUp{i}").pressed.connect(
                 lambda checked=False, idx=i: self.on_RTControl_Button_Pressed('tcp_base', idx, 1))
             getattr(self, f"pushButton_TWDown{i}").pressed.connect(
                 lambda checked=False, idx=i: self.on_RTControl_Button_Pressed('tcp_base', idx, -1))
-            getattr(self, f"pushButton_TWUp{i}").released.connect(self.on_Control_Button_Released)
-            getattr(self, f"pushButton_TWDown{i}").released.connect(self.on_Control_Button_Released)
+            getattr(self, f"pushButton_TWUp{i}").released.connect(self.on_RTControl_Button_Released)
+            getattr(self, f"pushButton_TWDown{i}").released.connect(self.on_RTControl_Button_Released)
 
     def lineedits_qtarget_bind_validation(self):
         for i in range(1, 7):
