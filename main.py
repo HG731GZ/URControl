@@ -316,7 +316,7 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
             if cmd is not None:
                 mode_cn = UDPControlMode.cn_name(cmd.mode)
                 if cmd.mode == 1:  # 关节跟踪
-                    self.URRTDEController.track_joint(cmd.q_arm, dq_max=2)
+                    self.URRTDEController.track_joint(cmd.q_arm, dq_max=1)
                     print(cmd.q_arm[4])
 
     # 其他辅助函数

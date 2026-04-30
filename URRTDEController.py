@@ -878,8 +878,10 @@ class URRTDEController:
                     time.sleep(self.dt)
                     continue
 
-                # 从空闲切到控制，或收到新命令时，用当前实际关节角重置 q_cmd，避免旧命令残留。
-                if last_control_kind is None or snap["cmd_seq"] != last_cmd_seq:
+                # Keep q_cmd continuous while targets are streaming. Resetting it on every
+                # new target can make the servoJ command sequence jump back to actual_q,
+                # which may trip UR's acceleration sanity check at higher dq_max values.
+                if last_control_kind is None or last_control_kind != control_kind:
                     q_cmd = np.asarray(self.rtde_r.getActualQ(), dtype=float)
 
                 is_new_command = (
