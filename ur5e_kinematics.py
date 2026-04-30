@@ -6,6 +6,7 @@ from typing import Optional, Tuple, Union
 import numpy as np
 import pinocchio as pin
 
+from ur5e_model_cache import build_model_from_mjcf, build_models_from_mjcf
 from ur_pose_math import matrix_to_rotvec, rotvec_to_matrix
 
 
@@ -34,6 +35,7 @@ class UR5eKinematics:
         tcp_offset: Optional[ArrayLike] = None,
         tcp_rotation: Optional[ArrayLike] = None,
         correct_ur_base: bool = True,
+        load_geometry: bool = False,
     ) -> None:
         """
         参数
@@ -49,14 +51,27 @@ class UR5eKinematics:
             可选 TCP 姿态，相对于末端坐标系。支持 3 维旋转向量或 3x3 旋转矩阵。
         correct_ur_base:
             是否应用与 ur5e_visualizer.py 相同的基坐标系修正。
+        load_geometry:
+            是否同时加载 visual/collision geometry。纯运动学计算保持 False，
+            可视化器需要 mesh 时才设为 True。
         """
         self.mjcf_path = (
             Path(mjcf_path) if mjcf_path is not None else self.DEFAULT_MJCF_PATH
         )
         self.end_frame_name = end_frame_name
 
-        result = pin.shortcuts.buildModelsFromMJCF(str(self.mjcf_path))
-        self.model = result[0]
+        self.constraint_models = None
+        self.collision_model = None
+        self.visual_model = None
+        if load_geometry:
+            (
+                self.model,
+                self.constraint_models,
+                self.collision_model,
+                self.visual_model,
+            ) = build_models_from_mjcf(self.mjcf_path)
+        else:
+            self.model = build_model_from_mjcf(self.mjcf_path)
 
         if correct_ur_base:
             r_z_180 = np.array(

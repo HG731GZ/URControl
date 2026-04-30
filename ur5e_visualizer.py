@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 import pinocchio as pin
 from pinocchio.visualize import MeshcatVisualizer
@@ -6,11 +8,43 @@ import meshcat.geometry as mg
 from ur5e_kinematics import UR5eKinematics
 
 
+class CachedMeshcatVisualizer(MeshcatVisualizer):
+    """Meshcat visualizer that reuses mesh geometry loaded from the same file."""
+
+    _mesh_cache = {}
+
+    def loadMeshFromFile(self, geometry_object):
+        mesh_path = Path(geometry_object.meshPath)
+        extension = mesh_path.suffix.lower()
+
+        if extension not in (".obj", ".stl"):
+            return super().loadMeshFromFile(geometry_object)
+
+        try:
+            stat = mesh_path.stat()
+        except OSError:
+            return super().loadMeshFromFile(geometry_object)
+
+        cache_key = (str(mesh_path.resolve()), stat.st_mtime_ns, stat.st_size)
+        if cache_key not in self._mesh_cache:
+            if extension == ".obj":
+                self._mesh_cache[cache_key] = mg.ObjMeshGeometry.from_file(mesh_path)
+            else:
+                self._mesh_cache[cache_key] = mg.StlMeshGeometry.from_file(mesh_path)
+        return self._mesh_cache[cache_key]
+
+
 class UR5eDualVisualizer:
     """Dual UR5e robot visualization with actual (opaque) and virtual (semi-transparent) states."""
 
-    def __init__(self, mjcf_path: str, tool_offset: np.ndarray = np.array([0, 0.1, 0]),
-                 tool_rotation: np.ndarray = None, zmq_url: str = None):
+    def __init__(
+        self,
+        mjcf_path: str,
+        tool_offset: np.ndarray = np.array([0, 0.1, 0]),
+        tool_rotation: np.ndarray = None,
+        zmq_url: str = None,
+        lazy_virtual: bool = True,
+    ):
         """
         Args:
             mjcf_path: Path to the UR5e MJCF XML file.
@@ -19,6 +53,8 @@ class UR5eDualVisualizer:
             tool_rotation: 3-element [rx, ry, rz] rotation offset (radians) as
                 intrinsic XYZ Euler angles. Default: zero.
             zmq_url: Optional Meshcat ZMQ URL.
+            lazy_virtual: Delay loading the semi-transparent virtual robot until
+                the first update_virtual() call.
         """
         # Tool offset
         if tool_offset is None:
@@ -42,13 +78,13 @@ class UR5eDualVisualizer:
             end_frame_name="wrist_3_link",
             tcp_offset=self.tool_offset,
             tcp_rotation=self.tool_rotation @ R_x_neg90,
+            load_geometry=True,
         )
 
-        # Load visual geometry. The visualizer uses the corrected model owned by
-        # UR5eKinematics so FK conventions match numerical kinematics.
-        result = pin.shortcuts.buildModelsFromMJCF(mjcf_path)
+        # Reuse the visual geometry loaded by UR5eKinematics so the MJCF and
+        # mesh metadata are parsed only once per visualizer instance.
         self.model = self.kinematics.model
-        self.visual_model_actual = result[3]
+        self.visual_model_actual = self.kinematics.visual_model
 
         # Clone visual model for virtual robot
         self.visual_model_virtual = self.visual_model_actual.clone()
@@ -58,7 +94,7 @@ class UR5eDualVisualizer:
         self.data_virtual = self.model.createData()
 
         # Create visualizer for actual robot
-        self.viz_actual = MeshcatVisualizer(
+        self.viz_actual = CachedMeshcatVisualizer(
             model=self.model,
             visual_model=self.visual_model_actual,
             data=self.data_actual,
@@ -67,22 +103,31 @@ class UR5eDualVisualizer:
         self.viz_actual.loadViewerModel(rootNodeName="actual")
 
         # Create visualizer for virtual robot, sharing the same viewer
-        self.viz_virtual = MeshcatVisualizer(
+        self.viz_virtual = CachedMeshcatVisualizer(
             model=self.model,
             visual_model=self.visual_model_virtual,
             data=self.data_virtual,
         )
         self.viz_virtual.initViewer(viewer=self.viz_actual.viewer)
-        self.viz_virtual.loadViewerModel(
-            rootNodeName="virtual",
-            visual_color=[0.3, 0.6, 0.9, 0.4],
-        )
+        self._virtual_visual_color = [0.3, 0.6, 0.9, 0.4]
+        self._virtual_loaded = False
+        if not lazy_virtual:
+            self._load_virtual_model()
 
         # Create end-effector frame visuals for both robots
         self._create_ee_frames()
 
         print("UR5e dual visualizer initialized.")
         print(f"Open Meshcat URL in browser: {self.viz_actual.viewer.url()}")
+
+    def _load_virtual_model(self):
+        if self._virtual_loaded:
+            return
+        self.viz_virtual.loadViewerModel(
+            rootNodeName="virtual",
+            visual_color=self._virtual_visual_color,
+        )
+        self._virtual_loaded = True
 
     def _create_ee_frames(self):
         """Create shorter RGB axis lines for end-effector frames."""
@@ -120,6 +165,7 @@ class UR5eDualVisualizer:
         Args:
             q: 7-element array [q1..q6, gripper]. Only q1..q6 (radians) are used.
         """
+        self._load_virtual_model()
         q6 = np.asarray(q[:6], dtype=np.float64)
         self.kinematics.update_forward_kinematics(q6, self.data_actual)
         pin.updateGeometryPlacements(
