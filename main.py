@@ -38,7 +38,7 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         self.timer_URStatus_RT = QtCore.QTimer(self)
         self.timer_URStatus_RT.start(10)
 
-        self.timer_URTCPControl = QtCore.QTimer(self)
+        self.timer_URRTDEControl_UI = QtCore.QTimer(self)
 
         self.timer_URUDPControl = QtCore.QTimer(self)
 
@@ -76,7 +76,7 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
 
         self.timer_URStatus.timeout.connect(self.on_timerURStatus_timeout)
         self.timer_URStatus_RT.timeout.connect(self.on_timerURStatus_RT_timeout)
-        self.timer_URTCPControl.timeout.connect(self.on_timerURRTDE_UI_timeout)
+        self.timer_URRTDEControl_UI.timeout.connect(self.on_timerURRTDE_UI_timeout)
         self.timer_URUDPControl.timeout.connect(self.on_timerURUDP_timeout)
         self.control_button_events_connect()
         self.lineedits_qtarget_bind_validation()
@@ -157,11 +157,11 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         self._control_dq = control_delta
         self._control_mode = control_mode
         self.URRTDEController.start()
-        self.timer_URTCPControl.start(2)
+        self.timer_URRTDEControl_UI.start(2)
         self.lineedits_qtarget_setreadonly(True)
 
     def on_Control_Button_Released(self):
-        self.timer_URTCPControl.stop()
+        self.timer_URRTDEControl_UI.stop()
         self._control_dq = None
         self._control_mode = None
         self.URRTDEController.stop()
@@ -295,13 +295,13 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
             return
         if self._control_mode == 'tcp_tool':
             # self.URRTDEController.move_tcp_delta(delta_pose=self._control_dq, dq_max=10, frame="tool")
-            self.URRTDEController.speedL(xd=self._control_dq, time_s=999, frame='tool')
+            self.URRTDEController.speedL(xd=self._control_dq, time_s=1, frame='tool')
         elif self._control_mode == 'tcp_base':
             # self.URRTDEController.move_tcp_delta(delta_pose=self._control_dq, dq_max=10, frame="base_add")
-            self.URRTDEController.speedL(xd=self._control_dq, time_s=999, frame='base_add')
+            self.URRTDEController.speedL(xd=self._control_dq, time_s=1, frame='base_add')
         elif self._control_mode == 'joint':
             # self.URRTDEController.move_joint_delta(delta_q=self._control_dq, dq_max=10)
-            self.URRTDEController.speedJ(qd=self._control_dq, time_s=999)
+            self.URRTDEController.speedJ(qd=self._control_dq, time_s=1)
 
     def on_timerURUDP_timeout(self):
         udp_err = self.ur_udp_client.get_last_error()
@@ -396,7 +396,7 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
     def closeEvent(self, event):
         self.timer_URStatus.stop()
         self.timer_URStatus_RT.stop()
-        self.timer_URTCPControl.stop()
+        self.timer_URRTDEControl_UI.stop()
         self.ur_udp_client.stop()
         if self.URRTDEController is not None:
             self.URRTDEController.shutdown()
