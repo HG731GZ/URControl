@@ -30,6 +30,15 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
     def __init__(self):
         super().__init__()
 
+        # UR相关
+        self.URDashboardClient = None
+        self.URScriptClient = None
+        self.URRealtimeClient = None
+        self.URRTDEController = None
+        self.GripperController = None
+        self.UR_J_Control_Speed = 0.1  # 关节控制按钮的速度
+        self.UR_TCP_Control_Speed = 0.01  # 末端控制按钮的速度
+
         # 窗口控件
         self.setupUi(self)
         self.timer_URStatus = QtCore.QTimer(self)
@@ -81,15 +90,6 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         self.control_button_events_connect()
         self.lineedits_qtarget_bind_validation()
 
-        # UR相关
-        self.URDashboardClient = None
-        self.URScriptClient = None
-        self.URRealtimeClient = None
-        self.URRTDEController = None
-        self.GripperController = None
-        self.UR_J_Control_Speed = 0.1  # 关节控制按钮的速度
-        self.UR_TCP_Control_Speed = 0.01  # 末端控制按钮的速度
-
         # UDP 外源控制
         self._udp_bind_port = 5005
         self._udp_local_ip = NetWorkSet.get_local_ip(self.URIP) or '0.0.0.0'
@@ -117,7 +117,7 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         if self.URDashboardClient.robot_mode() == 'Robotmode: RUNNING':
             self.URRTDEController = URRTDEController(self.URIP, frequency=500.0, default_dq_max=0.5,
                                                      lookahead_time=0.08,
-                                                     gain=300, use_safety_check=False)
+                                                     gain=500, use_safety_check=False)
 
         # 创建夹钳控制器连接 (TCP 串口服务器)
         try:
@@ -136,7 +136,7 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         if self.URRTDEController is None:
             self.URRTDEController = URRTDEController(self.URIP, frequency=500.0, default_dq_max=0.5,
                                                      lookahead_time=0.08,
-                                                     gain=300, use_safety_check=False)
+                                                     gain=500, use_safety_check=False)
 
     def on_URShutdown_Button(self):
         self.message_append_to_textbox(self.URDashboardClient.power_off())
@@ -161,10 +161,11 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         self.lineedits_qtarget_setreadonly(True)
 
     def on_Control_Button_Released(self):
+        # 这里直接停的时候会顿一下，暂时不知道怎么处理
+        self.URRTDEController.stop()
         self.timer_URRTDEControl_UI.stop()
         self._control_dq = None
         self._control_mode = None
-        self.URRTDEController.stop()
         self.lineedits_qtarget_setreadonly(False)
 
     def on_URScriptMoveJ_Button(self):
@@ -301,7 +302,7 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
             self.URRTDEController.speedL(xd=self._control_dq, time_s=1, frame='base_add')
         elif self._control_mode == 'joint':
             # self.URRTDEController.move_joint_delta(delta_q=self._control_dq, dq_max=10)
-            self.URRTDEController.speedJ(qd=self._control_dq, time_s=1)
+            self.URRTDEController.speedJ(qd=self._control_dq, time_s=1, acceleration=0.1)
 
     def on_timerURUDP_timeout(self):
         udp_err = self.ur_udp_client.get_last_error()
@@ -316,6 +317,7 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
                 mode_cn = UDPControlMode.cn_name(cmd.mode)
                 if cmd.mode == 1:  # 关节跟踪
                     self.URRTDEController.track_joint(cmd.q_arm, dq_max=2)
+                    print(cmd.q_arm[4])
 
     # 其他辅助函数
     def message_append_to_textbox(self, message):
