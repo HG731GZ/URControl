@@ -34,6 +34,7 @@ class URRTDEController:
         - move_tcp_delta() 每次调用都会立即读取实际 TCP pose，并以该实际位姿为增量基准。
         - 关节目标由控制线程用 servoJ 按 dq_max 进行限速跟踪。
         - TCP 增量目标由控制线程直接用 servoL 跟踪，不再依赖 UR 控制柜逆解。
+        - speedJ()/speedL() 会启动速度 watchdog；超时未刷新速度命令时自动 speedStop()。
         - 如果 auto_start_on_command=True，则首次调用 track_joint()/move_*_delta() 时会自动 start()。
 
     注意：
@@ -57,6 +58,7 @@ class URRTDEController:
         use_rtde_safety_check: bool = False,
         joint_position_limit: float | Sequence[float] = 2.0 * np.pi,
         auto_start_on_command: bool = True,
+        speed_watchdog_timeout: Optional[float] = 0.2,
         verbose: bool = False,
     ):
         self.robot_ip = robot_ip
@@ -77,6 +79,10 @@ class URRTDEController:
         self.use_rtde_safety_check = bool(use_rtde_safety_check)
         self._joint_position_limit = self._parse_joint_position_limit(joint_position_limit)
         self.auto_start_on_command = bool(auto_start_on_command)
+        self.speed_watchdog_timeout = self._parse_optional_positive_float(
+            speed_watchdog_timeout,
+            "speed_watchdog_timeout",
+        )
 
         self.rtde_c = rtde_control.RTDEControlInterface(robot_ip, self.frequency)
         self.rtde_r = rtde_receive.RTDEReceiveInterface(robot_ip, self.frequency, [], verbose)
@@ -145,6 +151,12 @@ class URRTDEController:
         self._lifecycle_lock = threading.RLock()
         self._is_shutdown = False
 
+        self._speed_watchdog_stop = threading.Event()
+        self._speed_watchdog_thread: Optional[threading.Thread] = None
+        self._speed_watchdog_active = False
+        self._speed_watchdog_deadline: Optional[float] = None
+        self._last_speed_command_kind: Optional[str] = None
+
     # ------------------------------------------------------------------
     # 对外接口
     # ------------------------------------------------------------------
@@ -176,6 +188,8 @@ class URRTDEController:
         with self._lifecycle_lock:
             if self._is_shutdown:
                 raise RuntimeError("Controller has been shutdown. Please create a new object.")
+
+            self._cancel_speed_watchdog()
 
             thread_alive = self._thread is not None and self._thread.is_alive()
 
@@ -273,6 +287,7 @@ class URRTDEController:
             适合接下来要发送外部 URScript 的场景。
         """
         with self._lifecycle_lock:
+            self._cancel_speed_watchdog()
             self._running.clear()
 
             if self._thread is not None:
@@ -336,6 +351,10 @@ class URRTDEController:
                 return
 
             self.stop(stop_script=True)
+            self._speed_watchdog_stop.set()
+            if self._speed_watchdog_thread is not None:
+                self._speed_watchdog_thread.join(timeout=1.0)
+                self._speed_watchdog_thread = None
 
             try:
                 with self._rtde_c_lock:
@@ -583,15 +602,16 @@ class URRTDEController:
                 关节加速度，单位 rad/s^2。
             time_s:
                 函数返回前阻塞时间，单位 s。0 表示沿用 ur_rtde 默认行为。
+                遥操作连续速度控制建议保持 0，并依赖本类的 speed watchdog 做超时停止。
 
         返回：
             ur_rtde.speedJ() 的返回值，True 表示成功。
 
         注意：
-            实机上 ur_rtde.speedJ() 可能返回 False 并抛出异常，但运动命令通常仍然
-            生效，因此本函数没有对返回值做异常检查。在遥操作场景中，speedJ 下发失败
-            时是静默的——调用者应自行检查本函数的返回值 ok，或通过 get_status() 监控
-            实际关节状态，避免误判机器人正在按预期速度运动。
+            speedJ 的 time_s 在实机上可能只表现为接口阻塞时间，不保证到时自动刹车。
+            本类会在下发 speedJ 前启动速度 watchdog：如果超过
+            speed_watchdog_timeout 没有新的 speedJ/speedL 命令刷新 deadline，
+            后台线程会主动调用 speedStop()。
         """
         qd_arr = self._parse_vec6(qd, "qd")
         acceleration = float(acceleration)
@@ -603,6 +623,8 @@ class URRTDEController:
             raise ValueError("time_s must be a non-negative finite scalar")
 
         self._prepare_direct_motion_command()
+
+        self._arm_speed_watchdog("speedJ")
 
         with self._rtde_c_lock:
             ok = bool(self.rtde_c.speedJ(qd_arr.tolist(), acceleration, time_s))
@@ -638,11 +660,10 @@ class URRTDEController:
             实际下发给 ur_rtde.speedL() 的 base 坐标系速度向量。
 
         注意：
-            实机上 ur_rtde.speedL() 可能返回 False 并抛出异常，但运动命令通常仍然
-            生效，因此本函数没有对返回值做异常检查。在遥操作场景中，speedL 下发失败
-            时是静默的——本函数不返回 speedL 的调用结果（只返回转换后的速度向量），
-            调用者应通过 get_actual_tcp_pose() 或外部手段验证机器人实际运动状态，
-            避免误判机器人正在按预期速度运动。
+            speedL 的 time_s 在实机上可能只表现为接口阻塞时间，不保证到时自动刹车。
+            本类会在下发 speedL 前启动速度 watchdog：如果超过
+            speed_watchdog_timeout 没有新的 speedJ/speedL 命令刷新 deadline，
+            后台线程会主动调用 speedStop()。
         """
         if frame not in ("tool", "base_add"):
             raise ValueError("frame must be 'tool' or 'base_add'")
@@ -664,6 +685,8 @@ class URRTDEController:
             twist=xd,
             frame=frame,
         )
+
+        self._arm_speed_watchdog("speedL")
 
         with self._rtde_c_lock:
             ok = bool(self.rtde_c.speedL(xd_base.tolist(), acceleration, time_s))
@@ -777,6 +800,10 @@ class URRTDEController:
                 "is_running": self.is_running(),
                 "use_safety_check": self.use_safety_check,
                 "use_rtde_safety_check": self.use_rtde_safety_check,
+                "speed_watchdog_timeout": self.speed_watchdog_timeout,
+                "speed_watchdog_active": self._speed_watchdog_active,
+                "speed_watchdog_deadline": self._speed_watchdog_deadline,
+                "last_speed_command_kind": self._last_speed_command_kind,
             }
 
 
@@ -788,6 +815,7 @@ class URRTDEController:
             f"reached={st['target_reached']}, error={st['last_error']}, "
             f"cmd_seq={st['cmd_seq']}, loop={st['loop_count']}, servo={st['servo_count']}, "
             f"rtde_safety={st['use_rtde_safety_check']}, "
+            f"speed_wd={st['speed_watchdog_active']}, "
             f"tcp_pending={st['pending_tcp_cmd_seq']}, "
             f"actual_q={None if st['last_actual_q'] is None else np.round(st['last_actual_q'], 4)}, "
             f"cmd_q={None if st['last_commanded_q'] is None else np.round(st['last_commanded_q'], 4)}, "
@@ -1107,6 +1135,78 @@ class URRTDEController:
                 "is_running": self.is_running(),
             }
 
+    def _arm_speed_watchdog(self, command_kind: str) -> None:
+        if self.speed_watchdog_timeout is None:
+            return
+
+        self._ensure_speed_watchdog_thread()
+        with self._lock:
+            self._speed_watchdog_active = True
+            self._speed_watchdog_deadline = time.monotonic() + self.speed_watchdog_timeout
+            self._last_speed_command_kind = command_kind
+
+    def _cancel_speed_watchdog(self) -> None:
+        with self._lock:
+            self._speed_watchdog_active = False
+            self._speed_watchdog_deadline = None
+            self._last_speed_command_kind = None
+
+    def _ensure_speed_watchdog_thread(self) -> None:
+        if self.speed_watchdog_timeout is None:
+            return
+
+        with self._lock:
+            thread_alive = (
+                self._speed_watchdog_thread is not None
+                and self._speed_watchdog_thread.is_alive()
+            )
+            if thread_alive:
+                return
+
+            self._speed_watchdog_stop.clear()
+            thread = threading.Thread(
+                target=self._speed_watchdog_loop,
+                name="URRTDESpeedWatchdog",
+                daemon=True,
+            )
+            self._speed_watchdog_thread = thread
+
+        thread.start()
+
+    def _speed_watchdog_loop(self) -> None:
+        poll_s = 0.01
+
+        while not self._speed_watchdog_stop.is_set():
+            with self._lock:
+                active = self._speed_watchdog_active
+                deadline = self._speed_watchdog_deadline
+
+            if not active or deadline is None:
+                self._speed_watchdog_stop.wait(poll_s)
+                continue
+
+            now = time.monotonic()
+            remaining = deadline - now
+            if remaining > 0.0:
+                self._speed_watchdog_stop.wait(min(poll_s, remaining))
+                continue
+
+            with self._lock:
+                if (
+                    not self._speed_watchdog_active
+                    or self._speed_watchdog_deadline != deadline
+                ):
+                    continue
+                self._speed_watchdog_active = False
+                self._speed_watchdog_deadline = None
+
+            try:
+                with self._rtde_c_lock:
+                    self.rtde_c.speedStop(self.servo_stop_acc)
+            except Exception as exc:
+                with self._lock:
+                    self._last_error = f"speed watchdog speedStop failed: {repr(exc)}"
+
     def _prepare_direct_motion_command(self) -> None:
         """
         为 moveL/speedJ/speedL 这类直接 RTDE 运动命令做准备。
@@ -1115,6 +1215,8 @@ class URRTDEController:
         """
         if self._is_shutdown:
             raise RuntimeError("Controller has been shutdown. Please create a new object.")
+
+        self._cancel_speed_watchdog()
 
         if self.is_running():
             self.stop(stop_script=False)
@@ -1281,6 +1383,18 @@ class URRTDEController:
 
         return arr
 
+    @staticmethod
+    def _parse_optional_positive_float(value: Optional[float], name: str) -> Optional[float]:
+        if value is None:
+            return None
+
+        value = float(value)
+        if not np.isfinite(value):
+            raise ValueError(f"{name} must be finite or None")
+        if value <= 0.0:
+            raise ValueError(f"{name} must be positive or None")
+
+        return value
 
     @staticmethod
     def _parse_joint_position_limit(limit: float | Sequence[float]) -> np.ndarray:
