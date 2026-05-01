@@ -9,7 +9,12 @@ import numpy as np
 import rtde_control
 import rtde_io
 import rtde_receive
-from ur_pose_math import is_pose_reached, pose_trans, twist_tool_to_base
+from ur_pose_math import (
+    apply_pose_delta,
+    is_pose_reached,
+    rate_limit_tcp_pose,
+    twist_to_base,
+)
 
 
 class URRTDEController:
@@ -19,7 +24,7 @@ class URRTDEController:
     暴露接口：
     1. track_joint(q, dq_max)：闭环跟踪关节角 q，并限制每个关节速度 dq_max
     2. move_joint_delta(delta_q, dq_max)：调用时读取当前实际关节角 q_actual，目标为 q_actual + delta_q
-    3. move_tcp_delta(delta_pose, dq_max)：以当前实际 TCP pose 为基准生成新目标，并直接用 servoL 跟踪该 TCP 目标
+    3. move_tcp_delta(delta_pose, dx_max, dq_max)：以当前实际 TCP pose 为基准生成新目标，并用 servoL 限速跟踪
     4. moveL(delta_pose, speed, acceleration, frame)：以当前实际 TCP pose 为基准执行线性运动
     5. speedJ(qd, acceleration, time)：关节速度控制
     6. speedL(xd, acceleration, time, frame)：TCP 速度控制
@@ -33,7 +38,7 @@ class URRTDEController:
         - move_joint_delta() 每次调用都会立即读取实际关节角，并生成新的目标关节角。
         - move_tcp_delta() 每次调用都会立即读取实际 TCP pose，并以该实际位姿为增量基准。
         - 关节目标由控制线程用 servoJ 按 dq_max 进行限速跟踪。
-        - TCP 增量目标由控制线程直接用 servoL 跟踪，不再依赖 UR 控制柜逆解。
+        - TCP 增量目标由控制线程用 servoL 跟踪，可按平动速度模长 dx_max 和角速度模长 dq_max 限速。
         - speedJ()/speedL() 会启动速度 watchdog；超时未刷新速度命令时自动 speedStop()。
         - 如果 auto_start_on_command=True，则首次调用 track_joint()/move_*_delta() 时会自动 start()。
 
@@ -138,6 +143,8 @@ class URRTDEController:
         # TCP 增量命令在外部 API 调用时先生成 target_pose；
         # servoL 和可选安全检查统一放在控制线程里调用，避免多个线程同时访问 RTDEControlInterface。
         self._target_tcp_pose: Optional[np.ndarray] = None
+        self._target_tcp_dx_max: Optional[float] = None
+        self._target_tcp_dq_max: Optional[float] = None
         self._pending_tcp_cmd_seq: Optional[int] = None
         self._pending_tcp_servo_deadline: Optional[float] = None
 
@@ -257,6 +264,8 @@ class URRTDEController:
                 self._last_actual_tcp_pose = pose_now.copy()
                 self._last_target_tcp_pose = pose_now.copy()
                 self._target_tcp_pose = None
+                self._target_tcp_dx_max = None
+                self._target_tcp_dq_max = None
                 self._pending_tcp_cmd_seq = None
                 self._pending_tcp_servo_deadline = None
                 self._target_reached = True
@@ -332,6 +341,8 @@ class URRTDEController:
                     self._last_target_tcp_pose = pose_now.copy()
 
                 self._target_tcp_pose = None
+                self._target_tcp_dx_max = None
+                self._target_tcp_dq_max = None
                 self._pending_tcp_cmd_seq = None
                 self._pending_tcp_servo_deadline = None
                 self._last_error = None
@@ -402,6 +413,8 @@ class URRTDEController:
         with self._lock:
             self._target_q = q.copy()
             self._target_tcp_pose = None
+            self._target_tcp_dx_max = None
+            self._target_tcp_dq_max = None
             self._pending_tcp_cmd_seq = None
             self._pending_tcp_servo_deadline = None
             self._last_target_q = q.copy()
@@ -441,6 +454,8 @@ class URRTDEController:
         with self._lock:
             self._target_q = target_q.copy()
             self._target_tcp_pose = None
+            self._target_tcp_dx_max = None
+            self._target_tcp_dq_max = None
             self._pending_tcp_cmd_seq = None
             self._pending_tcp_servo_deadline = None
             self._last_actual_q = q_now.copy()
@@ -457,7 +472,8 @@ class URRTDEController:
     def move_tcp_delta(
         self,
         delta_pose: Sequence[float],
-        dq_max: Optional[float | Sequence[float]] = None,
+        dx_max: Optional[float] = None,
+        dq_max: Optional[float] = None,
         frame: Literal["tool", "base_add"] = "base_add",
     ) -> np.ndarray:
         """
@@ -481,8 +497,12 @@ class URRTDEController:
             delta_pose:
                 长度 6，[dx, dy, dz, drx, dry, drz]。
                 平移单位 m，旋转单位 rad。
+            dx_max:
+                TCP 平动速度上限，单位 m/s。限制的是整体平动速度向量模长，
+                而不是分别限制 vx/vy/vz。None 表示不限制平动速度。
             dq_max:
-                仅为兼容旧接口保留；TCP servoL 模式下不再参与限速。
+                TCP 角速度上限，单位 rad/s。限制的是整体角速度向量模长，
+                而不是分别限制 wx/wy/wz。None 表示不限制角速度。
             frame:
                 "base_add" 或 "tool"。
 
@@ -493,8 +513,8 @@ class URRTDEController:
             raise ValueError("frame must be 'tool' or 'base_add'")
 
         delta_pose = self._parse_vec6(delta_pose, "delta_pose")
-        if dq_max is not None:
-            self._parse_dq_max(dq_max)
+        dx_max = self._parse_optional_positive_float(dx_max, "dx_max")
+        dq_max = self._parse_optional_positive_float(dq_max, "dq_max")
 
         self._ensure_started_for_command()
 
@@ -503,7 +523,7 @@ class URRTDEController:
 
         # 不在外部 API 线程里调用 RTDEControlInterface。
         # 这里仅基于当前实际 pose 生成 servoL 需要的 base frame target_pose。
-        target_pose = self._compute_target_pose(
+        target_pose = apply_pose_delta(
             pose_now=pose_actual,
             delta_pose=delta_pose,
             frame=frame,
@@ -512,6 +532,8 @@ class URRTDEController:
         with self._lock:
             self._target_q = None
             self._target_tcp_pose = target_pose.copy()
+            self._target_tcp_dx_max = dx_max
+            self._target_tcp_dq_max = dq_max
             self._last_actual_q = q_now.copy()
             self._last_actual_tcp_pose = pose_actual.copy()
             self._last_target_q = None
@@ -561,7 +583,7 @@ class URRTDEController:
         self._prepare_direct_motion_command()
 
         pose_actual = np.asarray(self.rtde_r.getActualTCPPose(), dtype=float)
-        target_pose = self._compute_target_pose(
+        target_pose = apply_pose_delta(
             pose_now=pose_actual,
             delta_pose=delta_pose,
             frame=frame,
@@ -680,7 +702,7 @@ class URRTDEController:
         self._prepare_direct_motion_command()
 
         pose_actual = np.asarray(self.rtde_r.getActualTCPPose(), dtype=float)
-        xd_base = self._compute_target_twist(
+        xd_base = twist_to_base(
             pose_now=pose_actual,
             twist=xd,
             frame=frame,
@@ -792,6 +814,8 @@ class URRTDEController:
                 "last_target_q": None if self._last_target_q is None else self._last_target_q.copy(),
                 "last_actual_tcp_pose": None if self._last_actual_tcp_pose is None else self._last_actual_tcp_pose.copy(),
                 "last_target_tcp_pose": None if self._last_target_tcp_pose is None else self._last_target_tcp_pose.copy(),
+                "target_tcp_dx_max": self._target_tcp_dx_max,
+                "target_tcp_dq_max": self._target_tcp_dq_max,
                 "pending_tcp_cmd_seq": self._pending_tcp_cmd_seq,
                 "cmd_seq": self._cmd_seq,
                 "loop_count": self._loop_count,
@@ -833,6 +857,7 @@ class URRTDEController:
             self._set_error_and_stop(f"Failed to read initial q: {repr(exc)}")
             return
 
+        tcp_cmd_pose: Optional[np.ndarray] = None
         last_control_kind: Optional[str] = None
         last_cmd_seq = -1
 
@@ -861,6 +886,7 @@ class URRTDEController:
                         with self._rtde_c_lock:
                             self.rtde_c.servoStop(self.servo_stop_acc)
                     last_control_kind = None
+                    tcp_cmd_pose = None
                     now = time.time()
                     if now - self._last_status_time > 0.05:
                         actual_q = np.asarray(self.rtde_r.getActualQ(), dtype=float)
@@ -879,6 +905,8 @@ class URRTDEController:
                 # which may trip UR's acceleration sanity check at higher dq_max values.
                 if last_control_kind is None or last_control_kind != control_kind:
                     q_cmd = np.asarray(self.rtde_r.getActualQ(), dtype=float)
+                    if control_kind == "tcp":
+                        tcp_cmd_pose = np.asarray(self.rtde_r.getActualTCPPose(), dtype=float)
 
                 is_new_command = (
                     snap["cmd_seq"] != last_cmd_seq
@@ -924,9 +952,20 @@ class URRTDEController:
                                     f"RTDE target_pose safety check failed: {target_pose.tolist()}"
                                 )
 
+                    if tcp_cmd_pose is None:
+                        tcp_cmd_pose = np.asarray(self.rtde_r.getActualTCPPose(), dtype=float)
+
+                    tcp_cmd_pose = rate_limit_tcp_pose(
+                        pose_cmd=tcp_cmd_pose,
+                        pose_target=target_pose,
+                        dx_max=snap["target_tcp_dx_max"],
+                        dq_max=snap["target_tcp_dq_max"],
+                        dt=self.dt,
+                    )
+
                     with self._rtde_c_lock:
                         ok = self.rtde_c.servoL(
-                            target_pose.tolist(),
+                            tcp_cmd_pose.tolist(),
                             self.servo_speed,
                             self.servo_acceleration,
                             self.dt,
@@ -1126,6 +1165,8 @@ class URRTDEController:
                 "dq_max": self._dq_max.copy(),
                 "target_q": None if self._target_q is None else self._target_q.copy(),
                 "target_tcp_pose": None if self._target_tcp_pose is None else self._target_tcp_pose.copy(),
+                "target_tcp_dx_max": self._target_tcp_dx_max,
+                "target_tcp_dq_max": self._target_tcp_dq_max,
                 "pending_tcp_cmd_seq": self._pending_tcp_cmd_seq,
                 "pending_tcp_servo_deadline": self._pending_tcp_servo_deadline,
                 "cmd_seq": self._cmd_seq,
@@ -1224,6 +1265,8 @@ class URRTDEController:
         with self._lock:
             self._target_q = None
             self._target_tcp_pose = None
+            self._target_tcp_dx_max = None
+            self._target_tcp_dq_max = None
             self._pending_tcp_cmd_seq = None
             self._pending_tcp_servo_deadline = None
             self._target_reached = False
@@ -1274,41 +1317,11 @@ class URRTDEController:
             self._last_error = error
             self._target_q = None
             self._target_tcp_pose = None
+            self._target_tcp_dx_max = None
+            self._target_tcp_dq_max = None
             self._pending_tcp_cmd_seq = None
             self._pending_tcp_servo_deadline = None
             self._cmd_seq += 1
-
-    def _compute_target_pose(
-        self,
-        pose_now: np.ndarray,
-        delta_pose: np.ndarray,
-        frame: Literal["tool", "base_add"],
-    ) -> np.ndarray:
-        if frame == "tool":
-            # 使用齐次变换矩阵在末端坐标系下叠加增量：
-            # T_base_target = T_base_tcp @ T_tcp_delta。
-            return pose_trans(pose_now, delta_pose)
-
-        if frame == "base_add":
-            return pose_now + delta_pose
-
-        raise ValueError(f"Unsupported frame: {frame}")
-
-    def _compute_target_twist(
-        self,
-        pose_now: np.ndarray,
-        twist: np.ndarray,
-        frame: Literal["tool", "base_add"],
-    ) -> np.ndarray:
-        twist = np.asarray(twist, dtype=float)
-
-        if frame == "base_add":
-            return twist.copy()
-
-        if frame == "tool":
-            return twist_tool_to_base(pose_now, twist)
-
-        raise ValueError(f"Unsupported frame: {frame}")
 
     @staticmethod
     def _should_retry_tcp_servo(
