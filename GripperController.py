@@ -18,6 +18,22 @@ import serial
 logger = logging.getLogger(__name__)
 
 # ========================
+# 夹钳固有参数
+# ========================
+GRIPPER_POSITION_MIN = 0
+GRIPPER_POSITION_MAX = 9000  # 0: 最大开口, 9000: 完全闭合
+GRIPPER_SPEED_MIN = 0
+GRIPPER_SPEED_MAX = 100
+GRIPPER_FORCE_MIN = 0
+GRIPPER_FORCE_MAX = 100
+GRIPPER_ACCEL_MIN = 0
+GRIPPER_ACCEL_MAX = 1000
+GRIPPER_DECEL_MIN = 0
+GRIPPER_DECEL_MAX = 1000
+GRIPPER_OPEN_MIN = 0.0
+GRIPPER_OPEN_MAX = 1.0
+
+# ========================
 # 寄存器地址
 # ========================
 # ----- 写入 (功能码 0x10) -----
@@ -42,14 +58,50 @@ BIT_SPEED_REACHED = 0x02  # bit 1: 速度到达
 BIT_TORQUE_REACHED = 0x04  # bit 2: 力矩到达
 
 
+def _clamp(value, min_value, max_value):
+    return max(min_value, min(max_value, value))
+
+
+def _to_float(value, name):
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} 必须是可转换为数字的值: {value!r}") from exc
+    if number != number or number in (float("inf"), float("-inf")):
+        raise ValueError(f"{name} 必须是有限数字: {value!r}")
+    return number
+
+
+def _to_int_in_range(value, min_value, max_value, name):
+    number = _to_float(value, name)
+    return int(round(_clamp(number, min_value, max_value)))
+
+
+def _open_to_position(open_value):
+    open_value = _clamp(_to_float(open_value, "open"), GRIPPER_OPEN_MIN, GRIPPER_OPEN_MAX)
+    return int(round((GRIPPER_OPEN_MAX - open_value) * GRIPPER_POSITION_MAX))
+
+
+def _position_to_open(position):
+    return (GRIPPER_POSITION_MAX - position) / GRIPPER_POSITION_MAX
+
+
+def _position_command_to_position(value):
+    number = _to_float(value, "position")
+    if GRIPPER_OPEN_MIN <= number <= GRIPPER_OPEN_MAX:
+        return _open_to_position(number)
+    return int(round(_clamp(number, GRIPPER_POSITION_MIN, GRIPPER_POSITION_MAX)))
+
+
 class GripperFeedback:
     """单次控制周期的反馈数据"""
 
-    __slots__ = ("status", "position", "speed", "current", "pos_reached", "speed_reached", "torque_reached")
+    __slots__ = ("status", "position", "open", "speed", "current", "pos_reached", "speed_reached", "torque_reached")
 
     def __init__(self, status=0, position=0, speed=0, current=0):
         self.status = status
         self.position = position
+        self.open = _position_to_open(position)
         self.speed = speed
         self.current = current
         self.pos_reached = bool(status & BIT_POS_REACHED)
@@ -57,7 +109,7 @@ class GripperFeedback:
         self.torque_reached = bool(status & BIT_TORQUE_REACHED)
 
     def __repr__(self):
-        return f"GripperFeedback(pos={self.position}, speed={self.speed}, " f"current={self.current}, arrived={self.pos_reached}, " f"torque_ok={self.torque_reached})"
+        return f"GripperFeedback(pos={self.position}, open={self.open:.3f}, speed={self.speed}, " f"current={self.current}, arrived={self.pos_reached}, " f"torque_ok={self.torque_reached})"
 
 
 class GripperController:
@@ -73,9 +125,9 @@ class GripperController:
         g.on_feedback(lambda status, pos, speed, cur: print(f"{pos=} {cur=}"))
         g.start()
 
-        g.move(9000, speed=50, force=25)   # 暂停→改参→恢复
+        g.move(0.0, speed=50, force=25)   # 暂停→改参→恢复，开度 0.0 = 完全闭合
         time.sleep(3)
-        g.move(0, speed=50, force=25)
+        g.move(1.0, speed=50, force=25)   # 开度 1.0 = 最大开口
 
         g.stop()
         g.close()
@@ -114,7 +166,7 @@ class GripperController:
         self._thread = None
         self._interval = 0.05
 
-        # ---- 目标参数 ----
+        # ---- 目标参数(默认) ----
         self._target_position = 0
         self._target_speed = 20
         self._target_force = 20
@@ -156,47 +208,57 @@ class GripperController:
         """设置反馈回调 callback(status, position, speed, current)"""
         self._on_feedback = callback
 
+    @property
+    def open(self):
+        """当前夹钳开度，
+        0 表示完全闭合，
+        1 表示最大开口"""
+        return self.feedback.open
+
     # ========================
     # 参数设置 (线程安全)
     # ========================
     def set_target_position(self, pos):
+        """设置目标位置或开度:
+        0~1 视为开度,
+        >1 视为目标位置"""
         with self._lock:
-            self._target_position = pos & 0xFFFFFFFF
+            self._target_position = _position_command_to_position(pos)
             self._dirty = True
 
     def set_target_speed(self, speed):
         with self._lock:
-            self._target_speed = speed & 0xFFFF
+            self._target_speed = _to_int_in_range(speed, GRIPPER_SPEED_MIN, GRIPPER_SPEED_MAX, "speed")
             self._dirty = True
 
     def set_target_force(self, force):
         with self._lock:
-            self._target_force = force & 0xFFFF
+            self._target_force = _to_int_in_range(force, GRIPPER_FORCE_MIN, GRIPPER_FORCE_MAX, "force")
             self._dirty = True
 
     def set_target_accel(self, accel):
         with self._lock:
-            self._target_accel = accel & 0xFFFF
+            self._target_accel = _to_int_in_range(accel, GRIPPER_ACCEL_MIN, GRIPPER_ACCEL_MAX, "accel")
             self._dirty = True
 
     def set_target_decel(self, decel):
         with self._lock:
-            self._target_decel = decel & 0xFFFF
+            self._target_decel = _to_int_in_range(decel, GRIPPER_DECEL_MIN, GRIPPER_DECEL_MAX, "decel")
             self._dirty = True
 
     def set_motion_params(self, position=None, speed=None, force=None, accel=None, decel=None):
         """批量修改运动参数 (不立即生效，等待 resume 或下一周期)"""
         with self._lock:
             if position is not None:
-                self._target_position = position & 0xFFFFFFFF
+                self._target_position = _position_command_to_position(position)
             if speed is not None:
-                self._target_speed = speed & 0xFFFF
+                self._target_speed = _to_int_in_range(speed, GRIPPER_SPEED_MIN, GRIPPER_SPEED_MAX, "speed")
             if force is not None:
-                self._target_force = force & 0xFFFF
+                self._target_force = _to_int_in_range(force, GRIPPER_FORCE_MIN, GRIPPER_FORCE_MAX, "force")
             if accel is not None:
-                self._target_accel = accel & 0xFFFF
+                self._target_accel = _to_int_in_range(accel, GRIPPER_ACCEL_MIN, GRIPPER_ACCEL_MAX, "accel")
             if decel is not None:
-                self._target_decel = decel & 0xFFFF
+                self._target_decel = _to_int_in_range(decel, GRIPPER_DECEL_MIN, GRIPPER_DECEL_MAX, "decel")
             self._dirty = True
 
     # ========================
@@ -242,7 +304,9 @@ class GripperController:
 
     def move(self, position, speed=None, force=None, accel=None, decel=None, block=False):
         """
-        便捷方法: 暂停 → 修改参数 → 恢复
+        便捷方法: 暂停 → 修改参数 → 恢复。
+
+        position 为 0~1 时按开度处理，>1 时按目标位置处理。
 
         block=True 时阻塞等待位置到达
         """
@@ -362,7 +426,13 @@ class GripperController:
         pos = (regs[0] << 16) | regs[1]
         if pos & 0x80000000:
             pos -= 0x100000000
-        return {"status": self.read_status(), "position": pos, "speed": regs[2], "current": regs[3]}
+        return {
+            "status": self.read_status(),
+            "position": pos,
+            "open": _position_to_open(pos),
+            "speed": regs[2],
+            "current": regs[3],
+        }
 
     def close(self):
         """关闭线程并断开连接"""
@@ -398,13 +468,13 @@ if __name__ == "__main__":
     try:
         for i in range(5):
             print(f"\n--- 第 {i+1}/5 次 ---")
-            gripper.move(9000, speed=20, force=25)
+            gripper.move(0.0, speed=20, force=25)
             time.sleep(3)
-            gripper.move(0, speed=20, force=25)
+            gripper.move(1.0, speed=20, force=25)
             time.sleep(3)
 
         # 最终张开
-        gripper.move(0, speed=20, force=25)
+        gripper.move(1.0, speed=20, force=25)
         time.sleep(1)
 
     except KeyboardInterrupt:

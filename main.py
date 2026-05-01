@@ -195,7 +195,7 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
             if cmd is not None:
                 self.udp_command = cmd
                 self.URScriptClient.movej(cmd.q_arm)
-                self.GripperController.move(int(9000 - 9000 * cmd.q_gripper[0]), speed=20, force=20)
+                self.GripperController.move(cmd.q_gripper[0], speed=20, force=20)
 
     def on_SpeedSliderValueChanged(self):
         self.label_SpeedSlider.setText(f'限速: {self.horizontalSlider_SpeedSlider.value()}%')
@@ -319,7 +319,7 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
                 if cmd.mode == 1:  # 关节跟踪
                     self.URRTDEController.track_joint(cmd.q_arm, dq_max=1)
                 if self.GripperController is not None:
-                    self.GripperController.set_target_position(int(9000 - cmd.q_gripper[0] * 9000))
+                    self.GripperController.set_target_position(cmd.q_gripper[0])
 
     # 其他辅助函数
     def message_append_to_textbox(self, message):
