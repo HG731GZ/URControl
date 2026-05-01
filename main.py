@@ -195,6 +195,7 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
             if cmd is not None:
                 self.udp_command = cmd
                 self.URScriptClient.movej(cmd.q_arm)
+                self.GripperController.move(int(9000 - 9000 * cmd.q_gripper[0]), speed=20, force=20)
 
     def on_SpeedSliderValueChanged(self):
         self.label_SpeedSlider.setText(f'限速: {self.horizontalSlider_SpeedSlider.value()}%')
