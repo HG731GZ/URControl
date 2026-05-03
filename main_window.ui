@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>900</width>
-    <height>644</height>
+    <width>1385</width>
+    <height>640</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -1545,13 +1545,57 @@
      <string>同步到主端</string>
     </property>
    </widget>
+   <widget class="QLabel" name="label_camera1">
+    <property name="geometry">
+     <rect>
+      <x>896</x>
+      <y>10</y>
+      <width>480</width>
+      <height>270</height>
+     </rect>
+    </property>
+    <property name="frameShape">
+     <enum>QFrame::Box</enum>
+    </property>
+    <property name="text">
+     <string>Camera1</string>
+    </property>
+    <property name="scaledContents">
+     <bool>true</bool>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignCenter</set>
+    </property>
+   </widget>
+   <widget class="QLabel" name="label_camera2">
+    <property name="geometry">
+     <rect>
+      <x>896</x>
+      <y>300</y>
+      <width>480</width>
+      <height>270</height>
+     </rect>
+    </property>
+    <property name="frameShape">
+     <enum>QFrame::Box</enum>
+    </property>
+    <property name="text">
+     <string>Camera2</string>
+    </property>
+    <property name="scaledContents">
+     <bool>true</bool>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignCenter</set>
+    </property>
+   </widget>
   </widget>
   <widget class="QMenuBar" name="menubar">
    <property name="geometry">
     <rect>
      <x>0</x>
      <y>0</y>
-     <width>900</width>
+     <width>1385</width>
      <height>28</height>
     </rect>
    </property>

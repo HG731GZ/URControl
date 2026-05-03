@@ -14,7 +14,7 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 class Ui_MainWindow(object):
     def setupUi(self, MainWindow):
         MainWindow.setObjectName("MainWindow")
-        MainWindow.resize(900, 644)
+        MainWindow.resize(1385, 640)
         self.centralwidget = QtWidgets.QWidget(MainWindow)
         self.centralwidget.setObjectName("centralwidget")
         self.pushButton_IP = QtWidgets.QPushButton(self.centralwidget)
@@ -489,9 +489,21 @@ class Ui_MainWindow(object):
 "    background-color: rgb(143, 240, 164)\n"
 "}")
         self.pushButton_UDPSync.setObjectName("pushButton_UDPSync")
+        self.label_camera1 = QtWidgets.QLabel(self.centralwidget)
+        self.label_camera1.setGeometry(QtCore.QRect(896, 10, 480, 270))
+        self.label_camera1.setFrameShape(QtWidgets.QFrame.Box)
+        self.label_camera1.setScaledContents(True)
+        self.label_camera1.setAlignment(QtCore.Qt.AlignCenter)
+        self.label_camera1.setObjectName("label_camera1")
+        self.label_camera2 = QtWidgets.QLabel(self.centralwidget)
+        self.label_camera2.setGeometry(QtCore.QRect(896, 300, 480, 270))
+        self.label_camera2.setFrameShape(QtWidgets.QFrame.Box)
+        self.label_camera2.setScaledContents(True)
+        self.label_camera2.setAlignment(QtCore.Qt.AlignCenter)
+        self.label_camera2.setObjectName("label_camera2")
         MainWindow.setCentralWidget(self.centralwidget)
         self.menubar = QtWidgets.QMenuBar(MainWindow)
-        self.menubar.setGeometry(QtCore.QRect(0, 0, 900, 28))
+        self.menubar.setGeometry(QtCore.QRect(0, 0, 1385, 28))
         self.menubar.setStyleSheet("QMenuBar {\n"
 "    background-color: rgb(248, 228, 92);\n"
 "}")
@@ -569,3 +581,5 @@ class Ui_MainWindow(object):
         self.groupBox_Clamp.setTitle(_translate("MainWindow", "夹钳信息"))
         self.checkBox_UDPVisual.setText(_translate("MainWindow", "可视化显示外源目标"))
         self.pushButton_UDPSync.setText(_translate("MainWindow", "同步到主端"))
+        self.label_camera1.setText(_translate("MainWindow", "Camera1"))
+        self.label_camera2.setText(_translate("MainWindow", "Camera2"))

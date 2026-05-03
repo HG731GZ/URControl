@@ -6,10 +6,12 @@ import sys
 import os
 import time
 import numpy as np
+import cv2
 from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout
 from PyQt5.QtCore import QUrl, Qt
 from PyQt5.QtWebEngineWidgets import QWebEngineView
+from PyQt5.QtGui import QImage, QPixmap
 from ui_main_window import Ui_MainWindow
 from URDashboardClient import URDashboardClient
 from URScriptClient import URScriptClient
@@ -17,6 +19,7 @@ from URRealtimeClient import URRealtimeClient
 from URRTDEController import URRTDEController
 from URUdpClient import URUDPClient, UDPControlMode
 from GripperController import GripperController
+from RealSenseCamera import Camera, CameraFrame, CameraError
 
 import NetWorkSet
 
@@ -31,6 +34,8 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         super().__init__()
 
         # UR相关
+        # self.URIP = NetWorkSet.get_local_ip()
+        self.URIP = '192.168.3.15'
         self.URDashboardClient = None
         self.URScriptClient = None
         self.URRealtimeClient = None
@@ -39,6 +44,10 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         self.UR_J_Control_Speed = 0.1  # 关节控制按钮的速度
         self.UR_TCP_Control_Speed = 0.01  # 末端控制按钮的速度
 
+        # 深度相机
+        self.Camera1 = Camera('d405')
+        self.Camera2 = Camera('d435i')
+
         # 窗口控件
         self.setupUi(self)
         self.timer_URStatus = QtCore.QTimer(self)
@@ -46,6 +55,9 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
 
         self.timer_URStatus_RT = QtCore.QTimer(self)
         self.timer_URStatus_RT.start(10)
+
+        self.timer_CameraUpdate = QtCore.QTimer(self)
+        self.timer_CameraUpdate.start(20)
 
         self.timer_URRTDEControl_UI = QtCore.QTimer(self)
 
@@ -64,8 +76,6 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         layout.addWidget(self.URVisual)
         self.URVisual.load(QUrl(self.viz_visual.url))
 
-        # self.URIP = NetWorkSet.get_local_ip()
-        self.URIP = '192.168.3.15'
         self.lineEdit_IP.setText(self.URIP)
         self.label_IP_now.setText(self.URIP)
 
@@ -87,6 +97,7 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         self.timer_URStatus_RT.timeout.connect(self.on_timerURStatus_RT_timeout)
         self.timer_URRTDEControl_UI.timeout.connect(self.on_timerURRTDE_UI_timeout)
         self.timer_URUDPControl.timeout.connect(self.on_timerURUDP_timeout)
+        self.timer_CameraUpdate.timeout.connect(self.on_timerCameraUpdate_timeout)
         self.control_button_events_connect()
         self.lineedits_qtarget_bind_validation()
 
@@ -321,7 +332,42 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
                 if self.GripperController is not None:
                     self.GripperController.set_target_position(cmd.q_gripper[0])
 
+    # 相机显示定时器
+    def on_timerCameraUpdate_timeout(self):
+        if self.Camera1 is not None:
+            camera1_RGB_frame = self.Camera1.get_rgb_frame()
+            rgb_image = camera1_RGB_frame.image
+            pixmap = self.convert_image_to_QImage(rgb_image)
+            self.label_camera1.setPixmap(pixmap)
+        else:
+            self.label_camera1.setText("No Camera1")
+
+        if self.Camera2 is not None:
+            camera2_RGB_frame = self.Camera2.get_rgb_frame()
+            rgb_image = camera2_RGB_frame.image
+            pixmap = self.convert_image_to_QImage(rgb_image)
+            self.label_camera2.setPixmap(pixmap)
+        else:
+            self.label_camera2.setText("No Camera2")
+
     # 其他辅助函数
+
+    @staticmethod
+    def convert_image_to_QImage(image: np.ndarray) -> QPixmap:
+        h, w, ch = image.shape
+        bytes_per_line = ch * w
+
+        qimg = QImage(
+            image.data,
+            w,
+            h,
+            bytes_per_line,
+            QImage.Format_RGB888
+        )
+
+        pixmap = QPixmap.fromImage(qimg)
+        return pixmap
+
     def message_append_to_textbox(self, message):
         if message is not None:
             message = time.strftime("%H:%M:%S", time.localtime()) + ': ' + message
