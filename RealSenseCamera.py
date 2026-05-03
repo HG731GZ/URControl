@@ -66,6 +66,12 @@ class Camera:
         "D435I": "d435i",
         "D405": "d405",
     }
+    MULTI_CAMERA_FALLBACK_MODES = (
+        (640, 480, 30),
+        (848, 480, 30),
+        (1280, 720, 15),
+        (640, 480, 15),
+    )
 
     def __new__(
             cls,
@@ -146,39 +152,44 @@ class Camera:
         self.depth_scale: Optional[float] = None
         self.device_name: Optional[str] = None
         self.serial_number: Optional[str] = None
+        self.connected_device_count: int = 0
 
         color_resolution = color_resolution or resolution
         depth_resolution = depth_resolution or resolution
         color_fps = color_fps if color_fps is not None else fps
         depth_fps = depth_fps if depth_fps is not None else fps
+        self._user_specified_stream = any(
+            value is not None
+            for value in (resolution, fps, color_resolution, depth_resolution, color_fps, depth_fps)
+        )
 
         device = self._find_device()
         self.device_name = device.get_info(rs.camera_info.name)
         self.serial_number = device.get_info(rs.camera_info.serial_number)
 
-        self.color_config = self._select_stream_config(
-            device=device,
-            stream=rs.stream.color,
-            stream_name="RGB",
-            fmt=rs.format.rgb8,
-            resolution=color_resolution,
-            fps=color_fps,
-        )
-        self.depth_config = self._select_stream_config(
-            device=device,
-            stream=rs.stream.depth,
-            stream_name="depth",
-            fmt=rs.format.z16,
-            resolution=depth_resolution,
-            fps=depth_fps,
-        )
+        if not self._user_specified_stream and self.connected_device_count > 1:
+            fallback = self._select_fallback_config(device)
+            if fallback is not None:
+                self.color_config, self.depth_config = fallback
+                print(
+                    f"RealSenseCamera 检测到 {self.connected_device_count} 台相机，"
+                    "默认使用多相机安全配置: "
+                    f"RGB={self.color_config.width}x{self.color_config.height}@{self.color_config.fps}, "
+                    f"depth={self.depth_config.width}x{self.depth_config.height}@{self.depth_config.fps}"
+                )
+            else:
+                self._select_default_stream_configs(device, color_resolution, color_fps, depth_resolution, depth_fps)
+        else:
+            self._select_default_stream_configs(device, color_resolution, color_fps, depth_resolution, depth_fps)
 
         try:
             self._start_pipeline()
             self._start_reader()
             self._wait_for_initial_frame()
-        except Exception:
+        except Exception as exc:
             self.close()
+            if self._try_start_with_fallback(device, exc):
+                return
             raise
 
     def get_rgb_frame(self, timeout: Optional[float] = None) -> CameraFrame:
@@ -272,6 +283,94 @@ class Camera:
         depth_sensor = self._profile.get_device().first_depth_sensor()
         self.depth_scale = depth_sensor.get_depth_scale()
 
+    def _try_start_with_fallback(self, device, original_error: BaseException) -> bool:
+        if self._user_specified_stream:
+            return False
+
+        fallback = self._select_fallback_config(device)
+        if fallback is None:
+            return False
+
+        color_config, depth_config = fallback
+        if color_config == self.color_config and depth_config == self.depth_config:
+            return False
+
+        print(
+            "RealSenseCamera 默认最高规格启动失败，改用多相机安全配置重试: "
+            f"RGB={color_config.width}x{color_config.height}@{color_config.fps}, "
+            f"depth={depth_config.width}x{depth_config.height}@{depth_config.fps}; "
+            f"原错误: {original_error}"
+        )
+
+        self.color_config = color_config
+        self.depth_config = depth_config
+        self._reset_runtime_state()
+
+        try:
+            self._start_pipeline()
+            self._start_reader()
+            self._wait_for_initial_frame()
+            return True
+        except Exception:
+            self.close()
+            return False
+
+    def _select_fallback_config(self, device):
+        color_profiles = self._video_profiles(device, rs.stream.color, rs.format.rgb8)
+        depth_profiles = self._video_profiles(device, rs.stream.depth, rs.format.z16)
+
+        color_by_mode = {
+            (profile.width, profile.height, profile.fps): profile
+            for profile in color_profiles
+        }
+        depth_by_mode = {
+            (profile.width, profile.height, profile.fps): profile
+            for profile in depth_profiles
+        }
+
+        for mode in self.MULTI_CAMERA_FALLBACK_MODES:
+            color_config = color_by_mode.get(mode)
+            depth_config = depth_by_mode.get(mode)
+            if color_config is not None and depth_config is not None:
+                return color_config, depth_config
+
+        return None
+
+    def _select_default_stream_configs(
+            self,
+            device,
+            color_resolution: Optional[Resolution],
+            color_fps: Optional[int],
+            depth_resolution: Optional[Resolution],
+            depth_fps: Optional[int],
+    ) -> None:
+        self.color_config = self._select_stream_config(
+            device=device,
+            stream=rs.stream.color,
+            stream_name="RGB",
+            fmt=rs.format.rgb8,
+            resolution=color_resolution,
+            fps=color_fps,
+        )
+        self.depth_config = self._select_stream_config(
+            device=device,
+            stream=rs.stream.depth,
+            stream_name="depth",
+            fmt=rs.format.z16,
+            resolution=depth_resolution,
+            fps=depth_fps,
+        )
+
+    def _reset_runtime_state(self) -> None:
+        self._pipeline = None
+        self._profile = None
+        self._stop_event = threading.Event()
+        self._thread = None
+        with self._cond:
+            self._latest_color = None
+            self._latest_depth = None
+            self._last_error = None
+
     def _start_reader(self) -> None:
         self._thread = threading.Thread(
             target=self._reader_loop,
@@ -358,6 +457,7 @@ class Camera:
     def _find_device(self):
         context = rs.context()
         devices = list(context.devices)
+        self.connected_device_count = len(devices)
         if not devices:
             raise CameraError(f"未检测到 RealSense 硬件，创建 {self.model} 相机失败")
 

@@ -19,7 +19,7 @@ from URRealtimeClient import URRealtimeClient
 from URRTDEController import URRTDEController
 from URUdpClient import URUDPClient, UDPControlMode
 from GripperController import GripperController
-from RealSenseCamera import Camera, CameraFrame, CameraError
+from RealSenseCamera import Camera, CameraError
 
 import NetWorkSet
 
@@ -45,8 +45,11 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         self.UR_TCP_Control_Speed = 0.01  # 末端控制按钮的速度
 
         # 深度相机
-        self.Camera1 = Camera('d435i')
-        self.Camera2 = Camera('d455')
+        camera_resolution = (640, 480)
+        camera_fps = 30
+        self.Camera1 = Camera('d435i', resolution=camera_resolution, fps=camera_fps)
+        time.sleep(0.2)
+        self.Camera2 = Camera('d455', resolution=camera_resolution, fps=camera_fps)
 
         # 窗口控件
         self.setupUi(self)
@@ -339,20 +342,32 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
     def on_timerCamera1Update_timeout(self):
 
         if self.Camera1 is not None:
-            camera1_RGB_frame = self.Camera1.get_rgb_frame()
-            rgb_image = camera1_RGB_frame.image
-            pixmap = self.convert_image_to_QImage(rgb_image)
-            self.label_camera1.setPixmap(pixmap)
+            try:
+                camera1_RGB_frame = self.Camera1.get_rgb_frame()
+                rgb_image = camera1_RGB_frame.image
+                print(f"Camera1Shape:{rgb_image.shape}")
+                pixmap = self.convert_image_to_QImage(rgb_image)
+                self.label_camera1.setPixmap(pixmap)
+            except CameraError as exc:
+                print(f"Camera1 取帧失败: {exc}")
+                self.Camera1.close()
+                self.Camera1 = None
         else:
             self.label_camera1.setText("No Camera1")
 
     def on_timerCamera2Update_timeout(self):
 
         if self.Camera2 is not None:
-            camera2_RGB_frame = self.Camera2.get_rgb_frame()
-            rgb_image = camera2_RGB_frame.image
-            pixmap = self.convert_image_to_QImage(rgb_image)
-            self.label_camera2.setPixmap(pixmap)
+            try:
+                camera2_RGB_frame = self.Camera2.get_rgb_frame()
+                rgb_image = camera2_RGB_frame.image
+                print(f"Camera2Shape:{rgb_image.shape}")
+                pixmap = self.convert_image_to_QImage(rgb_image)
+                self.label_camera2.setPixmap(pixmap)
+            except CameraError as exc:
+                print(f"Camera2 取帧失败: {exc}")
+                self.Camera2.close()
+                self.Camera2 = None
         else:
             self.label_camera2.setText("No Camera2")
 
@@ -452,6 +467,8 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
     def closeEvent(self, event):
         self.timer_URStatus.stop()
         self.timer_URStatus_RT.stop()
+        self.timer_Camera1Update.stop()
+        self.timer_Camera2Update.stop()
         self.timer_URRTDEControl_UI.stop()
         self.ur_udp_client.stop()
         if self.URRTDEController is not None:
@@ -464,6 +481,10 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
             self.URDashboardClient.close()
         if self.GripperController is not None:
             self.GripperController.close()
+        if self.Camera1 is not None:
+            self.Camera1.close()
+        if self.Camera2 is not None:
+            self.Camera2.close()
         if hasattr(self, 'viz_visual'):
             self.viz_visual.close()
         event.accept()
