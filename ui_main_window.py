@@ -14,7 +14,7 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 class Ui_MainWindow(object):
     def setupUi(self, MainWindow):
         MainWindow.setObjectName("MainWindow")
-        MainWindow.resize(1385, 640)
+        MainWindow.resize(1260, 640)
         self.centralwidget = QtWidgets.QWidget(MainWindow)
         self.centralwidget.setObjectName("centralwidget")
         self.pushButton_IP = QtWidgets.QPushButton(self.centralwidget)
@@ -490,20 +490,20 @@ class Ui_MainWindow(object):
 "}")
         self.pushButton_UDPSync.setObjectName("pushButton_UDPSync")
         self.label_camera1 = QtWidgets.QLabel(self.centralwidget)
-        self.label_camera1.setGeometry(QtCore.QRect(896, 10, 480, 270))
+        self.label_camera1.setGeometry(QtCore.QRect(896, 10, 360, 270))
         self.label_camera1.setFrameShape(QtWidgets.QFrame.Box)
         self.label_camera1.setScaledContents(True)
         self.label_camera1.setAlignment(QtCore.Qt.AlignCenter)
         self.label_camera1.setObjectName("label_camera1")
         self.label_camera2 = QtWidgets.QLabel(self.centralwidget)
-        self.label_camera2.setGeometry(QtCore.QRect(896, 300, 480, 270))
+        self.label_camera2.setGeometry(QtCore.QRect(896, 300, 360, 270))
         self.label_camera2.setFrameShape(QtWidgets.QFrame.Box)
         self.label_camera2.setScaledContents(True)
         self.label_camera2.setAlignment(QtCore.Qt.AlignCenter)
         self.label_camera2.setObjectName("label_camera2")
         MainWindow.setCentralWidget(self.centralwidget)
         self.menubar = QtWidgets.QMenuBar(MainWindow)
-        self.menubar.setGeometry(QtCore.QRect(0, 0, 1385, 28))
+        self.menubar.setGeometry(QtCore.QRect(0, 0, 1260, 28))
         self.menubar.setStyleSheet("QMenuBar {\n"
 "    background-color: rgb(248, 228, 92);\n"
 "}")

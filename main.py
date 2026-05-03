@@ -59,10 +59,8 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         self.timer_URStatus_RT = QtCore.QTimer(self)
         self.timer_URStatus_RT.start(10)
 
-        self.timer_Camera1Update = QtCore.QTimer(self)
-        self.timer_Camera1Update.start(30)
-        self.timer_Camera2Update = QtCore.QTimer(self)
-        self.timer_Camera2Update.start(30)
+        self.timer_CameraUpdate = QtCore.QTimer(self)
+        self.timer_CameraUpdate.start(30)
 
         self.timer_URRTDEControl_UI = QtCore.QTimer(self)
 
@@ -102,8 +100,7 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         self.timer_URStatus_RT.timeout.connect(self.on_timerURStatus_RT_timeout)
         self.timer_URRTDEControl_UI.timeout.connect(self.on_timerURRTDE_UI_timeout)
         self.timer_URUDPControl.timeout.connect(self.on_timerURUDP_timeout)
-        self.timer_Camera1Update.timeout.connect(self.on_timerCamera1Update_timeout)
-        self.timer_Camera2Update.timeout.connect(self.on_timerCamera2Update_timeout)
+        self.timer_CameraUpdate.timeout.connect(self.on_timerCameraUpdate_timeout)
         self.control_button_events_connect()
         self.lineedits_qtarget_bind_validation()
 
@@ -339,13 +336,12 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
                     self.GripperController.set_target_position(cmd.q_gripper[0])
 
     # 相机显示定时器
-    def on_timerCamera1Update_timeout(self):
+    def on_timerCameraUpdate_timeout(self):
 
         if self.Camera1 is not None:
             try:
                 camera1_RGB_frame = self.Camera1.get_rgb_frame()
                 rgb_image = camera1_RGB_frame.image
-                print(f"Camera1Shape:{rgb_image.shape}")
                 pixmap = self.convert_image_to_QImage(rgb_image)
                 self.label_camera1.setPixmap(pixmap)
             except CameraError as exc:
@@ -355,13 +351,10 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         else:
             self.label_camera1.setText("No Camera1")
 
-    def on_timerCamera2Update_timeout(self):
-
         if self.Camera2 is not None:
             try:
                 camera2_RGB_frame = self.Camera2.get_rgb_frame()
                 rgb_image = camera2_RGB_frame.image
-                print(f"Camera2Shape:{rgb_image.shape}")
                 pixmap = self.convert_image_to_QImage(rgb_image)
                 self.label_camera2.setPixmap(pixmap)
             except CameraError as exc:
@@ -467,8 +460,7 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
     def closeEvent(self, event):
         self.timer_URStatus.stop()
         self.timer_URStatus_RT.stop()
-        self.timer_Camera1Update.stop()
-        self.timer_Camera2Update.stop()
+        self.timer_CameraUpdate.stop()
         self.timer_URRTDEControl_UI.stop()
         self.ur_udp_client.stop()
         if self.URRTDEController is not None:
