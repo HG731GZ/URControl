@@ -76,6 +76,7 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         self.timer_URRTDEControl_UI = QtCore.QTimer(self)
 
         self.timer_URUDPControl = QtCore.QTimer(self)
+        self.timer_URUDPControl.setTimerType(Qt.PreciseTimer)
 
         # 创建可视化界面（Meshcat服务器在此启动）
         mjcf_path = os.path.join(os.path.dirname(__file__), 'universal_robots_ur5e', 'ur5e.xml')
@@ -195,7 +196,7 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
 
     def on_RTDEUDP_Button(self):
         self.URRTDEController.start()
-        self.timer_URUDPControl.start(2)
+        self.timer_URUDPControl.start(10)
 
     def on_RTDEStop_Button(self):
         self.URRTDEController.stop()
