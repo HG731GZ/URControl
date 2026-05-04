@@ -32,7 +32,8 @@ GRIPPER_DECEL_MIN = 0
 GRIPPER_DECEL_MAX = 1000
 GRIPPER_OPEN_MIN = 0.0
 GRIPPER_OPEN_MAX = 1.0
-
+GRIPPER_SPEED_DEFAULT = 20
+GRIPPER_FORCE_DEFAULT = 80
 # ========================
 # 寄存器地址
 # ========================
@@ -168,8 +169,8 @@ class GripperController:
 
         # ---- 目标参数(默认) ----
         self._target_position = 0
-        self._target_speed = 20
-        self._target_force = 20
+        self._target_speed = GRIPPER_SPEED_DEFAULT
+        self._target_force = GRIPPER_FORCE_DEFAULT
         self._target_accel = 60
         self._target_decel = 60
         self._dirty = False  # 参数变更标记，下一周期触发运动
@@ -381,7 +382,7 @@ class GripperController:
         """打印单次控制周期的通讯详情"""
         pos_hi = (pos >> 16) & 0xFFFF
         pos_lo = pos & 0xFFFF
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"[写] 功能码 0x10  起始地址 0x0102 → 7 个寄存器")
         print(f"  目标位置     0x0102-0x0103  {pos_hi:04X} {pos_lo:04X}  → {pos} (0x{pos:08X})")
         print(f"  目标速度     0x0104          {speed:04X}            → {speed}")
@@ -404,14 +405,15 @@ class GripperController:
                 bits.append(f"bit{b}")
 
         print(f"[读] 功能码 0x03  起始地址 0x0401 → 1 个寄存器")
-        print(f"  运行状态     0x0401          {status:04X}            → {status}  位: {' | '.join(bits) if bits else '无'}")
+        print(
+            f"  运行状态     0x0401          {status:04X}            → {status}  位: {' | '.join(bits) if bits else '无'}")
 
         print(f"[读] 功能码 0x03  起始地址 0x0418 → 4 个寄存器")
         print(f"  当前位置 HI  0x0418          {regs[0]:04X}")
         print(f"  当前位置 LO  0x0419          {regs[1]:04X}            → {real_pos}")
         print(f"  当前速度     0x041A          {regs[2]:04X}            → {real_speed}")
         print(f"  当前电流     0x041B          {regs[3]:04X}            → {real_current}")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
     # ========================
     # 手动操作
@@ -458,16 +460,18 @@ if __name__ == "__main__":
     # --- TCP 串口服务器 ---
     gripper = GripperController(port="192.168.3.15:54321", slave_id=1, connection_type="tcp")
 
+
     def on_data(status, pos, speed, current):
         arrived = "✓" if (status & BIT_POS_REACHED) else "✗"
         print(f"  pos={pos:6d}  speed={speed:3d}  cur={current:3d}  arrived={arrived}")
+
 
     gripper.on_feedback(on_data)
     gripper.start(interval=0.1)
 
     try:
         for i in range(5):
-            print(f"\n--- 第 {i+1}/5 次 ---")
+            print(f"\n--- 第 {i + 1}/5 次 ---")
             gripper.move(0.0, speed=20, force=25)
             time.sleep(3)
             gripper.move(1.0, speed=20, force=25)

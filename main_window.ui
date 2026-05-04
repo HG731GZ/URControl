@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>1260</width>
-    <height>640</height>
+    <width>900</width>
+    <height>978</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -53,10 +53,10 @@
    <widget class="QLabel" name="label_IP_now">
     <property name="geometry">
      <rect>
-      <x>10</x>
-      <y>580</y>
+      <x>110</x>
+      <y>1</y>
       <width>141</width>
-      <height>17</height>
+      <height>23</height>
      </rect>
     </property>
     <property name="text">
@@ -1548,10 +1548,10 @@
    <widget class="QLabel" name="label_camera1">
     <property name="geometry">
      <rect>
-      <x>896</x>
-      <y>10</y>
-      <width>360</width>
-      <height>270</height>
+      <x>10</x>
+      <y>590</y>
+      <width>436</width>
+      <height>327</height>
      </rect>
     </property>
     <property name="frameShape">
@@ -1570,10 +1570,10 @@
    <widget class="QLabel" name="label_camera2">
     <property name="geometry">
      <rect>
-      <x>896</x>
-      <y>300</y>
-      <width>360</width>
-      <height>270</height>
+      <x>455</x>
+      <y>590</y>
+      <width>436</width>
+      <height>327</height>
      </rect>
     </property>
     <property name="frameShape">
@@ -1595,7 +1595,7 @@
     <rect>
      <x>0</x>
      <y>0</y>
-     <width>1260</width>
+     <width>900</width>
      <height>28</height>
     </rect>
    </property>

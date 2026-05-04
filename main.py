@@ -18,7 +18,7 @@ from URScriptClient import URScriptClient
 from URRealtimeClient import URRealtimeClient
 from URRTDEController import URRTDEController
 from URUdpClient import URUDPClient, UDPControlMode
-from GripperController import GripperController
+from GripperController import GripperController, GRIPPER_SPEED_DEFAULT, GRIPPER_FORCE_DEFAULT
 from RealSenseCamera import Camera, CameraError
 
 import NetWorkSet
@@ -28,28 +28,39 @@ from ur5e_visualizer import UR5eDualVisualizer
 QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling, True)
 QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps, True)
 
+UR_REAL_IP = '192.168.3.15'
+UR_SIM_IP = '127.0.0.1'
+UR_J_SPEED_UI = 0.1  # 关节控制按钮的速度
+UR_TCP_SPEED_UI = 0.01  # 末端控制按钮的速度
+CAMERA_RESOLUTION = (640, 480)  # 相机分辨率，RGB和深度统一设定
+CAMERA_FPS = 30  # 相机帧率
+LOCAL_IP = NetWorkSet.get_local_ip()
+UDP_LOCAL_PORT = 5005  # UDP本机端口
+UDP_REMOTE_PORT = 6005  # UDP远端端口
+UDP_REMOTE_IP = '192.168.3.5'  # UDP远端IP
+UR_HOME = [-np.pi / 2, -np.pi / 2, -np.pi / 2, -np.pi / 2, np.pi / 2, 0]  # 预设零位
+UR_RTDE_FREQ = 500
+UR_485_PORT = 54321
+
 
 class UI_MainWindow(QMainWindow, Ui_MainWindow):
     def __init__(self):
         super().__init__()
 
         # UR相关
-        # self.URIP = NetWorkSet.get_local_ip()
-        self.URIP = '192.168.3.15'
+        self.URIP = UR_REAL_IP
         self.URDashboardClient = None
         self.URScriptClient = None
         self.URRealtimeClient = None
         self.URRTDEController = None
         self.GripperController = None
-        self.UR_J_Control_Speed = 0.1  # 关节控制按钮的速度
-        self.UR_TCP_Control_Speed = 0.01  # 末端控制按钮的速度
+        self.UR_J_Control_Speed = UR_J_SPEED_UI  # 关节控制按钮的速度
+        self.UR_TCP_Control_Speed = UR_TCP_SPEED_UI  # 末端控制按钮的速度
 
         # 深度相机
-        camera_resolution = (640, 480)
-        camera_fps = 30
-        self.Camera1 = Camera('d435i', resolution=camera_resolution, fps=camera_fps)
+        self.Camera1 = Camera('d435i', resolution=CAMERA_RESOLUTION, fps=CAMERA_FPS)
         time.sleep(0.2)
-        self.Camera2 = Camera('d455', resolution=camera_resolution, fps=camera_fps)
+        self.Camera2 = Camera('d455', resolution=CAMERA_RESOLUTION, fps=CAMERA_FPS)
 
         # 窗口控件
         self.setupUi(self)
@@ -99,15 +110,13 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         self.timer_URStatus.timeout.connect(self.on_timerURStatus_timeout)
         self.timer_URStatus_RT.timeout.connect(self.on_timerURStatus_RT_timeout)
         self.timer_URRTDEControl_UI.timeout.connect(self.on_timerURRTDE_UI_timeout)
-        self.timer_URUDPControl.timeout.connect(self.on_timerURUDP_timeout)
+        self.timer_URUDPControl.timeout.connect(self.on_timerURUDPControl_timeout)
         self.timer_CameraUpdate.timeout.connect(self.on_timerCameraUpdate_timeout)
         self.control_button_events_connect()
         self.lineedits_qtarget_bind_validation()
 
         # UDP 外源控制
-        self._udp_bind_port = 5005
-        self._udp_local_ip = NetWorkSet.get_local_ip(self.URIP) or '0.0.0.0'
-        self.ur_udp_client = URUDPClient(bind_host='0.0.0.0', bind_port=self._udp_bind_port)
+        self.ur_udp_client = URUDPClient(bind_host='0.0.0.0', bind_port=UDP_LOCAL_PORT)
         self.ur_udp_client.start()
         self.udp_command = None
 
@@ -129,28 +138,23 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         self.URScriptClient = URScriptClient(self.URIP, auto_connect=True)
         self.URRealtimeClient = URRealtimeClient(self.URIP, auto_connect=True)
         if self.URDashboardClient.robot_mode() == 'Robotmode: RUNNING':
-            self.URRTDEController = URRTDEController(self.URIP, frequency=500.0, default_dq_max=0.5,
-                                                     lookahead_time=0.08,
-                                                     gain=500, use_safety_check=False)
+            self.URRTDEController = URRTDEController(self.URIP, frequency=UR_RTDE_FREQ, use_safety_check=False)
 
         # 创建夹钳控制器连接 (TCP 串口服务器)
-        try:
-            self.GripperController = GripperController(
-                port=self.URIP + ":54321", slave_id=1, connection_type="tcp", debug=False)
-            self.GripperController.start(interval=0.05)
-            self.message_append_to_textbox("夹钳控制器已连接并启动")
-        except Exception as e:
-            self.message_append_to_textbox(f"夹钳控制器连接失败: {e}")
+        if self.GripperController is None:
+            try:
+                self.GripperController = GripperController(
+                    port=self.URIP + f":{UR_485_PORT}", slave_id=1, connection_type="tcp", debug=False)
+                self.GripperController.start(interval=0.05)
+                self.message_append_to_textbox("夹钳控制器已连接并启动")
+            except Exception as e:
+                self.message_append_to_textbox(f"夹钳控制器连接失败: {e}")
 
     def on_URPowerOn_Button(self):
         self.message_append_to_textbox(self.URDashboardClient.power_on())
 
     def on_URBrakeRelease_Button(self):
         self.message_append_to_textbox(self.URDashboardClient.brake_release())
-        if self.URRTDEController is None:
-            self.URRTDEController = URRTDEController(self.URIP, frequency=500.0, default_dq_max=0.5,
-                                                     lookahead_time=0.08,
-                                                     gain=500, use_safety_check=False)
 
     def on_URShutdown_Button(self):
         self.message_append_to_textbox(self.URDashboardClient.power_off())
@@ -184,11 +188,10 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
 
     def on_URScriptMoveJ_Button(self):
         q = [np.deg2rad(self.get_valid_qtarget_degree(i + 1, commit=True)) for i in range(6)]
-        self.URScriptClient.movej(q)
+        self.URScriptClient.movej(q, v=0.1)
 
     def on_HOME_Button(self):
-        q = [-np.pi / 2, -np.pi / 2, -np.pi / 2, -np.pi / 2, np.pi / 2, 0]
-        self.URScriptClient.movej(q)
+        self.URScriptClient.movej(UR_HOME, v=0.1)
 
     def on_RTDEUDP_Button(self):
         self.URRTDEController.start()
@@ -209,7 +212,7 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
             if cmd is not None:
                 self.udp_command = cmd
                 self.URScriptClient.movej(cmd.q_arm)
-                self.GripperController.move(cmd.q_gripper[0], speed=20, force=20)
+                self.GripperController.move(cmd.q_gripper[0], speed=GRIPPER_SPEED_DEFAULT, force=GRIPPER_FORCE_DEFAULT)
 
     def on_SpeedSliderValueChanged(self):
         self.label_SpeedSlider.setText(f'限速: {self.horizontalSlider_SpeedSlider.value()}%')
@@ -218,7 +221,7 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
 
     def on_timerURStatus_timeout(self):
         message = ''
-        udp_info = f"UDP: {self._udp_local_ip}:{self._udp_bind_port} | "
+        udp_info = f"UDP: {LOCAL_IP}:{self.ur_udp_client.bind_port} | "
         if self.URDashboardClient is not None:
             robot_status = self.URDashboardClient.robot_mode()
             if robot_status is not None:
@@ -292,13 +295,6 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
                     q_target_rad = np.deg2rad(q_target_deg)
                     q_target_7 = np.append(q_target_rad, 0.0)
                     self.viz_visual.update_virtual(q_target_7)
-                # if self.GripperController is not None:
-                #     fb = self.GripperController.feedback
-                #     self.ur_udp_client.send_to(('192.168.3.5', 7002), q_arm=state.q_actual, mode=0,
-                #                                q_gripper=[fb.position, fb.current, 0])
-                # else:
-                #     self.ur_udp_client.send_to(('192.168.3.5', 7002), q_arm=state.q_actual, mode=0,
-                #                                q_gripper=[0, 0, 0])
 
         # 夹钳实时反馈
         if self.GripperController is not None:
@@ -319,7 +315,8 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
             # self.URRTDEController.move_joint_delta(delta_q=self._control_dq, dq_max=10)
             self.URRTDEController.speedJ(qd=self._control_dq, time_s=1, acceleration=0.1)
 
-    def on_timerURUDP_timeout(self):
+    # 遥操作定时器
+    def on_timerURUDPControl_timeout(self):
         udp_err = self.ur_udp_client.get_last_error()
         if udp_err is not None:
             self.udp_command = None
