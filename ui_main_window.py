@@ -480,7 +480,7 @@ class Ui_MainWindow(object):
         self.checkBox_UDPVisual.setGeometry(QtCore.QRect(10, 220, 161, 23))
         self.checkBox_UDPVisual.setObjectName("checkBox_UDPVisual")
         self.pushButton_UDPSync = QtWidgets.QPushButton(self.centralwidget)
-        self.pushButton_UDPSync.setEnabled(True)
+        self.pushButton_UDPSync.setEnabled(False)
         self.pushButton_UDPSync.setGeometry(QtCore.QRect(790, 530, 101, 41))
         font = QtGui.QFont()
         font.setPointSize(12)
