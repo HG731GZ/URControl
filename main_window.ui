@@ -1521,7 +1521,7 @@
    </widget>
    <widget class="QPushButton" name="pushButton_UDPSync">
     <property name="enabled">
-     <bool>true</bool>
+     <bool>false</bool>
     </property>
     <property name="geometry">
      <rect>

@@ -119,7 +119,6 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         # UDP 外源控制
         self.ur_udp_client = URUDPClient(bind_host='0.0.0.0', bind_port=UDP_LOCAL_PORT)
         self.ur_udp_client.start()
-        self.udp_command = None
 
         # 遥操作控制状态（timer 回调时读取，避免每次按下按钮重复 connect）
         self._control_dq = None
@@ -205,13 +204,11 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
     def on_UDPSync_Button(self):
         udp_err = self.ur_udp_client.get_last_error()
         if udp_err is not None:
-            self.udp_command = None
             for i in range(1, 9):
                 getattr(self, f"lineEdit_UDP{i}").setText("UDP ERR")
         else:
             cmd = self.ur_udp_client.get_latest()
             if cmd is not None:
-                self.udp_command = cmd
                 self.URScriptClient.movej(cmd.q_arm)
                 self.GripperController.move(cmd.q_gripper[0], speed=GRIPPER_SPEED_DEFAULT, force=GRIPPER_FORCE_DEFAULT)
 
@@ -246,13 +243,13 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         # UDP 外源数据显示
         udp_err = self.ur_udp_client.get_last_error()
         if udp_err is not None:
-            self.udp_command = None
+            self.pushButton_UDPSync.setEnabled(False)
             for i in range(1, 9):
                 getattr(self, f"lineEdit_UDP{i}").setText("UDP ERR")
         else:
             cmd = self.ur_udp_client.get_latest()
-            self.udp_command = cmd
             if cmd is not None:
+                self.pushButton_UDPSync.setEnabled(True)
                 mode_cn = UDPControlMode.cn_name(cmd.mode)
                 self.lineEdit_UDP1.setText(mode_cn)
                 for i in range(6):
@@ -320,12 +317,10 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
     def on_timerURUDPControl_timeout(self):
         udp_err = self.ur_udp_client.get_last_error()
         if udp_err is not None:
-            self.udp_command = None
             for i in range(1, 9):
                 getattr(self, f"lineEdit_UDP{i}").setText("UDP ERR")
         else:
             cmd = self.ur_udp_client.get_latest()
-            self.udp_command = cmd
             if cmd is not None:
                 mode_cn = UDPControlMode.cn_name(cmd.mode)
                 if cmd.mode == 1:  # 关节跟踪
