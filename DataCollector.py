@@ -17,7 +17,7 @@ class DataCollector:
 
     用法示例::
 
-        collector = DataCollector(base_dir="data")
+        collector = DataCollector(base_dir="data", write_mode="episode")
         collector.register_numeric("JointAngle", ["q1","q2","q3","q4","q5","q6"])
         collector.register_numeric("TcpPose", ["x","y","z","rx","ry","rz"])
         collector.register_image("camera_d435i", "d435i")
@@ -27,16 +27,25 @@ class DataCollector:
         collector.push_image("camera_d435i", rgb_array, depth_array)
         collector.end_episode()
         collector.close()
+
+    write_mode 可选:
+        - "episode": 默认值，所有数据先缓存在内存中，end_episode()/flush()/close() 时写盘。
+        - "realtime": 每次 push 后尽快写盘。
     """
 
     def __init__(
         self,
         base_dir: str = "data",
         session_name: Optional[str] = None,
+        write_mode: str = "episode",
     ):
+        if write_mode not in ("episode", "realtime"):
+            raise ValueError("write_mode 必须是 'episode' 或 'realtime'")
+
         self._base_dir = os.path.abspath(base_dir)
         self._session_name = session_name or time.strftime("URCollect_%Y%m%d_%H%M%S")
         self._created_at = time.time()
+        self._write_mode = write_mode
 
         self._session_dir = os.path.join(self._base_dir, self._session_name)
 
@@ -95,6 +104,7 @@ class DataCollector:
                 )
             self._image_groups[group_name] = {
                 "camera_id": camera_id,
+                "buffer": [],
             }
 
     def register_action(self, column_names: List[str]) -> None:
@@ -142,6 +152,8 @@ class DataCollector:
                 return
             ts = timestamp if timestamp is not None else time.time()
             info["buffer"].append([ts] + list(values))
+            if self._write_mode == "realtime":
+                self._flush_numeric_unlocked(group_name)
 
     def push_image(
         self,
@@ -167,13 +179,19 @@ class DataCollector:
             img_dir = os.path.join(
                 self._episode_dir, "images", group_name  # type: ignore[arg-type]
             )
-            step_str = f"step_{self._step_counter:06d}"
+            step = self._step_counter
 
-            if rgb is not None:
-                bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-                cv2.imwrite(os.path.join(img_dir, f"{step_str}_rgb.png"), bgr)
-            if depth is not None:
-                np.save(os.path.join(img_dir, f"{step_str}_depth.npy"), depth)
+            if self._write_mode == "realtime":
+                self._write_image_unlocked(img_dir, step, rgb, depth)
+                return
+
+            self._image_groups[group_name]["buffer"].append(
+                (
+                    step,
+                    np.array(rgb, copy=True) if rgb is not None else None,
+                    np.array(depth, copy=True) if depth is not None else None,
+                )
+            )
 
     def push_action(
         self,
@@ -199,6 +217,8 @@ class DataCollector:
                 return
             ts = timestamp if timestamp is not None else time.time()
             self._action_group["buffer"].append([ts] + list(values))
+            if self._write_mode == "realtime":
+                self._flush_action_unlocked()
 
     # ---- 剧集管理 ----
 
@@ -238,6 +258,8 @@ class DataCollector:
                 return
             for name in self._numeric_groups:
                 self._flush_numeric_unlocked(name)
+            for name in self._image_groups:
+                self._flush_image_unlocked(name)
             if self._action_group is not None:
                 self._flush_action_unlocked()
 
@@ -298,6 +320,9 @@ class DataCollector:
         for name in self._numeric_groups:
             self._flush_numeric_unlocked(name)
 
+        for name in self._image_groups:
+            self._flush_image_unlocked(name)
+
         if self._action_group is not None:
             self._flush_action_unlocked()
 
@@ -330,6 +355,34 @@ class DataCollector:
 
         buffer.clear()
 
+    def _write_image_unlocked(
+        self,
+        img_dir: str,
+        step: int,
+        rgb: Optional[np.ndarray],
+        depth: Optional[np.ndarray],
+    ) -> None:
+        step_str = f"step_{step:06d}"
+        if rgb is not None:
+            bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+            cv2.imwrite(os.path.join(img_dir, f"{step_str}_rgb.png"), bgr)
+        if depth is not None:
+            np.save(os.path.join(img_dir, f"{step_str}_depth.npy"), depth)
+
+    def _flush_image_unlocked(self, group_name: str) -> None:
+        info = self._image_groups[group_name]
+        buffer = info["buffer"]
+        if not buffer:
+            return
+
+        img_dir = os.path.join(
+            self._episode_dir, "images", group_name  # type: ignore[arg-type]
+        )
+        for step, rgb, depth in buffer:
+            self._write_image_unlocked(img_dir, step, rgb, depth)
+
+        buffer.clear()
+
     def _flush_action_unlocked(self) -> None:
         if self._action_group is None:
             return
@@ -359,6 +412,7 @@ class DataCollector:
             "session_name": self._session_name,
             "created_at": self._created_at,
             "base_dir": self._base_dir,
+            "write_mode": self._write_mode,
             "numeric_groups": {
                 name: info["column_names"]
                 for name, info in self._numeric_groups.items()
@@ -441,6 +495,10 @@ def _test():
         collector.push_image("camera_d435i", rgb=rgb, depth=depth)
         collector.step()
 
+    ep0 = os.path.join(tmpdir, "test_session", "episode_000")
+    assert not os.path.isfile(os.path.join(ep0, "numeric", "JointAngle.csv"))
+    assert not os.listdir(os.path.join(ep0, "images", "camera_d435i"))
+
     collector.end_episode()
     assert not collector.episode_active
 
@@ -480,6 +538,31 @@ def _test():
         os.path.join(ep1, "numeric", "JointAngle.csv"), delimiter=",", skiprows=1
     )
     assert data1.shape == (5, 7)
+
+    with open(os.path.join(session_dir, "metadata.json")) as f:
+        metadata = json.load(f)
+    assert metadata["write_mode"] == "episode"
+
+    realtime = DataCollector(
+        base_dir=tmpdir,
+        session_name="realtime_session",
+        write_mode="realtime",
+    )
+    realtime.register_numeric("JointAngle", ["q1"])
+    realtime.register_image("camera_d435i", "d435i")
+    realtime.register_action(["a1"])
+    realtime.start_episode()
+    realtime.push_numeric("JointAngle", [1.0], timestamp=2000.0)
+    realtime.push_action([2.0], timestamp=2000.0)
+    rgb = np.random.randint(0, 255, (16, 16, 3), dtype=np.uint8)
+    realtime.push_image("camera_d435i", rgb=rgb)
+    realtime_ep0 = os.path.join(tmpdir, "realtime_session", "episode_000")
+    assert os.path.isfile(os.path.join(realtime_ep0, "numeric", "JointAngle.csv"))
+    assert os.path.isfile(os.path.join(realtime_ep0, "action", "action.csv"))
+    assert os.path.isfile(
+        os.path.join(realtime_ep0, "images", "camera_d435i", "step_000000_rgb.png")
+    )
+    realtime.close()
 
     shutil.rmtree(tmpdir)
     print("全部测试通过!")
