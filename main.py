@@ -183,8 +183,8 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
             self.timer_DataCollect.start(int(1000 / DATA_COLLECT_FREQ))
         else:
             self.pushButton_Collect.setText('开始采集')
-            self.DataCollector.end_episode()
             self.timer_DataCollect.stop()
+            self.DataCollector.end_episode()
 
     def on_RTControl_Button_Pressed(self, control_mode, index, direction):
         control_delta = [0, 0, 0, 0, 0, 0]
@@ -512,6 +512,7 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
             line_edit.setReadOnly(flag)
 
     def closeEvent(self, event):
+        self.DataCollector.end_episode()
         self.timer_URStatus.stop()
         self.timer_URStatus_RT.stop()
         self.timer_CameraUpdate.stop()

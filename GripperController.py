@@ -32,7 +32,7 @@ GRIPPER_DECEL_MIN = 0
 GRIPPER_DECEL_MAX = 1000
 GRIPPER_OPEN_MIN = 0.0
 GRIPPER_OPEN_MAX = 1.0
-GRIPPER_SPEED_DEFAULT = 20
+GRIPPER_SPEED_DEFAULT = 10
 GRIPPER_FORCE_DEFAULT = 80
 # ========================
 # 寄存器地址
@@ -171,8 +171,8 @@ class GripperController:
         self._target_position = 0
         self._target_speed = GRIPPER_SPEED_DEFAULT
         self._target_force = GRIPPER_FORCE_DEFAULT
-        self._target_accel = 60
-        self._target_decel = 60
+        self._target_accel = 20
+        self._target_decel = 20
         self._dirty = False  # 参数变更标记，下一周期触发运动
 
         # ---- 最新反馈 ----
