@@ -23,7 +23,6 @@ from GripperController import GripperController, GRIPPER_SPEED_DEFAULT, GRIPPER_
 from RealSenseCamera import Camera, CameraError
 
 import NetWorkSet
-import threading
 from UR_Utils.ur5e_visualizer import UR5eDualVisualizer
 
 QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling, True)
@@ -331,13 +330,10 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         if self._control_dq is None or self._control_mode is None:
             return
         if self._control_mode == 'tcp_tool':
-            # self.URRTDEController.move_tcp_delta(delta_pose=self._control_dq, dq_max=10, frame="tool")
             self.URRTDEController.speedL(xd=self._control_dq, time_s=1, frame='tool')
         elif self._control_mode == 'tcp_base':
-            # self.URRTDEController.move_tcp_delta(delta_pose=self._control_dq, dq_max=10, frame="base_add")
             self.URRTDEController.speedL(xd=self._control_dq, time_s=1, frame='base_add')
         elif self._control_mode == 'joint':
-            # self.URRTDEController.move_joint_delta(delta_q=self._control_dq, dq_max=10)
             self.URRTDEController.speedJ(qd=self._control_dq, time_s=1, acceleration=0.1)
 
     # 遥操作定时器
