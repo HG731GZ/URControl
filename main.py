@@ -23,7 +23,7 @@ from GripperController import GripperController, GRIPPER_SPEED_DEFAULT, GRIPPER_
 from RealSenseCamera import Camera, CameraError
 
 import NetWorkSet
-
+import threading
 from UR_Utils.ur5e_visualizer import UR5eDualVisualizer
 
 QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling, True)
@@ -80,10 +80,9 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         self.timer_URStatus.start(100)
 
         self.timer_URStatus_RT = QtCore.QTimer(self)
-        self.timer_URStatus_RT.start(10)
 
         self.timer_CameraUpdate = QtCore.QTimer(self)
-        self.timer_CameraUpdate.start(30)
+        self.timer_CameraUpdate.start(50)
 
         self.timer_URRTDEControl_UI = QtCore.QTimer(self)
 
@@ -151,6 +150,7 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         self.message_append_to_textbox(self.URDashboardClient.connect())
         self.URScriptClient = URScriptClient(self.URIP, auto_connect=True)
         self.URRealtimeClient = URRealtimeClient(self.URIP, auto_connect=True)
+        self.timer_URStatus_RT.start(30)
         if self.URDashboardClient.robot_mode() == 'Robotmode: RUNNING':
             self.URRTDEController = URRTDEController(self.URIP, frequency=UR_RTDE_FREQ, use_safety_check=False)
 
@@ -180,7 +180,7 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         if self.pushButton_Collect.text() == '开始采集':
             self.pushButton_Collect.setText('采集结束')
             self.DataCollector.start_episode()
-            self.timer_DataCollect.start(50)
+            self.timer_DataCollect.start(int(1000 / DATA_COLLECT_FREQ))
         else:
             self.pushButton_Collect.setText('开始采集')
             self.DataCollector.end_episode()
@@ -317,7 +317,10 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
                     q_target_rad = np.deg2rad(q_target_deg)
                     q_target_7 = np.append(q_target_rad, 0.0)
                     self.viz_visual.update_virtual(q_target_7)
-
+            else:
+                print('RealTime接口接收异常！')
+        else:
+            print('RealTime接口异常！')
         # 夹钳实时反馈
         if self.GripperController is not None:
             fb = self.GripperController.feedback
@@ -348,7 +351,7 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
             if cmd is not None:
                 mode_cn = UDPControlMode.cn_name(cmd.mode)
                 if cmd.mode == 1:  # 关节跟踪
-                    self.URRTDEController.track_joint(cmd.q_arm, dq_max=1)
+                    self.URRTDEController.track_joint(cmd.q_arm, dq_max=0.5)
                 if self.GripperController is not None:
                     self.GripperController.set_target_position(cmd.q_gripper[0])
 
@@ -383,6 +386,7 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
 
     # 数采定时器
     def on_timerDataCollect_timeout(self):
+
         if self.URRealtimeClient is not None:
             state = self.URRealtimeClient.get_latest_state()
             if state is not None:
@@ -390,7 +394,7 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
 
         if self.GripperController is not None:
             fb = self.GripperController.feedback
-            self.DataCollector.push_numeric('GRIPPER', [fb.position, fb.current])
+            self.DataCollector.push_numeric('GRIPPER', [fb.open, fb.current])
 
         if self.Camera1 is not None:
             try:
@@ -411,6 +415,8 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
                 print(f"Camera2 取帧失败: {exc}")
                 self.Camera2.close()
                 self.Camera2 = None
+
+        self.DataCollector.step()
 
     # 其他辅助函数
 
