@@ -175,8 +175,6 @@ class DataCollector:
             if depth is not None:
                 np.save(os.path.join(img_dir, f"{step_str}_depth.npy"), depth)
 
-            self._step_counter += 1
-
     def push_action(
         self,
         values: Union[List[float], np.ndarray],
@@ -219,6 +217,16 @@ class DataCollector:
             self._step_counter = 0
             self._make_episode_dirs_unlocked()
             return self._active_episode
+
+    def step(self) -> int:
+        """推进一个逻辑步，返回推进后的 step 编号。
+
+        同一逻辑步内多次调用 push_image（多相机）共享同一步号，
+        调用 step() 后才进入下一步。
+        """
+        with self._lock:
+            self._step_counter += 1
+            return self._step_counter
 
     def end_episode(self) -> None:
         with self._lock:
@@ -431,6 +439,7 @@ def _test():
         rgb = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
         depth = np.random.randint(0, 65535, (480, 640), dtype=np.uint16)
         collector.push_image("camera_d435i", rgb=rgb, depth=depth)
+        collector.step()
 
     collector.end_episode()
     assert not collector.episode_active
