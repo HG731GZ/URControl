@@ -68,6 +68,10 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         self.DataCollector = DataCollector(session_name='test1')
         self.DataCollector.register_numeric('TCP_POSE')
         self.DataCollector.register_numeric('GRIPPER')
+        if self.Camera1 is not None:
+            self.DataCollector.register_image('CAMERA_1', camera_id=self.Camera1.device_name)
+        if self.Camera2 is not None:
+            self.DataCollector.register_image('CAMERA_2', camera_id=self.Camera2.device_name)
         self.timer_DataCollect = QtCore.QTimer(self)
 
         # 窗口控件
@@ -387,6 +391,27 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         if self.GripperController is not None:
             fb = self.GripperController.feedback
             self.DataCollector.push_numeric('GRIPPER', [fb.position, fb.current])
+
+        if self.Camera1 is not None:
+            try:
+                camera1_RGB_frame = self.Camera1.get_rgb_frame()
+                rgb_image = camera1_RGB_frame.image
+                self.DataCollector.push_image('CAMERA_1', rgb_image)
+            except CameraError as exc:
+                print(f"Camera1 取帧失败: {exc}")
+                self.Camera1.close()
+                self.Camera1 = None
+
+        if self.Camera2 is not None:
+            try:
+                camera2_RGB_frame = self.Camera2.get_rgb_frame()
+                rgb_image = camera2_RGB_frame.image
+                self.DataCollector.push_image('CAMERA_2', rgb_image)
+            except CameraError as exc:
+                print(f"Camera2 取帧失败: {exc}")
+                self.Camera2.close()
+                self.Camera2 = None
+
     # 其他辅助函数
 
     @staticmethod
