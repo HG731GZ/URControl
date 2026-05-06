@@ -32,7 +32,7 @@ UR_REAL_IP = '192.168.3.15'
 UR_SIM_IP = '127.0.0.1'
 UR_J_SPEED_UI = 0.1  # 关节控制按钮的速度
 UR_TCP_SPEED_UI = 0.01  # 末端控制按钮的速度
-CAMERA_RESOLUTION = (640, 480)  # 相机分辨率，RGB和深度统一设定
+CAMERA_RESOLUTION = (1280, 720)  # 相机分辨率，RGB和深度统一设定
 CAMERA_FPS = 30  # 相机帧率
 LOCAL_IP = NetWorkSet.get_local_ip()
 UDP_LOCAL_PORT = 5005  # UDP本机端口
@@ -57,7 +57,7 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         self.GripperController = None
         self.UR_J_Control_Speed = UR_J_SPEED_UI  # 关节控制按钮的速度
         self.UR_TCP_Control_Speed = UR_TCP_SPEED_UI  # 末端控制按钮的速度
-
+        self.UR_RTState = None
         # 深度相机
         self.Camera1 = Camera('d435i', resolution=CAMERA_RESOLUTION, fps=CAMERA_FPS)
         time.sleep(0.2)
@@ -79,6 +79,7 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         self.timer_URStatus.start(100)
 
         self.timer_URStatus_RT = QtCore.QTimer(self)
+        self.timer_URStatus_RT.setTimerType(Qt.PreciseTimer)
 
         self.timer_CameraUpdate = QtCore.QTimer(self)
         self.timer_CameraUpdate.start(50)
@@ -149,7 +150,7 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         self.message_append_to_textbox(self.URDashboardClient.connect())
         self.URScriptClient = URScriptClient(self.URIP, auto_connect=True)
         self.URRealtimeClient = URRealtimeClient(self.URIP, auto_connect=True)
-        self.timer_URStatus_RT.start(30)
+        self.timer_URStatus_RT.start(10)
         if self.URDashboardClient.robot_mode() == 'Robotmode: RUNNING':
             self.URRTDEController = URRTDEController(self.URIP, frequency=UR_RTDE_FREQ, use_safety_check=False)
 
@@ -287,29 +288,29 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
                     getattr(self, f"lineEdit_UDP{i}").setText("")
 
         if self.URRealtimeClient is not None:
-            state = self.URRealtimeClient.get_latest_state()
-            if state is not None:
+            self.UR_RTState = self.URRealtimeClient.get_latest_state()
+            if self.UR_RTState is not None:
                 for i in range(6):
                     # 实时关节角
                     line_edit = getattr(self, f"lineEdit_QA{i + 1}")
-                    line_edit.setText(f"{state.q_actual[i] * 180 / np.pi:.3f}")
+                    line_edit.setText(f"{self.UR_RTState.q_actual[i] * 180 / np.pi:.3f}")
                     # TCP
                     line_edit = getattr(self, f"lineEdit_TA{i + 1}")
                     if i < 3:
-                        line_edit.setText(f"{state.tcp_pose[i] * 1000:.3f}")
+                        line_edit.setText(f"{self.UR_RTState.tcp_pose[i] * 1000:.3f}")
                     else:
-                        line_edit.setText(f"{state.tcp_pose[i] * 180 / np.pi:.3f}")
+                        line_edit.setText(f"{self.UR_RTState.tcp_pose[i] * 180 / np.pi:.3f}")
                     # TCP Force
                     line_edit = getattr(self, f"lineEdit_Fex{i + 1}")
-                    line_edit.setText(f"{state.tcp_force[i] :.3f}")
+                    line_edit.setText(f"{self.UR_RTState.tcp_force[i] :.3f}")
 
                     # 目标关节角
                     line_edit = getattr(self, f"lineEdit_QT{i + 1}")
                     if line_edit.isReadOnly():
-                        line_edit.setText(f"{state.fields['q_target'][i] * 180 / np.pi:.3f}")
+                        line_edit.setText(f"{self.UR_RTState.fields['q_target'][i] * 180 / np.pi:.3f}")
 
                 # 更新可视化：真实机械臂=当前关节角，虚拟机械臂=目标关节角
-                q_actual_7 = np.append(state.q_actual, 0.0)
+                q_actual_7 = np.append(self.UR_RTState.q_actual, 0.0)
                 self.viz_visual.update_actual(q_actual_7)
                 if self.checkBox_UDPVisual.checkState() != Qt.Checked:
                     q_target_deg = [self.get_valid_qtarget_degree(i + 1) for i in range(6)]
@@ -347,7 +348,7 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
             if cmd is not None:
                 mode_cn = UDPControlMode.cn_name(cmd.mode)
                 if cmd.mode == 1:  # 关节跟踪
-                    self.URRTDEController.track_joint(cmd.q_arm, dq_max=0.5)
+                    self.URRTDEController.track_joint(cmd.q_arm, dq_max=1)
                 if self.GripperController is not None:
                     self.GripperController.set_target_position(cmd.q_gripper[0])
 
@@ -384,9 +385,8 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
     def on_timerDataCollect_timeout(self):
 
         if self.URRealtimeClient is not None:
-            state = self.URRealtimeClient.get_latest_state()
-            if state is not None:
-                self.DataCollector.push_numeric('TCP_POSE', state.tcp_pose)
+            if self.UR_RTState is not None:
+                self.DataCollector.push_numeric('TCP_POSE', self.UR_RTState.tcp_pose)
 
         if self.GripperController is not None:
             fb = self.GripperController.feedback
