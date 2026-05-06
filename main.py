@@ -11,6 +11,8 @@ from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout
 from PyQt5.QtCore import QUrl, Qt
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 from PyQt5.QtGui import QImage, QPixmap
+
+from DataCollector import DataCollector
 from ui_main_window import Ui_MainWindow
 from UR_Utils.URDashboardClient import URDashboardClient
 from UR_Utils.URScriptClient import URScriptClient
@@ -38,8 +40,9 @@ UDP_LOCAL_PORT = 5005  # UDP本机端口
 UDP_REMOTE_PORT = 6005  # UDP远端端口
 UDP_REMOTE_IP = '192.168.3.5'  # UDP远端IP
 UR_HOME = [-np.pi / 2, -np.pi / 2, -np.pi / 2, -np.pi / 2, np.pi / 2, 0]  # 预设零位
-UR_RTDE_FREQ = 500
-UR_485_PORT = 54321
+UR_RTDE_FREQ = 500  # RTDE频率
+UR_485_PORT = 54321  # UR485的转发端口
+DATA_COLLECT_FREQ = 20.0  # 数采频率
 
 
 class UI_MainWindow(QMainWindow, Ui_MainWindow):
@@ -60,6 +63,12 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         self.Camera1 = Camera('d435i', resolution=CAMERA_RESOLUTION, fps=CAMERA_FPS)
         time.sleep(0.2)
         self.Camera2 = Camera('d455', resolution=CAMERA_RESOLUTION, fps=CAMERA_FPS)
+
+        # 数采
+        self.DataCollector = DataCollector(session_name='test1')
+        self.DataCollector.register_numeric('TCP_POSE')
+        self.DataCollector.register_numeric('GRIPPER')
+        self.timer_DataCollect = QtCore.QTimer(self)
 
         # 窗口控件
         self.setupUi(self)
@@ -105,6 +114,7 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         self.pushButton_StopRTDE.clicked.connect(self.on_RTDEStop_Button)
         self.pushButton_HOME.clicked.connect(self.on_HOME_Button)
         self.pushButton_UDPSync.clicked.connect(self.on_UDPSync_Button)
+        self.pushButton_Collect.clicked.connect(self.on_Collect_Button)
         self.horizontalSlider_SpeedSlider.valueChanged.connect(self.on_SpeedSliderValueChanged)
 
         self.timer_URStatus.timeout.connect(self.on_timerURStatus_timeout)
@@ -112,6 +122,7 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         self.timer_URRTDEControl_UI.timeout.connect(self.on_timerURRTDE_UI_timeout)
         self.timer_URUDPControl.timeout.connect(self.on_timerURUDPControl_timeout)
         self.timer_CameraUpdate.timeout.connect(self.on_timerCameraUpdate_timeout)
+        self.timer_DataCollect.timeout.connect(self.on_timerDataCollect_timeout)
         self.control_button_events_connect()
         self.lineedits_qtarget_bind_validation()
 
@@ -160,6 +171,16 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
 
     def on_URStop_Button(self):
         self.URScriptClient.stopj(a=10)
+
+    def on_Collect_Button(self):
+        if self.pushButton_Collect.text() == '开始采集':
+            self.pushButton_Collect.setText('采集结束')
+            self.DataCollector.start_episode()
+            self.timer_DataCollect.start(50)
+        else:
+            self.pushButton_Collect.setText('开始采集')
+            self.DataCollector.end_episode()
+            self.timer_DataCollect.stop()
 
     def on_RTControl_Button_Pressed(self, control_mode, index, direction):
         control_delta = [0, 0, 0, 0, 0, 0]
@@ -356,6 +377,16 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         else:
             self.label_camera2.setText("No Camera2")
 
+    # 数采定时器
+    def on_timerDataCollect_timeout(self):
+        if self.URRealtimeClient is not None:
+            state = self.URRealtimeClient.get_latest_state()
+            if state is not None:
+                self.DataCollector.push_numeric('TCP_POSE', state.tcp_pose)
+
+        if self.GripperController is not None:
+            fb = self.GripperController.feedback
+            self.DataCollector.push_numeric('GRIPPER', [fb.position, fb.current])
     # 其他辅助函数
 
     @staticmethod

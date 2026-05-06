@@ -54,6 +54,7 @@ class DataCollector:
 
         # 线程安全
         self._lock = threading.Lock()
+        self._scan_existing_episodes_unlocked()
 
     # ---- 属性 ----
 
@@ -70,7 +71,7 @@ class DataCollector:
     def register_numeric(
         self,
         group_name: str,
-        column_names: List[str],
+        column_names: Optional[List[str]] = None,
         fmt: str = "%.6f",
     ) -> None:
         with self._lock:
@@ -80,7 +81,7 @@ class DataCollector:
                     f"已注册组: {list(self._numeric_groups.keys())}"
                 )
             self._numeric_groups[group_name] = {
-                "column_names": list(column_names),
+                "column_names": list(column_names) if column_names is not None else [],
                 "fmt": fmt,
                 "buffer": [],
             }
@@ -129,6 +130,10 @@ class DataCollector:
                 )
                 return
             info = self._numeric_groups[group_name]
+            if not info["column_names"]:
+                info["column_names"] = [
+                    f"{group_name}_{i}" for i in range(1, len(values) + 1)
+                ]
             if len(values) != len(info["column_names"]):
                 print(
                     f"[DataCollector] push_numeric: 数值组 '{group_name}' "
@@ -238,41 +243,37 @@ class DataCollector:
             self._write_metadata_unlocked()
 
     def resume(self) -> None:
+        """手动重新扫描已存在的 episode 目录。__init__ 已自动调用，一般无需再调。"""
         with self._lock:
-            if not os.path.isdir(self._session_dir):
-                return
-            max_ep = -1
-            for name in os.listdir(self._session_dir):
-                if name.startswith("episode_") and os.path.isdir(
-                    os.path.join(self._session_dir, name)
-                ):
-                    try:
-                        ep_id = int(name.split("_")[1])
-                        max_ep = max(max_ep, ep_id)
-                    except (ValueError, IndexError):
-                        continue
-            if max_ep >= 0:
-                self._next_episode_id = max_ep + 1
-                for i in range(max_ep + 1):
-                    ep_name = f"episode_{i:03d}"
-                    ep_dir = os.path.join(self._session_dir, ep_name)
-                    if os.path.isdir(ep_dir) and ep_name not in self._episodes:
-                        self._episodes.append(ep_name)
+            self._scan_existing_episodes_unlocked()
 
     # ---- 内部方法 ----
+
+    def _scan_existing_episodes_unlocked(self) -> None:
+        """扫描 session_dir 下已有的 episode_xxx 目录，恢复计数和 episodes 列表。"""
+        if not os.path.isdir(self._session_dir):
+            return
+        max_ep = -1
+        for name in os.listdir(self._session_dir):
+            if name.startswith("episode_") and os.path.isdir(
+                os.path.join(self._session_dir, name)
+            ):
+                try:
+                    ep_id = int(name.split("_")[1])
+                    max_ep = max(max_ep, ep_id)
+                except (ValueError, IndexError):
+                    continue
+        if max_ep >= 0:
+            self._next_episode_id = max_ep + 1
+            for i in range(max_ep + 1):
+                ep_name = f"episode_{i:03d}"
+                ep_dir = os.path.join(self._session_dir, ep_name)
+                if os.path.isdir(ep_dir) and ep_name not in self._episodes:
+                    self._episodes.append(ep_name)
 
     def _make_episode_dirs_unlocked(self) -> None:
         ep_name = f"episode_{self._active_episode:03d}"
         self._episode_dir = os.path.join(self._session_dir, ep_name)
-
-        # 如果目录已存在（resume 场景），先清理旧数据
-        if os.path.isdir(self._episode_dir):
-            numeric_dir = os.path.join(self._episode_dir, "numeric")
-            if os.path.isdir(numeric_dir):
-                shutil.rmtree(numeric_dir)
-            images_dir = os.path.join(self._episode_dir, "images")
-            if os.path.isdir(images_dir):
-                shutil.rmtree(images_dir)
 
         os.makedirs(os.path.join(self._episode_dir, "numeric"), exist_ok=True)
         for img_name in self._image_groups:
