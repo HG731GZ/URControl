@@ -6,8 +6,8 @@ from typing import Optional, Tuple, Union
 import numpy as np
 import pinocchio as pin
 
-from ur5e_model_cache import build_model_from_mjcf, build_models_from_mjcf
-from ur_pose_math import matrix_to_rotvec, rotvec_to_matrix
+from UR_Utils.ur5e_model_cache import build_model_from_mjcf, build_models_from_mjcf
+from UR_Utils.ur_pose_math import matrix_to_rotvec, rotvec_to_matrix
 
 
 ArrayLike = Union[np.ndarray, list, tuple]

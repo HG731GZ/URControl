@@ -6,24 +6,23 @@ import sys
 import os
 import time
 import numpy as np
-import cv2
-from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt5 import QtCore, QtWidgets
 from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout
 from PyQt5.QtCore import QUrl, Qt
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 from PyQt5.QtGui import QImage, QPixmap
 from ui_main_window import Ui_MainWindow
-from URDashboardClient import URDashboardClient
-from URScriptClient import URScriptClient
-from URRealtimeClient import URRealtimeClient
-from URRTDEController import URRTDEController
-from URUdpClient import URUDPClient, UDPControlMode
+from UR_Utils.URDashboardClient import URDashboardClient
+from UR_Utils.URScriptClient import URScriptClient
+from UR_Utils.URRealtimeClient import URRealtimeClient
+from UR_Utils.URRTDEController import URRTDEController
+from UR_Utils.URUdpClient import URUDPClient, UDPControlMode
 from GripperController import GripperController, GRIPPER_SPEED_DEFAULT, GRIPPER_FORCE_DEFAULT
 from RealSenseCamera import Camera, CameraError
 
 import NetWorkSet
 
-from ur5e_visualizer import UR5eDualVisualizer
+from UR_Utils.ur5e_visualizer import UR5eDualVisualizer
 
 QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling, True)
 QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps, True)
@@ -79,7 +78,7 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         self.timer_URUDPControl.setTimerType(Qt.PreciseTimer)
 
         # 创建可视化界面（Meshcat服务器在此启动）
-        mjcf_path = os.path.join(os.path.dirname(__file__), 'universal_robots_ur5e', 'ur5e.xml')
+        mjcf_path = os.path.join(os.path.dirname(__file__), 'UR_Utils/universal_robots_ur5e', 'ur5e.xml')
         self.viz_visual = UR5eDualVisualizer(mjcf_path)
 
         self.URVisual = QWebEngineView(self.widget_WebView)

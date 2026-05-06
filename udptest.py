@@ -5,12 +5,11 @@ udptest.py — URUDPClient 使用示例 / 基础功能测试。
 演示读取、发送、限速、等待新帧等接口。
 """
 
-import sys
 import time
 import threading
 import numpy as np
 
-from URUdpClient import URUDPClient, UDPControlMode, UDPCommand
+from UR_Utils.URUdpClient import URUDPClient, UDPControlMode
 
 BIND_HOST = "127.0.0.1"
 BIND_PORT = 5005

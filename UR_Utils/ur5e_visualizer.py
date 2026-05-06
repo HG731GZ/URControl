@@ -5,7 +5,7 @@ import pinocchio as pin
 from pinocchio.visualize import MeshcatVisualizer
 import meshcat.geometry as mg
 
-from ur5e_kinematics import UR5eKinematics
+from UR_Utils.ur5e_kinematics import UR5eKinematics
 
 
 class CachedMeshcatVisualizer(MeshcatVisualizer):

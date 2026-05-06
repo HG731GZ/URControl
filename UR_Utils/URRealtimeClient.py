@@ -3,8 +3,8 @@ import struct
 import threading
 import time
 from typing import Optional, Tuple
-from URTcpClient import URTcpClient, URTcpTimeoutError
-from URRealtimeUtils import URRealtimeParser, URRealtimeState, URRealtimeParseError
+from UR_Utils.URTcpClient import URTcpClient, URTcpTimeoutError
+from UR_Utils.URRealtimeUtils import URRealtimeParser, URRealtimeState, URRealtimeParseError
 
 
 class URRealtimeClient(URTcpClient):

@@ -1,4 +1,4 @@
-from URTcpClient import URTcpClient, URTcpTimeoutError
+from UR_Utils.URTcpClient import URTcpClient, URTcpTimeoutError
 
 
 class URDashboardClient(URTcpClient):

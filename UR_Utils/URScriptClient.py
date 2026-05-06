@@ -3,8 +3,8 @@ from typing import Literal, Optional, Sequence
 
 import numpy as np
 
-from URTcpClient import URTcpClient
-from ur_pose_math import pose_trans, twist_tool_to_base
+from UR_Utils.URTcpClient import URTcpClient
+from UR_Utils.ur_pose_math import pose_trans, twist_tool_to_base
 
 class URScriptClient(URTcpClient):
     """
