@@ -1,9 +1,10 @@
 import os
 import time
 import json
+import queue
 import shutil
 import threading
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import cv2
@@ -31,6 +32,10 @@ class DataCollector:
     write_mode 可选:
         - "episode": 默认值，所有数据先缓存在内存中，end_episode()/flush()/close() 时写盘。
         - "realtime": 每次 push 后尽快写盘。
+
+    async_write:
+        - True: 默认值，写盘任务交给后台线程，避免阻塞调用方线程。
+        - False: 调用方线程同步写盘。
     """
 
     def __init__(
@@ -38,6 +43,7 @@ class DataCollector:
         base_dir: str = "data",
         session_name: Optional[str] = None,
         write_mode: str = "episode",
+        async_write: bool = True,
     ):
         if write_mode not in ("episode", "realtime"):
             raise ValueError("write_mode 必须是 'episode' 或 'realtime'")
@@ -46,6 +52,7 @@ class DataCollector:
         self._session_name = session_name or time.strftime("URCollect_%Y%m%d_%H%M%S")
         self._created_at = time.time()
         self._write_mode = write_mode
+        self._async_write = async_write
 
         self._session_dir = os.path.join(self._base_dir, self._session_name)
 
@@ -63,6 +70,12 @@ class DataCollector:
 
         # 线程安全
         self._lock = threading.Lock()
+        self._writer_lock = threading.Lock()
+        self._write_queue: "queue.Queue[Optional[Tuple[str, Callable[[], None]]]]" = (
+            queue.Queue()
+        )
+        self._writer_thread: Optional[threading.Thread] = None
+        self._pending_write_jobs = 0
         self._scan_existing_episodes_unlocked()
 
     # ---- 属性 ----
@@ -74,6 +87,11 @@ class DataCollector:
     @property
     def current_episode(self) -> Optional[int]:
         return self._active_episode
+
+    @property
+    def is_writing(self) -> bool:
+        with self._writer_lock:
+            return self._pending_write_jobs > 0
 
     # ---- 注册 ----
 
@@ -153,7 +171,7 @@ class DataCollector:
             ts = timestamp if timestamp is not None else time.time()
             info["buffer"].append([ts] + list(values))
             if self._write_mode == "realtime":
-                self._flush_numeric_unlocked(group_name)
+                self._flush_numeric_unlocked(group_name, "实时数值")
 
     def push_image(
         self,
@@ -182,7 +200,13 @@ class DataCollector:
             step = self._step_counter
 
             if self._write_mode == "realtime":
-                self._write_image_unlocked(img_dir, step, rgb, depth)
+                self._write_image_unlocked(
+                    img_dir,
+                    step,
+                    np.array(rgb, copy=True) if rgb is not None else None,
+                    np.array(depth, copy=True) if depth is not None else None,
+                    f"实时图像 {group_name} step_{step:06d}",
+                )
                 return
 
             self._image_groups[group_name]["buffer"].append(
@@ -218,7 +242,7 @@ class DataCollector:
             ts = timestamp if timestamp is not None else time.time()
             self._action_group["buffer"].append([ts] + list(values))
             if self._write_mode == "realtime":
-                self._flush_action_unlocked()
+                self._flush_action_unlocked("实时动作")
 
     # ---- 剧集管理 ----
 
@@ -257,20 +281,32 @@ class DataCollector:
             if self._active_episode is None:
                 return
             for name in self._numeric_groups:
-                self._flush_numeric_unlocked(name)
+                self._flush_numeric_unlocked(name, "手动刷新数值")
             for name in self._image_groups:
-                self._flush_image_unlocked(name)
+                self._flush_image_unlocked(name, "手动刷新图像")
             if self._action_group is not None:
-                self._flush_action_unlocked()
+                self._flush_action_unlocked("手动刷新动作")
+
+    def wait_for_writes(self) -> None:
+        self._write_queue.join()
 
     # ---- 生命周期 ----
 
-    def close(self) -> None:
+    def close(self, wait_for_writes: bool = True) -> None:
         with self._lock:
             if self._active_episode is not None:
                 self._end_episode_unlocked()
-            self._remove_empty_episodes_unlocked()
+
+        if wait_for_writes:
+            self.wait_for_writes()
+
+        with self._lock:
+            if wait_for_writes:
+                self._remove_empty_episodes_unlocked()
             self._write_metadata_unlocked()
+
+        if wait_for_writes:
+            self._stop_writer()
 
     def resume(self) -> None:
         """手动重新扫描已存在的 episode 目录。__init__ 已自动调用，一般无需再调。"""
@@ -318,13 +354,13 @@ class DataCollector:
             return
 
         for name in self._numeric_groups:
-            self._flush_numeric_unlocked(name)
+            self._flush_numeric_unlocked(name, "剧集结束数值")
 
         for name in self._image_groups:
-            self._flush_image_unlocked(name)
+            self._flush_image_unlocked(name, "剧集结束图像")
 
         if self._action_group is not None:
-            self._flush_action_unlocked()
+            self._flush_action_unlocked("剧集结束动作")
 
         ep_name = f"episode_{self._active_episode:03d}"
         if ep_name not in self._episodes:
@@ -334,7 +370,7 @@ class DataCollector:
         self._episode_dir = None
         self._step_counter = 0
 
-    def _flush_numeric_unlocked(self, group_name: str) -> None:
+    def _flush_numeric_unlocked(self, group_name: str, reason: str) -> None:
         info = self._numeric_groups[group_name]
         buffer = info["buffer"]
         if not buffer:
@@ -343,19 +379,139 @@ class DataCollector:
         filepath = os.path.join(
             self._episode_dir, "numeric", f"{group_name}.csv"  # type: ignore[arg-type]
         )
-        file_exists = os.path.isfile(filepath)
-
         rows = np.array(buffer, dtype=np.float64)
-
-        with open(filepath, "a") as f:
-            if not file_exists:
-                header = "timestamp," + ",".join(info["column_names"])
-                f.write(header + "\n")
-            np.savetxt(f, rows, delimiter=",", fmt=info["fmt"])
-
+        column_names = list(info["column_names"])
+        fmt = info["fmt"]
         buffer.clear()
 
+        self._write_or_enqueue(
+            f"{reason} {group_name}",
+            lambda: self._write_numeric_rows(filepath, column_names, fmt, rows),
+        )
+
     def _write_image_unlocked(
+        self,
+        img_dir: str,
+        step: int,
+        rgb: Optional[np.ndarray],
+        depth: Optional[np.ndarray],
+        description: str,
+    ) -> None:
+        self._write_or_enqueue(
+            description,
+            lambda: self._write_image_files(img_dir, step, rgb, depth),
+        )
+
+    def _flush_image_unlocked(self, group_name: str, reason: str) -> None:
+        info = self._image_groups[group_name]
+        buffer = info["buffer"]
+        if not buffer:
+            return
+
+        img_dir = os.path.join(
+            self._episode_dir, "images", group_name  # type: ignore[arg-type]
+        )
+        images = list(buffer)
+        buffer.clear()
+
+        self._write_or_enqueue(
+            f"{reason} {group_name}",
+            lambda: self._write_image_batch(img_dir, images),
+        )
+
+    def _flush_action_unlocked(self, reason: str) -> None:
+        if self._action_group is None:
+            return
+        buffer = self._action_group["buffer"]
+        if not buffer:
+            return
+
+        filepath = os.path.join(
+            self._episode_dir, "action", "action.csv"  # type: ignore[arg-type]
+        )
+        rows = np.array(buffer, dtype=np.float64)
+        column_names = list(self._action_group["column_names"])
+        fmt = self._action_group["fmt"]
+        buffer.clear()
+
+        self._write_or_enqueue(
+            f"{reason} action",
+            lambda: self._write_numeric_rows(filepath, column_names, fmt, rows),
+        )
+
+    def _write_or_enqueue(self, description: str, job: Callable[[], None]) -> None:
+        if not self._async_write:
+            job()
+            print(f"[DataCollector] 写盘完成: {description}")
+            return
+
+        self._ensure_writer_started()
+        with self._writer_lock:
+            self._pending_write_jobs += 1
+        self._write_queue.put((description, job))
+
+    def _ensure_writer_started(self) -> None:
+        with self._writer_lock:
+            if self._writer_thread is not None and self._writer_thread.is_alive():
+                return
+            self._writer_thread = threading.Thread(
+                target=self._writer_loop,
+                name="DataCollectorWriter",
+                daemon=True,
+            )
+            self._writer_thread.start()
+
+    def _writer_loop(self) -> None:
+        while True:
+            item = self._write_queue.get()
+            if item is None:
+                self._write_queue.task_done()
+                return
+            description, job = item
+            try:
+                job()
+                print(f"[DataCollector] 写盘完成: {description}")
+            except Exception as exc:  # noqa: BLE001
+                print(f"[DataCollector] 写盘失败: {description}: {exc}")
+            finally:
+                with self._writer_lock:
+                    self._pending_write_jobs -= 1
+                self._write_queue.task_done()
+
+    def _stop_writer(self) -> None:
+        with self._writer_lock:
+            thread = self._writer_thread
+            if thread is None or not thread.is_alive():
+                self._writer_thread = None
+                return
+        self._write_queue.put(None)
+        thread.join()
+        with self._writer_lock:
+            self._writer_thread = None
+
+    def _write_numeric_rows(
+        self,
+        filepath: str,
+        column_names: List[str],
+        fmt: str,
+        rows: np.ndarray,
+    ) -> None:
+        file_exists = os.path.isfile(filepath)
+        with open(filepath, "a") as f:
+            if not file_exists:
+                header = "timestamp," + ",".join(column_names)
+                f.write(header + "\n")
+            np.savetxt(f, rows, delimiter=",", fmt=fmt)
+
+    def _write_image_batch(
+        self,
+        img_dir: str,
+        images: List[Tuple[int, Optional[np.ndarray], Optional[np.ndarray]]],
+    ) -> None:
+        for step, rgb, depth in images:
+            self._write_image_files(img_dir, step, rgb, depth)
+
+    def _write_image_files(
         self,
         img_dir: str,
         step: int,
@@ -369,42 +525,6 @@ class DataCollector:
         if depth is not None:
             np.save(os.path.join(img_dir, f"{step_str}_depth.npy"), depth)
 
-    def _flush_image_unlocked(self, group_name: str) -> None:
-        info = self._image_groups[group_name]
-        buffer = info["buffer"]
-        if not buffer:
-            return
-
-        img_dir = os.path.join(
-            self._episode_dir, "images", group_name  # type: ignore[arg-type]
-        )
-        for step, rgb, depth in buffer:
-            self._write_image_unlocked(img_dir, step, rgb, depth)
-
-        buffer.clear()
-
-    def _flush_action_unlocked(self) -> None:
-        if self._action_group is None:
-            return
-        buffer = self._action_group["buffer"]
-        if not buffer:
-            return
-
-        filepath = os.path.join(
-            self._episode_dir, "action", "action.csv"  # type: ignore[arg-type]
-        )
-        file_exists = os.path.isfile(filepath)
-
-        rows = np.array(buffer, dtype=np.float64)
-
-        with open(filepath, "a") as f:
-            if not file_exists:
-                header = "timestamp," + ",".join(self._action_group["column_names"])
-                f.write(header + "\n")
-            np.savetxt(f, rows, delimiter=",", fmt=self._action_group["fmt"])
-
-        buffer.clear()
-
     def _write_metadata_unlocked(self) -> None:
         os.makedirs(self._session_dir, exist_ok=True)
 
@@ -413,6 +533,7 @@ class DataCollector:
             "created_at": self._created_at,
             "base_dir": self._base_dir,
             "write_mode": self._write_mode,
+            "async_write": self._async_write,
             "numeric_groups": {
                 name: info["column_names"]
                 for name, info in self._numeric_groups.items()
@@ -542,6 +663,7 @@ def _test():
     with open(os.path.join(session_dir, "metadata.json")) as f:
         metadata = json.load(f)
     assert metadata["write_mode"] == "episode"
+    assert metadata["async_write"] is True
 
     realtime = DataCollector(
         base_dir=tmpdir,
@@ -556,6 +678,7 @@ def _test():
     realtime.push_action([2.0], timestamp=2000.0)
     rgb = np.random.randint(0, 255, (16, 16, 3), dtype=np.uint8)
     realtime.push_image("camera_d435i", rgb=rgb)
+    realtime.wait_for_writes()
     realtime_ep0 = os.path.join(tmpdir, "realtime_session", "episode_000")
     assert os.path.isfile(os.path.join(realtime_ep0, "numeric", "JointAngle.csv"))
     assert os.path.isfile(os.path.join(realtime_ep0, "action", "action.csv"))
