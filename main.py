@@ -1,15 +1,10 @@
-# PyQt5 QtWebEngine bundles libexpat which shadows Python's pyexpat symbols.
-# Force pyexpat to load first so meshcat can import it without conflict.
-import xml.etree.ElementTree  # noqa: F401
-
 import sys
 import os
 import time
 import numpy as np
 from PyQt5 import QtCore, QtWidgets
 from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout
-from PyQt5.QtCore import QUrl, Qt
-from PyQt5.QtWebEngineWidgets import QWebEngineView
+from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QImage, QPixmap
 
 from DataCollector import DataCollector
@@ -89,18 +84,17 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         self.timer_URUDPControl = QtCore.QTimer(self)
         self.timer_URUDPControl.setTimerType(Qt.PreciseTimer)
 
-        # 创建可视化界面（Meshcat服务器在此启动）
+        # 创建可视化界面（原生 OpenGL 渲染，避免 Meshcat/WebEngine 延迟）
         mjcf_path = os.path.join(os.path.dirname(__file__), 'UR_Utils/universal_robots_ur5e', 'ur5e.xml')
-        self.viz_visual = UR5eDualVisualizer(mjcf_path)
+        self.viz_visual = UR5eDualVisualizer(mjcf_path, camera_azimuth_deg=-120, camera_elevation_deg=21)
 
-        self.URVisual = QWebEngineView(self.widget_WebView)
+        self.URVisual = self.viz_visual.widget
         layout = self.widget_WebView.layout()
         if layout is None:
             layout = QVBoxLayout(self.widget_WebView)
             layout.setContentsMargins(0, 0, 0, 0)
 
         layout.addWidget(self.URVisual)
-        self.URVisual.load(QUrl(self.viz_visual.url))
 
         self.lineEdit_IP.setText(self.URIP)
         self.label_IP_now.setText(self.URIP)
