@@ -9,6 +9,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import numpy as np
 import cv2
 
+ImageFrame = Tuple[Optional[int], int, float, Optional[np.ndarray], Optional[np.ndarray]]
+
 
 class DataCollector:
     """RL/IL 数据采集器。
@@ -22,6 +24,7 @@ class DataCollector:
         collector.register_numeric("JointAngle", ["q1","q2","q3","q4","q5","q6"])
         collector.register_numeric("TcpPose", ["x","y","z","rx","ry","rz"])
         collector.register_image("camera_d435i", "d435i")
+        collector.register_image("camera_video", "d435i", storage="video")
 
         collector.start_episode()
         collector.push_numeric("JointAngle", [0.1, 0.2, 0.3, 0.4, 0.5, 0.6])
@@ -76,6 +79,8 @@ class DataCollector:
         )
         self._writer_thread: Optional[threading.Thread] = None
         self._pending_write_jobs = 0
+        self._video_writers: Dict[Tuple[str, str], cv2.VideoWriter] = {}
+        self._video_writer_sizes: Dict[Tuple[str, str], Tuple[int, int]] = {}
         self._scan_existing_episodes_unlocked()
 
     # ---- 属性 ----
@@ -113,7 +118,25 @@ class DataCollector:
                 "buffer": [],
             }
 
-    def register_image(self, group_name: str, camera_id: str) -> None:
+    def register_image(
+        self,
+        group_name: str,
+        camera_id: str,
+        storage: str = "png",
+        video_codec: str = "MJPG",
+        video_fps: float = 30.0,
+        video_extension: str = "avi",
+    ) -> None:
+        storage = storage.lower()
+        if storage in ("avi", "compressed_video"):
+            storage = "video"
+        if storage not in ("png", "video"):
+            raise ValueError("storage 必须是 'png' 或 'video'")
+        if len(video_codec) != 4:
+            raise ValueError("video_codec 必须是 4 个字符，例如 'MJPG'")
+        if video_fps <= 0:
+            raise ValueError("video_fps 必须大于 0")
+
         with self._lock:
             if group_name in self._image_groups:
                 raise ValueError(
@@ -122,6 +145,11 @@ class DataCollector:
                 )
             self._image_groups[group_name] = {
                 "camera_id": camera_id,
+                "storage": storage,
+                "video_codec": video_codec,
+                "video_fps": float(video_fps),
+                "video_extension": video_extension.lstrip("."),
+                "next_frame_index": 0,
                 "buffer": [],
             }
 
@@ -198,24 +226,33 @@ class DataCollector:
                 self._episode_dir, "images", group_name  # type: ignore[arg-type]
             )
             step = self._step_counter
+            timestamp = time.time()
+            info = self._image_groups[group_name]
+            frame_index = None
+            if info["storage"] == "video" and rgb is not None:
+                frame_index = info["next_frame_index"]
+                info["next_frame_index"] += 1
+            frame: ImageFrame = (
+                frame_index,
+                step,
+                timestamp,
+                np.array(rgb, copy=True) if rgb is not None else None,
+                np.array(depth, copy=True) if depth is not None else None,
+            )
 
             if self._write_mode == "realtime":
                 self._write_image_unlocked(
+                    self._episode_dir,  # type: ignore[arg-type]
                     img_dir,
-                    step,
-                    np.array(rgb, copy=True) if rgb is not None else None,
-                    np.array(depth, copy=True) if depth is not None else None,
-                    f"实时图像 {group_name} step_{step:06d}",
+                    group_name,
+                    self._image_write_options_unlocked(group_name),
+                    frame,
+                    close_video=False,
+                    description=f"实时图像 {group_name} step_{step:06d}",
                 )
                 return
 
-            self._image_groups[group_name]["buffer"].append(
-                (
-                    step,
-                    np.array(rgb, copy=True) if rgb is not None else None,
-                    np.array(depth, copy=True) if depth is not None else None,
-                )
-            )
+            self._image_groups[group_name]["buffer"].append(frame)
 
     def push_action(
         self,
@@ -346,6 +383,9 @@ class DataCollector:
             os.makedirs(
                 os.path.join(self._episode_dir, "images", img_name), exist_ok=True
             )
+            self._image_groups[img_name]["next_frame_index"] = 0
+        if any(info["storage"] == "video" for info in self._image_groups.values()):
+            os.makedirs(os.path.join(self._episode_dir, "videos"), exist_ok=True)
         if self._action_group is not None:
             os.makedirs(os.path.join(self._episode_dir, "action"), exist_ok=True)
 
@@ -357,7 +397,7 @@ class DataCollector:
             self._flush_numeric_unlocked(name, "剧集结束数值")
 
         for name in self._image_groups:
-            self._flush_image_unlocked(name, "剧集结束图像")
+            self._flush_image_unlocked(name, "剧集结束图像", close_video=True)
 
         if self._action_group is not None:
             self._flush_action_unlocked("剧集结束动作")
@@ -391,32 +431,45 @@ class DataCollector:
 
     def _write_image_unlocked(
         self,
+        episode_dir: str,
         img_dir: str,
-        step: int,
-        rgb: Optional[np.ndarray],
-        depth: Optional[np.ndarray],
+        group_name: str,
+        options: Dict[str, Any],
+        frame: ImageFrame,
+        close_video: bool,
         description: str,
     ) -> None:
         self._write_or_enqueue(
             description,
-            lambda: self._write_image_files(img_dir, step, rgb, depth),
+            lambda: self._write_image_batch(
+                episode_dir, img_dir, group_name, options, [frame], close_video
+            ),
         )
 
-    def _flush_image_unlocked(self, group_name: str, reason: str) -> None:
+    def _flush_image_unlocked(
+        self,
+        group_name: str,
+        reason: str,
+        close_video: bool = False,
+    ) -> None:
         info = self._image_groups[group_name]
         buffer = info["buffer"]
-        if not buffer:
+        if not buffer and (not close_video or info["storage"] != "video"):
             return
 
+        episode_dir = self._episode_dir  # type: ignore[assignment]
         img_dir = os.path.join(
             self._episode_dir, "images", group_name  # type: ignore[arg-type]
         )
         images = list(buffer)
+        options = self._image_write_options_unlocked(group_name)
         buffer.clear()
 
         self._write_or_enqueue(
             f"{reason} {group_name}",
-            lambda: self._write_image_batch(img_dir, images),
+            lambda: self._write_image_batch(
+                episode_dir, img_dir, group_name, options, images, close_video
+            ),
         )
 
     def _flush_action_unlocked(self, reason: str) -> None:
@@ -505,10 +558,23 @@ class DataCollector:
 
     def _write_image_batch(
         self,
+        episode_dir: str,
         img_dir: str,
-        images: List[Tuple[int, Optional[np.ndarray], Optional[np.ndarray]]],
+        group_name: str,
+        options: Dict[str, Any],
+        images: List[ImageFrame],
+        close_video: bool,
     ) -> None:
-        for step, rgb, depth in images:
+        if options["storage"] == "video":
+            if images:
+                self._write_video_frames(
+                    episode_dir, img_dir, group_name, options, images
+                )
+            if close_video:
+                self._close_video_writer(episode_dir, group_name)
+            return
+
+        for _frame_index, step, _timestamp, rgb, depth in images:
             self._write_image_files(img_dir, step, rgb, depth)
 
     def _write_image_files(
@@ -525,6 +591,91 @@ class DataCollector:
         if depth is not None:
             np.save(os.path.join(img_dir, f"{step_str}_depth.npy"), depth)
 
+    def _write_video_frames(
+        self,
+        episode_dir: str,
+        img_dir: str,
+        group_name: str,
+        options: Dict[str, Any],
+        images: List[ImageFrame],
+    ) -> None:
+        videos_dir = os.path.join(episode_dir, "videos")
+        os.makedirs(videos_dir, exist_ok=True)
+        os.makedirs(img_dir, exist_ok=True)
+        csv_path = os.path.join(videos_dir, f"{group_name}_frames.csv")
+        csv_exists = os.path.isfile(csv_path)
+
+        with open(csv_path, "a") as index_file:
+            if not csv_exists:
+                index_file.write("frame,step,timestamp\n")
+            for frame_index, step, timestamp, rgb, depth in images:
+                if rgb is not None:
+                    self._write_video_frame(
+                        episode_dir, group_name, options, frame_index, step, timestamp, rgb, index_file
+                    )
+                if depth is not None:
+                    step_str = f"step_{step:06d}"
+                    np.save(os.path.join(img_dir, f"{step_str}_depth.npy"), depth)
+
+    def _write_video_frame(
+        self,
+        episode_dir: str,
+        group_name: str,
+        options: Dict[str, Any],
+        frame_index: Optional[int],
+        step: int,
+        timestamp: float,
+        rgb: np.ndarray,
+        index_file: Any,
+    ) -> None:
+        if frame_index is None:
+            raise ValueError(f"视频图像组 '{group_name}' 缺少 frame_index")
+
+        key = (episode_dir, group_name)
+        height, width = rgb.shape[:2]
+        size = (width, height)
+        writer = self._video_writers.get(key)
+
+        if writer is None:
+            video_path = os.path.join(
+                episode_dir,
+                "videos",
+                f"{group_name}.{options['video_extension']}",
+            )
+            fourcc = cv2.VideoWriter_fourcc(*options["video_codec"])
+            writer = cv2.VideoWriter(video_path, fourcc, options["video_fps"], size)
+            if not writer.isOpened():
+                raise RuntimeError(
+                    f"无法打开视频写入器: {video_path}, codec={options['video_codec']}"
+                )
+            self._video_writers[key] = writer
+            self._video_writer_sizes[key] = size
+        elif self._video_writer_sizes[key] != size:
+            raise ValueError(
+                f"视频图像组 '{group_name}' 的帧尺寸变化: "
+                f"{self._video_writer_sizes[key]} -> {size}"
+            )
+
+        bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+        writer.write(bgr)
+        index_file.write(f"{frame_index},{step},{timestamp:.9f}\n")
+
+    def _close_video_writer(self, episode_dir: str, group_name: str) -> None:
+        key = (episode_dir, group_name)
+        writer = self._video_writers.pop(key, None)
+        self._video_writer_sizes.pop(key, None)
+        if writer is not None:
+            writer.release()
+
+    def _image_write_options_unlocked(self, group_name: str) -> Dict[str, Any]:
+        info = self._image_groups[group_name]
+        return {
+            "storage": info["storage"],
+            "video_codec": info["video_codec"],
+            "video_fps": info["video_fps"],
+            "video_extension": info["video_extension"],
+        }
+
     def _write_metadata_unlocked(self) -> None:
         os.makedirs(self._session_dir, exist_ok=True)
 
@@ -540,6 +691,15 @@ class DataCollector:
             },
             "image_groups": {
                 name: info["camera_id"] for name, info in self._image_groups.items()
+            },
+            "image_group_options": {
+                name: {
+                    "storage": info["storage"],
+                    "video_codec": info["video_codec"],
+                    "video_fps": info["video_fps"],
+                    "video_extension": info["video_extension"],
+                }
+                for name, info in self._image_groups.items()
             },
             "action_group": (
                 self._action_group["column_names"]
@@ -565,10 +725,11 @@ class DataCollector:
 
             numeric_dir = os.path.join(ep_dir, "numeric")
             images_dir = os.path.join(ep_dir, "images")
+            videos_dir = os.path.join(ep_dir, "videos")
             action_dir = os.path.join(ep_dir, "action")
 
             has_data = False
-            for d in [numeric_dir, images_dir, action_dir]:
+            for d in [numeric_dir, images_dir, videos_dir, action_dir]:
                 if not os.path.isdir(d):
                     continue
                 for _root, _dirs, files in os.walk(d):  # noqa: B007
@@ -664,6 +825,43 @@ def _test():
         metadata = json.load(f)
     assert metadata["write_mode"] == "episode"
     assert metadata["async_write"] is True
+    assert metadata["image_group_options"]["camera_d435i"]["storage"] == "png"
+
+    video = DataCollector(base_dir=tmpdir, session_name="video_session")
+    video.register_image(
+        "camera_video",
+        "d435i",
+        storage="video",
+        video_codec="MJPG",
+        video_fps=30.0,
+    )
+    video.start_episode()
+    for i in range(5):
+        rgb = np.full((48, 64, 3), i * 30, dtype=np.uint8)
+        video.push_image("camera_video", rgb=rgb)
+        video.step()
+    video.end_episode()
+    video.close()
+
+    video_ep0 = os.path.join(tmpdir, "video_session", "episode_000")
+    video_path = os.path.join(video_ep0, "videos", "camera_video.avi")
+    frame_index_path = os.path.join(video_ep0, "videos", "camera_video_frames.csv")
+    assert os.path.isfile(video_path)
+    assert os.path.isfile(frame_index_path)
+    frame_index = np.loadtxt(frame_index_path, delimiter=",", skiprows=1)
+    assert frame_index.shape == (5, 3), f"期望 (5, 3)，实际 {frame_index.shape}"
+    assert np.allclose(frame_index[:, 0], np.arange(5))
+    assert np.allclose(frame_index[:, 1], np.arange(5))
+
+    capture = cv2.VideoCapture(video_path)
+    assert capture.isOpened()
+    frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+    capture.release()
+    assert frame_count == 5
+
+    with open(os.path.join(tmpdir, "video_session", "metadata.json")) as f:
+        video_metadata = json.load(f)
+    assert video_metadata["image_group_options"]["camera_video"]["storage"] == "video"
 
     realtime = DataCollector(
         base_dir=tmpdir,
