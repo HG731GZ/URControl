@@ -23,12 +23,13 @@ class URRTDEController:
 
     暴露接口：
     1. track_joint(q, dq_max)：闭环跟踪关节角 q，并限制每个关节速度 dq_max
-    2. move_joint_delta(delta_q, dq_max)：调用时读取当前实际关节角 q_actual，目标为 q_actual + delta_q
-    3. move_tcp_delta(delta_pose, dx_max, dq_max)：以当前实际 TCP pose 为基准生成新目标，并用 servoL 限速跟踪
-    4. moveL(delta_pose, speed, acceleration, frame)：以当前实际 TCP pose 为基准执行线性运动
-    5. speedJ(qd, acceleration, time)：关节速度控制
-    6. speedL(xd, acceleration, time, frame)：TCP 速度控制
-    7. set_speed_slider(speed)：设置控制柜 Speed Slider
+    2. track_tcp_pose(pose, v_max, w_max)：闭环跟踪 TCP pose，并限制末端速度/角速度
+    3. move_joint_delta(delta_q, dq_max)：调用时读取当前实际关节角 q_actual，目标为 q_actual + delta_q
+    4. move_tcp_delta(delta_pose, dx_max, dq_max)：以当前实际 TCP pose 为基准生成新目标，并用 servoL 限速跟踪
+    5. moveL(delta_pose, speed, acceleration, frame)：以当前实际 TCP pose 为基准执行线性运动
+    6. speedJ(qd, acceleration, time)：关节速度控制
+    7. speedL(xd, acceleration, time, frame)：TCP 速度控制
+    8. set_speed_slider(speed)：设置控制柜 Speed Slider
 
     pose 格式：
         [x, y, z, rx, ry, rz]
@@ -38,9 +39,9 @@ class URRTDEController:
         - move_joint_delta() 每次调用都会立即读取实际关节角，并生成新的目标关节角。
         - move_tcp_delta() 每次调用都会立即读取实际 TCP pose，并以该实际位姿为增量基准。
         - 关节目标由控制线程用 servoJ 按 dq_max 进行限速跟踪。
-        - TCP 增量目标由控制线程用 servoL 跟踪，可按平动速度模长 dx_max 和角速度模长 dq_max 限速。
+        - TCP 目标由控制线程用 servoL 跟踪，可按平动速度模长和角速度模长限速。
         - speedJ()/speedL() 会启动速度 watchdog；超时未刷新速度命令时自动 speedStop()。
-        - 如果 auto_start_on_command=True，则首次调用 track_joint()/move_*_delta() 时会自动 start()。
+        - 如果 auto_start_on_command=True，则首次调用 track_*()/move_*_delta() 时会自动 start()。
 
     注意：
         - RTDEControlInterface 不是线程安全的，因此本类用 _rtde_c_lock 串行化所有 rtde_c 调用。
@@ -468,6 +469,53 @@ class URRTDEController:
             self._last_error = None
 
         return target_q.copy()
+
+    def track_tcp_pose(
+        self,
+        pose: Sequence[float],
+        v_max: Optional[float] = None,
+        w_max: Optional[float] = None,
+    ) -> None:
+        """
+        闭环跟踪输入 TCP pose。
+
+        这个接口接受 base frame 下的绝对目标位姿，不做增量计算。控制线程会复用
+        move_tcp_delta() 的 servoL 路径，并通过 v_max / w_max 做末端限速。
+
+        参数：
+            pose:
+                目标 TCP 位姿，长度 6，[x, y, z, rx, ry, rz]。
+                平移单位 m，旋转向量单位 rad。
+            v_max:
+                TCP 平动速度上限，单位 m/s。限制整体平动速度向量模长，
+                而不是分别限制 vx/vy/vz。None 表示不限制平动速度。
+            w_max:
+                TCP 角速度上限，单位 rad/s。限制整体角速度向量模长，
+                而不是分别限制 wx/wy/wz。None 表示不限制角速度。
+        """
+        target_pose = self._parse_vec6(pose, "pose")
+        v_max = self._parse_optional_positive_float(v_max, "v_max")
+        w_max = self._parse_optional_positive_float(w_max, "w_max")
+
+        self._ensure_started_for_command()
+
+        q_now = np.asarray(self.rtde_r.getActualQ(), dtype=float)
+        pose_actual = np.asarray(self.rtde_r.getActualTCPPose(), dtype=float)
+
+        with self._lock:
+            self._target_q = None
+            self._target_tcp_pose = target_pose.copy()
+            self._target_tcp_dx_max = v_max
+            self._target_tcp_dq_max = w_max
+            self._last_actual_q = q_now.copy()
+            self._last_actual_tcp_pose = pose_actual.copy()
+            self._last_target_q = None
+            self._last_target_tcp_pose = target_pose.copy()
+            self._target_reached = False
+            self._cmd_seq += 1
+            self._pending_tcp_cmd_seq = self._cmd_seq
+            self._pending_tcp_servo_deadline = time.monotonic() + max(0.2, 20.0 * self.dt)
+            self._last_error = None
 
     def move_tcp_delta(
         self,
