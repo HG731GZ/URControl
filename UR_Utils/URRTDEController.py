@@ -25,10 +25,10 @@ class URRTDEController:
     1. track_joint(q, dq_max)：闭环跟踪关节角 q，并限制每个关节速度 dq_max
     2. track_tcp_pose(pose, v_max, w_max)：闭环跟踪 TCP pose，并限制末端速度/角速度
     3. move_joint_delta(delta_q, dq_max)：调用时读取当前实际关节角 q_actual，目标为 q_actual + delta_q
-    4. move_tcp_delta(delta_pose, dx_max, dq_max)：以当前实际 TCP pose 为基准生成新目标，并用 servoL 限速跟踪
+    4. move_tcp_delta(delta_pose, dx_max, dq_max, frame)：以当前实际 TCP pose 为基准生成新目标，并用 servoL 限速跟踪
     5. moveL(delta_pose, speed, acceleration, frame)：以当前实际 TCP pose 为基准执行线性运动
-    6. speedJ(qd, acceleration, time)：关节速度控制
-    7. speedL(xd, acceleration, time, frame)：TCP 速度控制
+    6. speedJ(qd, acceleration, time_s)：关节速度控制
+    7. speedL(xd, acceleration, time_s, frame)：TCP 速度控制
     8. set_speed_slider(speed)：设置控制柜 Speed Slider
 
     pose 格式：
@@ -948,9 +948,8 @@ class URRTDEController:
                     time.sleep(self.dt)
                     continue
 
-                # Keep q_cmd continuous while targets are streaming. Resetting it on every
-                # new target can make the servoJ command sequence jump back to actual_q,
-                # which may trip UR's acceleration sanity check at higher dq_max values.
+                # 目标持续流入时保持 q_cmd 连续。如果每个新目标都从 actual_q 重新起步，
+                # servoJ 命令序列会出现跳变，在较高 dq_max 下容易触发 UR 的加速度检查。
                 if last_control_kind is None or last_control_kind != control_kind:
                     q_cmd = np.asarray(self.rtde_r.getActualQ(), dtype=float)
                     if control_kind == "tcp":
@@ -967,9 +966,8 @@ class URRTDEController:
 
                 if control_kind == "joint":
                     with self._rtde_c_lock:
-                        # initPeriod()/waitPeriod() pair keeps servoJ cycles aligned
-                        # with the RTDE control frequency instead of running Python
-                        # as fast as possible.
+                        # initPeriod()/waitPeriod() 配合使用，让 servoJ 周期与 RTDE 控制频率对齐，
+                        # 而不是以 Python 最快速度循环。
                         t_start = self.rtde_c.initPeriod()
 
                     active_target_q = target_q.copy()
@@ -987,8 +985,8 @@ class URRTDEController:
 
                 elif control_kind == "tcp":
                     with self._rtde_c_lock:
-                        # Use the same RTDE period pacing for servoL as servoJ.
-                        # t_start is a cycle handle consumed by waitPeriod() below.
+                        # servoL 与 servoJ 使用相同的 RTDE 周期节拍。
+                        # t_start 是周期句柄，由下方的 waitPeriod() 消耗。
                         t_start = self.rtde_c.initPeriod()
 
                     last_cmd_seq = snap["cmd_seq"]
@@ -1120,7 +1118,7 @@ class URRTDEController:
                 if t_start is not None:
                     try:
                         with self._rtde_c_lock:
-                            # Sleep the remaining part of this RTDE control period.
+                            # 等待本 RTDE 控制周期的剩余时间。
                             self.rtde_c.waitPeriod(t_start)
                     except Exception:
                         time.sleep(self.dt)
