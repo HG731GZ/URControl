@@ -26,7 +26,7 @@ QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps, True)
 UR_REAL_IP = '192.168.3.15'
 UR_SIM_IP = '127.0.0.1'
 UR_J_SPEED_UI = 0.1  # 关节控制按钮的速度
-UR_TCP_SPEED_UI = 0.01  # 末端控制按钮的速度
+UR_TCP_SPEED_UI = 0.05  # 末端控制按钮的速度
 CAMERA_RESOLUTION = (1280, 720)  # 相机分辨率，RGB和深度统一设定
 CAMERA_FPS = 30  # 相机帧率
 LOCAL_IP = NetWorkSet.get_local_ip()
@@ -59,13 +59,14 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         self.Camera2 = Camera('d455', resolution=CAMERA_RESOLUTION, fps=CAMERA_FPS)
 
         # 数采
-        self.DataCollector = DataCollector(session_name='test1')
+        self.DataCollector = DataCollector(session_name='test2')
         self.DataCollector.register_numeric('TCP_POSE')
+        self.DataCollector.register_numeric('GRIPPER_TARGET')
         self.DataCollector.register_numeric('GRIPPER')
         if self.Camera1 is not None:
-            self.DataCollector.register_image('CAMERA_1', camera_id=self.Camera1.device_name)
+            self.DataCollector.register_image('CAMERA_1', camera_id=self.Camera1.device_name, storage='video')
         if self.Camera2 is not None:
-            self.DataCollector.register_image('CAMERA_2', camera_id=self.Camera2.device_name)
+            self.DataCollector.register_image('CAMERA_2', camera_id=self.Camera2.device_name, storage='video')
         self.timer_DataCollect = QtCore.QTimer(self)
 
         # 窗口控件
@@ -377,6 +378,12 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
 
     # 数采定时器
     def on_timerDataCollect_timeout(self):
+
+        udp_err = self.ur_udp_client.get_last_error()
+        if udp_err is None:
+            cmd = self.ur_udp_client.get_latest()
+            if cmd is not None:
+                self.DataCollector.push_numeric('GRIPPER_TARGET', [cmd.q_gripper[0]])
 
         if self.URRealtimeClient is not None:
             if self.UR_RTState is not None:
