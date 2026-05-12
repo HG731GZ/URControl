@@ -53,6 +53,15 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         self.UR_J_Control_Speed = UR_J_SPEED_UI  # 关节控制按钮的速度
         self.UR_TCP_Control_Speed = UR_TCP_SPEED_UI  # 末端控制按钮的速度
         self.UR_RTState = None
+
+        # UDP 外源控制
+        self.ur_udp_client = URUDPClient(bind_host='0.0.0.0', bind_port=UDP_LOCAL_PORT)
+        self.ur_udp_client.start()
+
+        # 遥操作控制状态（timer 回调时读取，避免每次按下按钮重复 connect）
+        self._control_dq = None
+        self._control_mode = None
+
         # 深度相机
         self.Camera1 = Camera('d435i', resolution=CAMERA_RESOLUTION, fps=CAMERA_FPS)
         time.sleep(0.2)
@@ -123,14 +132,6 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         self.timer_DataCollect.timeout.connect(self.on_timerDataCollect_timeout)
         self.control_button_events_connect()
         self.lineedits_qtarget_bind_validation()
-
-        # UDP 外源控制
-        self.ur_udp_client = URUDPClient(bind_host='0.0.0.0', bind_port=UDP_LOCAL_PORT)
-        self.ur_udp_client.start()
-
-        # 遥操作控制状态（timer 回调时读取，避免每次按下按钮重复 connect）
-        self._control_dq = None
-        self._control_mode = None
 
     # 控件事件函数
     def on_IP_Button_Clicked(self):
@@ -312,6 +313,7 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
                     q_target_rad = np.deg2rad(q_target_deg)
                     q_target_7 = np.append(q_target_rad, 0.0)
                     self.viz_visual.update_virtual(q_target_7)
+
             else:
                 print('RealTime接口接收异常！')
         else:
@@ -321,6 +323,11 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
             fb = self.GripperController.feedback
             self.lineEdit_Clamp1.setText(f"{fb.position}")
             self.lineEdit_Clamp2.setText(f"{fb.current}")
+            # 打包发送当前数据到主端
+        if (udp_err is None) and (self.GripperController is not None) and (self.UR_RTState is not None):
+            fb = self.GripperController.feedback
+            self.ur_udp_client.send_to((UDP_REMOTE_IP, UDP_REMOTE_PORT), self.UR_RTState.q_actual, 0,
+                                       [fb.open, fb.current, fb.position])
 
     def on_timerURRTDE_UI_timeout(self):
         if self._control_dq is None or self._control_mode is None:
