@@ -63,9 +63,9 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         self._control_mode = None
 
         # 深度相机
-        self.Camera1 = Camera('d435i', resolution=CAMERA_RESOLUTION, fps=CAMERA_FPS)
+        self.Camera1 = Camera('d405', resolution=CAMERA_RESOLUTION, fps=CAMERA_FPS)
         time.sleep(0.2)
-        self.Camera2 = Camera('d455', resolution=CAMERA_RESOLUTION, fps=CAMERA_FPS)
+        self.Camera2 = Camera('d435i', resolution=CAMERA_RESOLUTION, fps=CAMERA_FPS)
 
         # 数采
         self.DataCollector = DataCollector(session_name='test2')
