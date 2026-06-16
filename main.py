@@ -57,21 +57,23 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         # UDP 外源控制
         self.ur_udp_client = URUDPClient(bind_host='0.0.0.0', bind_port=UDP_LOCAL_PORT)
         self.ur_udp_client.start()
+        self.ur_udp_command = None
 
         # 遥操作控制状态（timer 回调时读取，避免每次按下按钮重复 connect）
         self._control_dq = None
         self._control_mode = None
 
         # 深度相机
-        self.Camera1 = Camera('d405', resolution=CAMERA_RESOLUTION, fps=CAMERA_FPS)
+        self.Camera1 = Camera('d405', resolution=CAMERA_RESOLUTION, fps=CAMERA_FPS, rotation=180)
         time.sleep(0.2)
-        self.Camera2 = Camera('d435i', resolution=CAMERA_RESOLUTION, fps=CAMERA_FPS)
+        self.Camera2 = Camera('d435i', resolution=(640,480), fps=CAMERA_FPS,rotation=90)
 
         # 数采
         self.DataCollector = DataCollector(session_name='test2')
         self.DataCollector.register_numeric('TCP_POSE')
         self.DataCollector.register_numeric('GRIPPER_TARGET')
         self.DataCollector.register_numeric('GRIPPER')
+        self.DataCollector.register_numeric('MASTER_JOINT')
         if self.Camera1 is not None:
             self.DataCollector.register_image('CAMERA_1', camera_id=self.Camera1.device_name, storage='video')
         if self.Camera2 is not None:
@@ -346,13 +348,13 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
             for i in range(1, 9):
                 getattr(self, f"lineEdit_UDP{i}").setText("UDP ERR")
         else:
-            cmd = self.ur_udp_client.get_latest()
-            if cmd is not None:
-                mode_cn = UDPControlMode.cn_name(cmd.mode)
-                if cmd.mode == 1:  # 关节跟踪
-                    self.URRTDEController.track_joint(cmd.q_arm, dq_max=1)
+            self.ur_udp_command = self.ur_udp_client.get_latest()
+            if self.ur_udp_command is not None:
+                mode_cn = UDPControlMode.cn_name(self.ur_udp_command.mode)
+                if self.ur_udp_command.mode == 1:  # 关节跟踪
+                    self.URRTDEController.track_joint(self.ur_udp_command.q_arm, dq_max=1)
                 if self.GripperController is not None:
-                    self.GripperController.set_target_position(cmd.q_gripper[0])
+                    self.GripperController.set_target_position(self.ur_udp_command.q_gripper[0])
 
     # 相机显示定时器
     def on_timerCameraUpdate_timeout(self):
@@ -386,11 +388,9 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
     # 数采定时器
     def on_timerDataCollect_timeout(self):
 
-        udp_err = self.ur_udp_client.get_last_error()
-        if udp_err is None:
-            cmd = self.ur_udp_client.get_latest()
-            if cmd is not None:
-                self.DataCollector.push_numeric('GRIPPER_TARGET', [cmd.q_gripper[0]])
+        if self.ur_udp_command is not None:
+                self.DataCollector.push_numeric('GRIPPER_TARGET', [self.ur_udp_command.q_gripper[0]])
+                self.DataCollector.push_numeric('MASTER_JOINT',self.ur_udp_command.q_arm)
 
         if self.URRealtimeClient is not None:
             if self.UR_RTState is not None:

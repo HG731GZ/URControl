@@ -59,6 +59,8 @@ class Camera:
         True 时将深度帧对齐到 RGB 坐标系。
     frame_timeout_ms:
         初始化与后台取帧时的等待超时。
+    rotation:
+        按 90° 的倍数旋转画面，可选 0/90/180/270，默认 0（不旋转）。
     """
 
     SUPPORTED_MODELS = {
@@ -84,6 +86,7 @@ class Camera:
             depth_fps: Optional[int] = None,
             align_depth_to_color: bool = True,
             frame_timeout_ms: int = 5000,
+            rotation: int = 0,
     ):
         instance = super().__new__(cls)
         try:
@@ -97,6 +100,7 @@ class Camera:
                 depth_fps=depth_fps,
                 align_depth_to_color=align_depth_to_color,
                 frame_timeout_ms=frame_timeout_ms,
+                rotation=rotation,
             )
         except Exception as exc:
             try:
@@ -119,6 +123,7 @@ class Camera:
             depth_fps: Optional[int] = None,
             align_depth_to_color: bool = True,
             frame_timeout_ms: int = 5000,
+            rotation: int = 0,
     ):
         # 初始化在 __new__ 中完成，这样创建失败时 Camera(...) 可以直接返回 None。
         pass
@@ -134,7 +139,12 @@ class Camera:
             depth_fps: Optional[int] = None,
             align_depth_to_color: bool = True,
             frame_timeout_ms: int = 5000,
+            rotation: int = 0,
     ):
+        if rotation not in (0, 90, 180, 270):
+            raise ValueError(f"rotation 必须是 0/90/180/270，收到: {rotation}")
+        self.rotation = rotation
+
         self.model = self._normalize_model(model)
         self.frame_timeout_ms = frame_timeout_ms
         self.align_depth_to_color = align_depth_to_color
@@ -410,10 +420,13 @@ class Camera:
                     self._cond.notify_all()
                 time.sleep(0.02)
 
-    @staticmethod
-    def _make_frame(frame, received_time: float) -> CameraFrame:
+    def _make_frame(self, frame, received_time: float) -> CameraFrame:
+        image = np.asanyarray(frame.get_data()).copy()
+        if self.rotation != 0:
+            k = self.rotation // 90
+            image = np.ascontiguousarray(np.rot90(image, k))
         return CameraFrame(
-            image=np.asanyarray(frame.get_data()).copy(),
+            image=image,
             timestamp_ms=frame.get_timestamp(),
             frame_number=frame.get_frame_number(),
             received_time=received_time,
