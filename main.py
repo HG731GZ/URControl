@@ -69,10 +69,11 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         self.Camera2 = Camera('d435i', resolution=(640,480), fps=CAMERA_FPS,rotation=90)
 
         # 数采
-        self.DataCollector = DataCollector(session_name='test2')
-        self.DataCollector.register_numeric('TCP_POSE')
-        self.DataCollector.register_numeric('GRIPPER_TARGET')
-        self.DataCollector.register_numeric('GRIPPER')
+        self.DataCollector = DataCollector(session_name='test-2-cylinder')
+        self.DataCollector.register_numeric('UR_TCP_POSE')
+        self.DataCollector.register_numeric('UR_JOINT')
+        self.DataCollector.register_numeric('MASTER_GRIPPER')
+        self.DataCollector.register_numeric('UR_GRIPPER')
         self.DataCollector.register_numeric('MASTER_JOINT')
         if self.Camera1 is not None:
             self.DataCollector.register_image('CAMERA_1', camera_id=self.Camera1.device_name, storage='video')
@@ -389,16 +390,17 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
     def on_timerDataCollect_timeout(self):
 
         if self.ur_udp_command is not None:
-                self.DataCollector.push_numeric('GRIPPER_TARGET', [self.ur_udp_command.q_gripper[0]])
+                self.DataCollector.push_numeric('MASTER_GRIPPER', [self.ur_udp_command.q_gripper[0]])
                 self.DataCollector.push_numeric('MASTER_JOINT',self.ur_udp_command.q_arm)
 
         if self.URRealtimeClient is not None:
             if self.UR_RTState is not None:
-                self.DataCollector.push_numeric('TCP_POSE', self.UR_RTState.tcp_pose)
+                self.DataCollector.push_numeric('UR_TCP_POSE', self.UR_RTState.tcp_pose)
+                self.DataCollector.push_numeric('UR_JOINT', self.UR_RTState.q_actual)
 
         if self.GripperController is not None:
             fb = self.GripperController.feedback
-            self.DataCollector.push_numeric('GRIPPER', [fb.open, fb.current])
+            self.DataCollector.push_numeric('UR_GRIPPER', [fb.open, fb.current])
 
         if self.Camera1 is not None:
             try:
