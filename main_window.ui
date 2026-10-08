@@ -1602,6 +1602,19 @@
      <string>开始采集</string>
     </property>
    </widget>
+   <widget class="QCheckBox" name="checkBox_URSim">
+    <property name="geometry">
+     <rect>
+      <x>160</x>
+      <y>30</y>
+      <width>92</width>
+      <height>23</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>URSim</string>
+    </property>
+   </widget>
   </widget>
   <widget class="QMenuBar" name="menubar">
    <property name="geometry">

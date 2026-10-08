@@ -66,7 +66,7 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         # 深度相机
         self.Camera1 = Camera('d405', resolution=CAMERA_RESOLUTION, fps=CAMERA_FPS, rotation=180)
         time.sleep(0.2)
-        self.Camera2 = Camera('d435i', resolution=(640,480), fps=CAMERA_FPS,rotation=90)
+        self.Camera2 = Camera('d435i', resolution=(640, 480), fps=CAMERA_FPS, rotation=90)
 
         # 数采
         self.DataCollector = DataCollector(session_name='test-2-cylinder')
@@ -126,6 +126,7 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         self.pushButton_UDPSync.clicked.connect(self.on_UDPSync_Button)
         self.pushButton_Collect.clicked.connect(self.on_Collect_Button)
         self.horizontalSlider_SpeedSlider.valueChanged.connect(self.on_SpeedSliderValueChanged)
+        self.checkBox_URSim.stateChanged.connect(self.on_URSimCheckBoxStateChanged)
 
         self.timer_URStatus.timeout.connect(self.on_timerURStatus_timeout)
         self.timer_URStatus_RT.timeout.connect(self.on_timerURStatus_RT_timeout)
@@ -239,6 +240,14 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
         self.label_SpeedSlider.setText(f'限速: {self.horizontalSlider_SpeedSlider.value()}%')
         if self.URRTDEController is not None:
             self.URRTDEController.set_speed_slider(self.horizontalSlider_SpeedSlider.value() / 100)
+
+    def on_URSimCheckBoxStateChanged(self):
+        if self.checkBox_URSim.isChecked():
+            self.lineEdit_IP.setText(UR_SIM_IP)
+            self.on_IP_Button_Clicked()
+        else:
+            self.lineEdit_IP.setText(UR_REAL_IP)
+            self.on_IP_Button_Clicked()
 
     def on_timerURStatus_timeout(self):
         message = ''
@@ -390,8 +399,8 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
     def on_timerDataCollect_timeout(self):
 
         if self.ur_udp_command is not None:
-                self.DataCollector.push_numeric('MASTER_GRIPPER', [self.ur_udp_command.q_gripper[0]])
-                self.DataCollector.push_numeric('MASTER_JOINT',self.ur_udp_command.q_arm)
+            self.DataCollector.push_numeric('MASTER_GRIPPER', [self.ur_udp_command.q_gripper[0]])
+            self.DataCollector.push_numeric('MASTER_JOINT', self.ur_udp_command.q_arm)
 
         if self.URRealtimeClient is not None:
             if self.UR_RTState is not None:
