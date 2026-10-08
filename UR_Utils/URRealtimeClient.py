@@ -2,7 +2,7 @@ import socket
 import struct
 import threading
 import time
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 from UR_Utils.URTcpClient import URTcpClient, URTcpTimeoutError
 from UR_Utils.URRealtimeUtils import URRealtimeParser, URRealtimeState, URRealtimeParseError
 
@@ -272,6 +272,16 @@ class URRealtimeClient(URTcpClient):
         """
         with self._state_cond:
             return self._latest_state
+
+    def get_target_joint_torques(self) -> Optional[List[float]]:
+        """
+        读取最近一帧的目标关节力矩，单位 Nm。
+
+        调用前需通过 wait_first_state() 收到第一帧。
+        顺序为基座、肩部、肘部、腕部一、腕部二、腕部三。
+        数据来自 RealTime 的 M target 字段，不是实际关节力矩。
+        """
+        return self.get_latest_state().m_target
 
     def get_latest_packet(self) -> Optional[bytes]:
         """

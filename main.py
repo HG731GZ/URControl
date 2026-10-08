@@ -309,8 +309,9 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
                     else:
                         line_edit.setText(f"{self.UR_RTState.tcp_pose[i] * 180 / np.pi:.3f}")
                     # TCP Force
-                    line_edit = getattr(self, f"lineEdit_Fex{i + 1}")
-                    line_edit.setText(f"{self.UR_RTState.tcp_force[i] :.3f}")
+                    if self.checkBox_FTSwitch.checkState() != Qt.Checked:
+                        line_edit = getattr(self, f"lineEdit_Fex{i + 1}")
+                        line_edit.setText(f"{self.UR_RTState.tcp_force[i] :.3f}")
 
                     # 目标关节角
                     line_edit = getattr(self, f"lineEdit_QT{i + 1}")
@@ -340,6 +341,13 @@ class UI_MainWindow(QMainWindow, Ui_MainWindow):
             fb = self.GripperController.feedback
             self.ur_udp_client.send_to((UDP_REMOTE_IP, UDP_REMOTE_PORT), self.UR_RTState.q_actual, 0,
                                        [fb.open, fb.current, fb.position])
+
+        if self.URRTDEController is not None:
+            UR_Torque = self.URRTDEController.get_raw_joint_torques()
+            if self.checkBox_FTSwitch.checkState() == Qt.Checked:
+                for i in range(6):
+                    line_edit = getattr(self, f"lineEdit_Fex{i + 1}")
+                    line_edit.setText(f"{UR_Torque[i] :.3f}")
 
     def on_timerURRTDE_UI_timeout(self):
         if self._control_dq is None or self._control_mode is None:

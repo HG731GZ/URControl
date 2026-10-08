@@ -1,0 +1,158 @@
+{
+  "host": "127.0.0.1",
+  "controller_version": "URSim 5.24.0",
+  "measurement": "主机单调时钟统计接收频率，控制器时间戳统计采样周期缺口；循环中不打印、不休眠。",
+  "limitations": "本地静止模拟器结果，不代表真机网络或端到端力反馈延迟；不同轮次的系统负载可能不同。",
+  "baseline": [
+    {
+      "mode": "one_connection_per_call",
+      "samples": 1216,
+      "seconds": 5.000292603000162,
+      "calls_per_second": 243.18576862290087,
+      "arrival_interval_ms": {
+        "mean": 4.112001986008473,
+        "p50": 4.140591000123095,
+        "p95": 6.173984900169671,
+        "p99": 6.275226200077667,
+        "max": 12.261183000191522
+      },
+      "arrival_gaps_over_4ms": 1111,
+      "arrival_gaps_over_10ms": 1,
+      "last_torques_nm": [
+        -1.813902651776455e-16,
+        21.261372344464824,
+        14.823039108277811,
+        1.811941528544163,
+        0.013639165730271668,
+        0.0
+      ]
+    },
+    {
+      "mode": "official_persistent_500hz",
+      "samples": 14490,
+      "seconds": 30.001744305999637,
+      "calls_per_second": 482.97191830617476,
+      "arrival_interval_ms": {
+        "mean": 2.0705090259507055,
+        "p50": 2.071601999887207,
+        "p95": 2.136927399897104,
+        "p99": 2.1727883598032345,
+        "max": 4.619025000010879
+      },
+      "arrival_gaps_over_4ms": 4,
+      "arrival_gaps_over_10ms": 0,
+      "last_torques_nm": [
+        -1.813902651776455e-16,
+        21.261372344464824,
+        14.823039108277811,
+        1.811941528544163,
+        0.013639165730271668,
+        0.0
+      ],
+      "fresh_samples_per_second": 482.97302135200056,
+      "controller_span_seconds": 28.986000000000104,
+      "missing_2ms_steps": 4,
+      "duplicate_timestamps": 0,
+      "controller_interval_max_ms": 4.000000000132786
+    }
+  ],
+  "persistent_client": [
+    {
+      "requested_frequency_hz": 125,
+      "samples": 945,
+      "elapsed_seconds": 8.00255424900024,
+      "fresh_samples_per_second": 118.086852141704,
+      "controller_samples_per_second": 124.99999999999777,
+      "controller_span_seconds": 7.552000000000135,
+      "controller_to_host_clock_ratio": 0.9446948171336489,
+      "missing_sample_periods": 0,
+      "duplicate_timestamps": 0,
+      "arrival_interval_ms": {
+        "mean": 8.468343273305328,
+        "p50": 8.364445000097476,
+        "p95": 8.839299350097457,
+        "p99": 11.01307284991435,
+        "max": 16.10554700027933
+      },
+      "arrival_gaps_over_4ms": 944,
+      "arrival_gaps_over_10ms": 28,
+      "controller_interval_max_ms": 10.000000000218279,
+      "last_torques_nm": [
+        -1.813902651776455e-16,
+        21.261372344464824,
+        14.823039108277811,
+        1.811941528544163,
+        0.013639165730271668,
+        0.0
+      ],
+      "mode": "standalone_torque_client"
+    },
+    {
+      "requested_frequency_hz": 250,
+      "samples": 1911,
+      "elapsed_seconds": 8.002511124000193,
+      "fresh_samples_per_second": 238.8007423219815,
+      "controller_samples_per_second": 250.00000000000418,
+      "controller_span_seconds": 7.639999999999873,
+      "controller_to_host_clock_ratio": 0.95520296928791,
+      "missing_sample_periods": 0,
+      "duplicate_timestamps": 0,
+      "arrival_interval_ms": {
+        "mean": 4.187591672774924,
+        "p50": 4.17903650009066,
+        "p95": 4.326281350040517,
+        "p99": 4.374822779891474,
+        "max": 4.436056000031385
+      },
+      "arrival_gaps_over_4ms": 1908,
+      "arrival_gaps_over_10ms": 0,
+      "controller_interval_max_ms": 4.00000000036016,
+      "last_torques_nm": [
+        -1.813902651776455e-16,
+        21.261372344464824,
+        14.823039108277811,
+        1.811941528544163,
+        0.013639165730271668,
+        0.0
+      ],
+      "mode": "standalone_torque_client"
+    },
+    {
+      "requested_frequency_hz": 500,
+      "samples": 14337,
+      "elapsed_seconds": 30.001788646000023,
+      "fresh_samples_per_second": 477.8717455194373,
+      "controller_samples_per_second": 499.99999999999955,
+      "controller_span_seconds": 28.672000000000025,
+      "controller_to_host_clock_ratio": 0.9557434910388753,
+      "missing_sample_periods": 0,
+      "duplicate_timestamps": 0,
+      "arrival_interval_ms": {
+        "mean": 2.092611687918522,
+        "p50": 2.0837950000895944,
+        "p95": 2.194488749978518,
+        "p99": 2.233224399901701,
+        "max": 3.1122539999159926
+      },
+      "arrival_gaps_over_4ms": 0,
+      "arrival_gaps_over_10ms": 0,
+      "controller_interval_max_ms": 2.0000000004074536,
+      "last_torques_nm": [
+        -1.813902651776455e-16,
+        21.261372344464824,
+        14.823039108277811,
+        1.811941528544163,
+        0.013639165730271668,
+        0.0
+      ],
+      "mode": "standalone_torque_client"
+    },
+    {
+      "mode": "controller_persistent_getter",
+      "samples": 7246,
+      "calls_per_second": 483.06739762772213,
+      "arrival_interval_p99_ms": 2.170595360130392,
+      "arrival_interval_max_ms": 2.39673500027493
+    }
+  ]
+}

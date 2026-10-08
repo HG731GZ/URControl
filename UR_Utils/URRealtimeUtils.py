@@ -40,6 +40,11 @@ class URRealtimeState:
         return self.get("qd_actual")
 
     @property
+    def m_target(self) -> Optional[List[float]]:
+        """目标关节力矩，单位 Nm，顺序为基座、肩部、肘部、腕部一、腕部二、腕部三。"""
+        return self.get("m_target")
+
+    @property
     def tcp_pose(self) -> Optional[List[float]]:
         """
         [x, y, z, rx, ry, rz]

@@ -9,6 +9,7 @@ import numpy as np
 import rtde_control
 import rtde_io
 import rtde_receive
+from UR_Utils.URRTDETorqueClient import URRTDETorqueClient
 from UR_Utils.ur_pose_math import (
     apply_pose_delta,
     is_pose_reached,
@@ -30,6 +31,8 @@ class URRTDEController:
     6. speedJ(qd, acceleration, time_s)：关节速度控制
     7. speedL(xd, acceleration, time_s, frame)：TCP 速度控制
     8. set_speed_slider(speed)：设置控制柜 Speed Slider
+    9. get_joint_torques()：读取补偿后的关节力矩
+    10. get_raw_joint_torques()：读取实际电流换算的未补偿关节力矩
 
     pose 格式：
         [x, y, z, rx, ry, rz]
@@ -158,6 +161,8 @@ class URRTDEController:
 
         self._lifecycle_lock = threading.RLock()
         self._is_shutdown = False
+        self._raw_torque_lock = threading.Lock()
+        self._raw_torque_stream: Optional[URRTDETorqueClient] = None
 
         self._speed_watchdog_stop = threading.Event()
         self._speed_watchdog_thread: Optional[threading.Thread] = None
@@ -362,6 +367,7 @@ class URRTDEController:
             if self._is_shutdown:
                 return
 
+            self.stop_raw_torque_stream()
             self.stop(stop_script=True)
             self._speed_watchdog_stop.set()
             if self._speed_watchdog_thread is not None:
@@ -798,6 +804,41 @@ class URRTDEController:
     def get_actual_q(self) -> np.ndarray:
         """读取当前实际关节角，单位 rad。"""
         return np.asarray(self.rtde_r.getActualQ(), dtype=float)
+
+    def get_joint_torques(self) -> np.ndarray:
+        """
+        读取补偿后的六轴关节力矩，单位 Nm。
+
+        已扣除机器人自身运动所需的力矩，包括重力、摩擦等。
+        顺序为基座、肩部、肘部、腕部一、腕部二、腕部三。
+        调用时机器人端的 RTDE 控制脚本需处于运行状态。
+        """
+        with self._rtde_c_lock:
+            return np.asarray(self.rtde_c.getJointTorques(), dtype=float)
+
+    def get_raw_joint_torques(self) -> np.ndarray:
+        """
+        读取实际电流换算的六轴关节力矩，单位 Nm，保留重力、摩擦等分量。
+
+        数据来自 RTDE 的 actual_current_as_torque 字段，需要控制器版本
+        5.23.0 或 10.11.0 及以上，以及官方 RTDE 客户端依赖 rtde。
+        这是控制器的电流换算值，不是未经处理的力矩传感器信号。
+        顺序为基座、肩部、肘部、腕部一、腕部二、腕部三。
+        首次调用建立只读订阅，后续复用连接并等待接收数据。
+        采集频率跟随构造参数 frequency，默认 500 Hz；应在采集线程中持续调用。
+        停止采集时调用 stop_raw_torque_stream()，关闭控制器时也会释放连接。
+        """
+        with self._raw_torque_lock:
+            if self._raw_torque_stream is None:
+                self._raw_torque_stream = URRTDETorqueClient(self.robot_ip, self.frequency)
+            return self._raw_torque_stream.read()[1]
+
+    def stop_raw_torque_stream(self) -> None:
+        """停止关节力矩订阅；下次读取时重新建立连接。"""
+        with self._raw_torque_lock:
+            if self._raw_torque_stream is not None:
+                self._raw_torque_stream.close()
+                self._raw_torque_stream = None
 
     def get_actual_tcp_pose(self) -> np.ndarray:
         """读取当前实际 TCP pose：[x, y, z, rx, ry, rz]。"""

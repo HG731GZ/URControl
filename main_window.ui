@@ -413,7 +413,7 @@
      </rect>
     </property>
     <property name="title">
-     <string>末端广义力</string>
+     <string>力</string>
     </property>
     <widget class="QLineEdit" name="lineEdit_Fex1">
      <property name="geometry">
@@ -491,6 +491,19 @@
      </property>
      <property name="readOnly">
       <bool>true</bool>
+     </property>
+    </widget>
+    <widget class="QCheckBox" name="checkBox_FTSwitch">
+     <property name="geometry">
+      <rect>
+       <x>20</x>
+       <y>0</y>
+       <width>51</width>
+       <height>23</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>力矩</string>
      </property>
     </widget>
    </widget>
