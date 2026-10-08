@@ -206,7 +206,9 @@ class DataCollector:
         group_name: str,
         rgb: Optional[np.ndarray] = None,
         depth: Optional[np.ndarray] = None,
+        timestamp: Optional[float] = None,
     ) -> None:
+        """推送图像；时间戳使用来源帧的主机接收时间，省略时使用当前时间。"""
         if self._active_episode is None:
             print("[DataCollector] push_image: 没有活跃剧集，请先调用 start_episode()")
             return
@@ -226,7 +228,7 @@ class DataCollector:
                 self._episode_dir, "images", group_name  # type: ignore[arg-type]
             )
             step = self._step_counter
-            timestamp = time.time()
+            timestamp = time.time() if timestamp is None else timestamp
             info = self._image_groups[group_name]
             frame_index = None
             if info["storage"] == "video" and rgb is not None:

@@ -1,9 +1,9 @@
-from UR_Utils.URTcpClient import URTcpClient, URTcpTimeoutError
+from UR_Utils.URTcpClient import URTcpClient
 
 
 class URDashboardClient(URTcpClient):
     """
-    UR Dashboard Server Client。
+    UR Dashboard 服务客户端。
 
     Dashboard Server 常用端口：29999
 
@@ -38,19 +38,8 @@ class URDashboardClient(URTcpClient):
         """
         Dashboard Server 建立连接后，通常会先返回一行欢迎信息。
         """
-        welcome = None
-        try:
-            super().connect()
-        except:
-            return welcome
-        try:
-            welcome = self.recv_text()
-            # 这里不强制处理 welcome，避免不同版本返回内容差异导致报错
-            # print("Dashboard welcome:", welcome)
-        except:
-            # 有些情况下可能没有及时收到欢迎信息，不一定直接视为失败
-            pass
-        return welcome
+        super().connect()
+        return self.recv_text()
 
     def command(self, cmd: str) -> str:
         """

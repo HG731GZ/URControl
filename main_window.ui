@@ -47,7 +47,7 @@
      </rect>
     </property>
     <property name="text">
-     <string>机械臂IP地址：</string>
+     <string>实际连接：</string>
     </property>
    </widget>
    <widget class="QLabel" name="label_IP_now">
@@ -55,7 +55,7 @@
      <rect>
       <x>110</x>
       <y>1</y>
-      <width>141</width>
+      <width>130</width>
       <height>23</height>
      </rect>
     </property>
@@ -153,7 +153,7 @@
 </string>
     </property>
     <property name="text">
-     <string>UR急停</string>
+     <string>UR下电</string>
     </property>
    </widget>
    <widget class="QGroupBox" name="groupBox_Q_Actual">
@@ -1228,7 +1228,7 @@
      <string>停止RTDE</string>
     </property>
    </widget>
-   <widget class="QWidget" name="widget_WebView" native="true">
+   <widget class="QWidget" name="widget_RobotView" native="true">
     <property name="geometry">
      <rect>
       <x>345</x>
