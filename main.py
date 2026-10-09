@@ -4,27 +4,24 @@ import time
 
 import numpy as np
 from rtde.rtde import RTDEException
-from PyQt5 import QtCore, QtWidgets
+from PyQt5 import QtCore
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QImage, QPixmap
-from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout
+from PyQt5.QtWidgets import QApplication, QMainWindow
 
 import NetWorkSet
 from DataCollector import DataCollector
 from GripperController import GripperController, GRIPPER_SPEED_DEFAULT, GRIPPER_FORCE_DEFAULT
 from RealSenseCamera import Camera, CameraError
-from ui_main_window import Ui_MainWindow
+from window_display import WindowDisplayController, configure_high_dpi
+from window_layouts import create_layout, saved_layout, switch_layout
 from UR_Utils.URDashboardClient import URDashboardClient
 from UR_Utils.URRealtimeClient import URRealtimeClient
 from UR_Utils.URRTDEController import URRTDEController
 from UR_Utils.URRTDETorqueClient import URRTDETorqueClient
-from UR_Utils.URScriptClient import URScriptClient
 from UR_Utils.URTcpClient import URTcpError
 from UR_Utils.URUdpClient import URUDPClient, UDPControlMode
 from UR_Utils.ur5e_visualizer import UR5eDualVisualizer
-
-QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling, True)
-QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps, True)
 
 UR_REAL_IP = '192.168.3.15'
 UR_SIM_IP = '127.0.0.1'
@@ -48,14 +45,15 @@ DATA_DIRECTORY = 'data'
 SESSION_NAME_FORMAT = 'URCollect_%Y%m%d_%H%M%S'
 
 
-class MainWindow(QMainWindow, Ui_MainWindow):
+class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setupUi(self)
+        self._layout_settings = QtCore.QSettings('URControl', 'Display')
+        self._layout_mode = saved_layout(self._layout_settings)
+        self._ui = create_layout(self, self._layout_mode)
         self.robot_ip = UR_REAL_IP
         self.connected_ip = None
         self.dashboard_client = None
-        self.script_client = None
         self.realtime_client = None
         self.rtde_controller = None
         self.torque_client = None
@@ -63,7 +61,6 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.robot_state = None
         self.robot_ready = False
         self.control_source = 'idle'
-        self._script_motion_active = False
         self._jog_velocity = None
         self._jog_mode = None
         self._last_collected_udp_time = None
@@ -72,13 +69,35 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.initialize_collector()
         self.create_timers()
         self.initialize_visualizer()
+        self.display_controller = WindowDisplayController(self, self._ui, self._layout_settings)
         self.bind_signals()
+        self.bind_layout_actions()
         self.lineEdit_IP.setText(self.robot_ip)
         self.update_connection_label()
         self.update_buttons()
         self.status_timer.start(100)
         self.robot_view_timer.start(10)
         self.camera_timer.start(50)
+
+    def bind_layout_actions(self):
+        self.actionLayoutModern.triggered.connect(lambda: self.on_change_layout('modern'))
+        self.actionLayoutClassic.triggered.connect(lambda: self.on_change_layout('classic'))
+
+    def on_change_layout(self, mode):
+        if mode == self._layout_mode:
+            return
+        self.setUpdatesEnabled(False)
+        try:
+            self.display_controller.dispose()
+            self._ui = switch_layout(self, self._ui, mode)
+            self._layout_mode = mode
+            self._layout_settings.setValue('layoutMode', mode)
+            self.display_controller = WindowDisplayController(self, self._ui, self._layout_settings)
+            self.bind_layout_actions()
+            self.update_connection_label()
+            self.update_buttons()
+        finally:
+            self.setUpdatesEnabled(True)
 
     def initialize_devices(self):
         self.udp_client = URUDPClient(bind_host='0.0.0.0', bind_port=UDP_LOCAL_PORT)
@@ -117,9 +136,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.robot_visualizer = UR5eDualVisualizer(
             mjcf_path, camera_azimuth_deg=-120, camera_elevation_deg=21)
         self.robot_view = self.robot_visualizer.widget
-        layout = QVBoxLayout(self.widget_RobotView)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.robot_view)
+        self.verticalLayout_RobotViewport.addWidget(self.robot_view)
 
     def bind_signals(self):
         for name, callback in (
@@ -171,8 +188,6 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.disconnect_robot()
         self.dashboard_client = URDashboardClient(self.robot_ip)
         self.append_message(self.dashboard_client.connect())
-        self.script_client = URScriptClient(self.robot_ip)
-        self.script_client.connect()
         self.realtime_client = URRealtimeClient(self.robot_ip)
         self.realtime_client.connect()
         self.connected_ip = self.robot_ip
@@ -193,7 +208,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             self.stop_control()
         finally:
             for name in ('torque_client', 'rtde_controller', 'gripper',
-                         'realtime_client', 'script_client', 'dashboard_client'):
+                         'realtime_client', 'dashboard_client'):
                 client = getattr(self, name)
                 if client is not None:
                     client.close()
@@ -215,9 +230,6 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             self.gripper.pause()
         if self.rtde_controller is not None:
             self.rtde_controller.stop(stop_script=stop_script)
-        if self._script_motion_active:
-            self._script_motion_active = False
-            self.script_client.stopj(a=10)
         self.set_joint_targets_readonly(False)
 
     def on_power_on(self):
@@ -289,10 +301,10 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         for name in ('Shutdown', 'URPowerOn', 'URBrakeRelease', 'Stop', 'StopRTDE'):
             getattr(self, f'pushButton_{name}').setEnabled(connected)
         for name in ('HOME', 'URScriptMoveJ'):
-            getattr(self, f'pushButton_{name}').setEnabled(ready)
+            getattr(self, f'pushButton_{name}').setEnabled(rtde_ready)
         command = self.get_udp_snapshot()
         joint_command = command is not None and command.mode == UDPControlMode.JOINT_TRACK
-        self.pushButton_UDPSync.setEnabled(ready and joint_command)
+        self.pushButton_UDPSync.setEnabled(rtde_ready and joint_command)
         self.pushButton_RTDEUDP.setEnabled(rtde_ready and joint_command)
         self.horizontalSlider_SpeedSlider.setEnabled(rtde_ready)
         for button in self.jog_buttons:
@@ -323,10 +335,12 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         if self.control_source != 'jog':
             return
         if self._jog_mode == 'joint':
-            self.rtde_controller.speedJ(qd=self._jog_velocity, time_s=1, acceleration=0.1)
+            self.rtde_controller.speedJ(
+                qd=self._jog_velocity, time_s=self.rtde_controller.dt, acceleration=0.1)
         else:
             frame = 'tool' if self._jog_mode == 'tcp_tool' else 'base_add'
-            self.rtde_controller.speedL(xd=self._jog_velocity, time_s=1, frame=frame)
+            self.rtde_controller.speedL(
+                xd=self._jog_velocity, time_s=self.rtde_controller.dt, frame=frame)
 
     def on_move_joint(self):
         q_rad = [np.deg2rad(self.get_valid_qtarget_degree(i, commit=True)) for i in range(1, 7)]
@@ -336,9 +350,9 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.move_joint(UR_HOME_RAD)
 
     def move_joint(self, q_rad):
-        self.stop_control(stop_script=True)
-        self.script_client.movej(q_rad, v=0.1)
-        self._script_motion_active = True
+        self.stop_control()
+        self.rtde_controller.moveJ(q_rad, speed=0.1, asynchronous=True)
+        self.control_source = 'moveJ'
 
     def on_start_udp(self):
         self.stop_control()
@@ -615,6 +629,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
 
 if __name__ == '__main__':
+    configure_high_dpi()
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()

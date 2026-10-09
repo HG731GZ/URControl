@@ -33,6 +33,7 @@ class URRTDEController:
     8. set_speed_slider(speed)：设置控制柜 Speed Slider
     9. get_joint_torques()：读取补偿后的关节力矩
     10. get_raw_joint_torques()：读取实际电流换算的未补偿关节力矩
+    11. moveJ(q, speed, acceleration, asynchronous)：执行可中断的关节目标运动
 
     pose 格式：
         [x, y, z, rx, ry, rz]
@@ -169,6 +170,7 @@ class URRTDEController:
         self._speed_watchdog_active = False
         self._speed_watchdog_deadline: Optional[float] = None
         self._last_speed_command_kind: Optional[str] = None
+        self._direct_motion_kind: Optional[str] = None
 
     # ------------------------------------------------------------------
     # 对外接口
@@ -178,18 +180,17 @@ class URRTDEController:
         """
         启动或恢复 RTDE 控制线程。
 
-        这个函数被设计成“可重复调用且无风险”：
+        启动流程：
             1. 如果当前没有运行控制线程，则恢复/上传 RTDE control script 并启动线程；
             2. 如果当前已经在运行，默认也会先安全停止旧线程，再 reuploadScript()，最后重启线程；
-            3. 如果之前被外部 URScript 顶掉，下一次直接调用 start() 即可恢复；
+            3. stop(stop_script=True) 之后，可再次调用 start() 恢复；
             4. 不会销毁 RTDE 连接。
 
         参数：
             force_reupload:
                 True:
                     默认行为。每次 start() 都会执行一次安全恢复流程：
-                    stop old thread -> servoStop -> reuploadScript -> start new thread。
-                    适合你的使用习惯：需要遥操作时 start()，被外部脚本顶掉后再次 start()。
+                    停止旧线程 → 停止当前运动 → 恢复控制脚本 → 启动新线程。
                 False:
                     如果控制线程已经正常运行，则直接返回 True，不重启线程。
                     适合确认已经运行但不希望产生任何短暂停顿的场景。
@@ -223,30 +224,27 @@ class URRTDEController:
                     return False
                 self._thread = None
 
-            # 停止当前 servo。RTDE control script 已被外部脚本顶掉时，这里可能报错，忽略即可。
+            # 按实际运动类型停止，点位运动必须使用 stopJ 或 stopL。
             try:
-                with self._rtde_c_lock:
-                    try:
-                        self.rtde_c.speedStop(self.servo_stop_acc)
-                    except Exception:
-                        pass
-                    self.rtde_c.servoStop(self.servo_stop_acc)
-            except Exception:
-                pass
+                self._stop_motion()
+            except Exception as exc:
+                with self._lock:
+                    self._last_error = f"停止当前运动失败：{exc}"
+                return False
 
             # 恢复机器人端 RTDE control script。
-            if force_reupload:
-                try:
-                    with self._rtde_c_lock:
+            try:
+                with self._rtde_c_lock:
+                    if force_reupload or not self.rtde_c.isProgramRunning():
                         ok = self.rtde_c.reuploadScript()
-                    if not ok:
-                        with self._lock:
-                            self._last_error = "reuploadScript() returned False"
-                        return False
-                except Exception as exc:
-                    with self._lock:
-                        self._last_error = f"reuploadScript() failed: {repr(exc)}"
-                    return False
+                        if not ok:
+                            with self._lock:
+                                self._last_error = "reuploadScript() returned False"
+                            return False
+            except Exception as exc:
+                with self._lock:
+                    self._last_error = f"reuploadScript() failed: {repr(exc)}"
+                return False
 
             # 用当前实际关节角重置内部命令状态，避免恢复后突然跳变。
             try:
@@ -309,22 +307,10 @@ class URRTDEController:
                 self._thread.join(timeout=2.0)
                 self._thread = None
 
-            try:
-                with self._rtde_c_lock:
-                    try:
-                        self.rtde_c.speedStop(self.servo_stop_acc)
-                    except Exception:
-                        pass
-                    self.rtde_c.servoStop(self.servo_stop_acc)
-            except Exception:
-                pass
-
-            if stop_script:
-                try:
-                    with self._rtde_c_lock:
-                        self.rtde_c.stopScript()
-                except Exception:
-                    pass
+            self._stop_motion()
+            with self._rtde_c_lock:
+                if stop_script and self.rtde_c.isProgramRunning():
+                    self.rtde_c.stopScript()
 
             try:
                 q_now = np.asarray(self.rtde_r.getActualQ(), dtype=float)
@@ -352,6 +338,21 @@ class URRTDEController:
                 self._pending_tcp_cmd_seq = None
                 self._pending_tcp_servo_deadline = None
                 self._last_error = None
+                self._cmd_seq += 1
+
+    def _stop_motion(self) -> None:
+        """使用当前运动对应的停止接口，已退出的脚本不再接收控制指令。"""
+        with self._rtde_c_lock:
+            if self.rtde_c.isProgramRunning():
+                if self._direct_motion_kind == "moveJ":
+                    self.rtde_c.stopJ(self.servo_stop_acc)
+                elif self._direct_motion_kind == "moveL":
+                    self.rtde_c.stopL(self.servo_stop_acc)
+                elif self._direct_motion_kind in ("speedJ", "speedL"):
+                    self.rtde_c.speedStop(self.servo_stop_acc)
+                else:
+                    self.rtde_c.servoStop(self.servo_stop_acc)
+            self._direct_motion_kind = None
 
     def is_running(self) -> bool:
         """返回控制线程是否正在运行。"""
@@ -600,6 +601,32 @@ class URRTDEController:
 
         return target_pose.copy()
 
+    def moveJ(
+        self,
+        q: Sequence[float],
+        speed: float = 0.25,
+        acceleration: float = 1.2,
+        asynchronous: bool = True,
+    ) -> bool:
+        """执行关节目标运动；同步等待期间也允许其他线程调用 stop()。"""
+        q = self._parse_vec6(q, "q")
+        self._prepare_direct_motion_command("moveJ")
+        with self._rtde_c_lock:
+            ok = self.rtde_c.moveJ(q.tolist(), speed, acceleration, True)
+            if not ok:
+                raise RuntimeError("moveJ() 返回失败")
+            self._direct_motion_kind = "moveJ"
+            cmd_seq = self._cmd_seq
+            self._record_direct_motion_state(
+                actual_q=np.asarray(self.rtde_r.getActualQ(), dtype=float),
+                actual_tcp_pose=np.asarray(self.rtde_r.getActualTCPPose(), dtype=float),
+                target_q=q,
+                reached=False,
+            )
+        if not asynchronous:
+            self._wait_for_direct_motion(cmd_seq)
+        return bool(ok)
+
     def moveL(
         self,
         delta_pose: Sequence[float],
@@ -610,6 +637,8 @@ class URRTDEController:
     ) -> np.ndarray:
         """
         以当前实际 TCP pose 为基准执行一次 moveL。
+
+        机器人端始终异步执行；同步调用在锁外等待，允许其他线程调用 stop() 中断。
 
         frame="base_add"：
             target_pose = actual_pose + delta_pose
@@ -634,7 +663,7 @@ class URRTDEController:
         if acceleration <= 0.0 or not np.isfinite(acceleration):
             raise ValueError("acceleration must be a positive finite scalar")
 
-        self._prepare_direct_motion_command()
+        self._prepare_direct_motion_command("moveL")
 
         pose_actual = np.asarray(self.rtde_r.getActualTCPPose(), dtype=float)
         target_pose = apply_pose_delta(
@@ -648,18 +677,20 @@ class URRTDEController:
                 target_pose.tolist(),
                 speed,
                 acceleration,
-                asynchronous,
+                True,
             )
-
-        if not ok:
-            raise RuntimeError("moveL() returned False")
-
-        self._record_direct_motion_state(
-            actual_q=np.asarray(self.rtde_r.getActualQ(), dtype=float),
-            actual_tcp_pose=np.asarray(self.rtde_r.getActualTCPPose(), dtype=float),
-            target_tcp_pose=target_pose,
-            reached=(not asynchronous),
-        )
+            if not ok:
+                raise RuntimeError("moveL() returned False")
+            self._direct_motion_kind = "moveL"
+            cmd_seq = self._cmd_seq
+            self._record_direct_motion_state(
+                actual_q=np.asarray(self.rtde_r.getActualQ(), dtype=float),
+                actual_tcp_pose=np.asarray(self.rtde_r.getActualTCPPose(), dtype=float),
+                target_tcp_pose=target_pose,
+                reached=False,
+            )
+        if not asynchronous:
+            self._wait_for_direct_motion(cmd_seq)
         return target_pose.copy()
 
     def speedJ(
@@ -685,7 +716,7 @@ class URRTDEController:
 
         注意：
             speedJ 的 time_s 在实机上可能只表现为接口阻塞时间，不保证到时自动刹车。
-            本类会在下发 speedJ 前启动速度 watchdog：如果超过
+            本类会在下发 speedJ 后刷新速度 watchdog：如果超过
             speed_watchdog_timeout 没有新的 speedJ/speedL 命令刷新 deadline，
             后台线程会主动调用 speedStop()。
         """
@@ -698,16 +729,12 @@ class URRTDEController:
         if time_s < 0.0 or not np.isfinite(time_s):
             raise ValueError("time_s must be a non-negative finite scalar")
 
-        self._prepare_direct_motion_command()
-
-        self._arm_speed_watchdog("speedJ")
+        self._prepare_direct_motion_command("speedJ")
 
         with self._rtde_c_lock:
             ok = bool(self.rtde_c.speedJ(qd_arr.tolist(), acceleration, time_s))
-
-        # if not ok:
-        #     raise RuntimeError("speedJ() returned False")
-        # 实机上这个地方会抛出异常，但不影响使用，所以注释掉
+            self._direct_motion_kind = "speedJ"
+            self._arm_speed_watchdog("speedJ")
 
         self._record_direct_motion_state(
             actual_q=np.asarray(self.rtde_r.getActualQ(), dtype=float),
@@ -737,7 +764,7 @@ class URRTDEController:
 
         注意：
             speedL 的 time_s 在实机上可能只表现为接口阻塞时间，不保证到时自动刹车。
-            本类会在下发 speedL 前启动速度 watchdog：如果超过
+            本类会在下发 speedL 后刷新速度 watchdog：如果超过
             speed_watchdog_timeout 没有新的 speedJ/speedL 命令刷新 deadline，
             后台线程会主动调用 speedStop()。
         """
@@ -753,7 +780,7 @@ class URRTDEController:
         if time_s < 0.0 or not np.isfinite(time_s):
             raise ValueError("time_s must be a non-negative finite scalar")
 
-        self._prepare_direct_motion_command()
+        self._prepare_direct_motion_command("speedL")
 
         pose_actual = np.asarray(self.rtde_r.getActualTCPPose(), dtype=float)
         xd_base = twist_to_base(
@@ -762,14 +789,10 @@ class URRTDEController:
             frame=frame,
         )
 
-        self._arm_speed_watchdog("speedL")
-
         with self._rtde_c_lock:
             ok = bool(self.rtde_c.speedL(xd_base.tolist(), acceleration, time_s))
-
-        # if not ok:
-        #     raise RuntimeError("speedL() returned False")
-        # 实机上这个地方会抛出异常，但不影响使用，所以注释掉
+            self._direct_motion_kind = "speedL"
+            self._arm_speed_watchdog("speedL")
 
         self._record_direct_motion_state(
             actual_q=np.asarray(self.rtde_r.getActualQ(), dtype=float),
@@ -1319,35 +1342,39 @@ class URRTDEController:
                 self._speed_watchdog_stop.wait(min(poll_s, remaining))
                 continue
 
-            with self._lock:
-                if (
-                    not self._speed_watchdog_active
-                    or self._speed_watchdog_deadline != deadline
-                ):
-                    continue
-                self._speed_watchdog_active = False
-                self._speed_watchdog_deadline = None
-
             try:
                 with self._rtde_c_lock:
+                    # 等待控制锁后重新核对期限，避免旧超时停止刚刷新的运动。
+                    with self._lock:
+                        if (
+                            not self._speed_watchdog_active
+                            or self._speed_watchdog_deadline != deadline
+                        ):
+                            continue
+                        self._speed_watchdog_active = False
+                        self._speed_watchdog_deadline = None
                     self.rtde_c.speedStop(self.servo_stop_acc)
             except Exception as exc:
                 with self._lock:
                     self._last_error = f"speed watchdog speedStop failed: {repr(exc)}"
 
-    def _prepare_direct_motion_command(self) -> None:
+    def _prepare_direct_motion_command(self, command_kind: str) -> None:
         """
-        为 moveL/speedJ/speedL 这类直接 RTDE 运动命令做准备。
+        为 moveJ/moveL/speedJ/speedL 这类直接 RTDE 运动命令做准备。
 
-        如果控制线程正在运行，先停掉，避免和后台 servo 控制竞争同一个 RTDE script。
+        切换运动类型或目标时先停止旧运动，同类速度命令只刷新速度。
         """
         if self._is_shutdown:
             raise RuntimeError("Controller has been shutdown. Please create a new object.")
 
-        self._cancel_speed_watchdog()
-
-        if self.is_running():
+        if (self.is_running() or self._direct_motion_kind != command_kind
+                or command_kind in ("moveJ", "moveL")):
             self.stop(stop_script=False)
+
+        with self._rtde_c_lock:
+            if not self.rtde_c.isProgramRunning():
+                if not self.rtde_c.reuploadScript():
+                    raise RuntimeError("恢复 RTDE 控制脚本失败")
 
         with self._lock:
             self._target_q = None
@@ -1359,6 +1386,21 @@ class URRTDEController:
             self._target_reached = False
             self._last_error = None
             self._cmd_seq += 1
+
+    def _wait_for_direct_motion(self, cmd_seq: int) -> None:
+        """在控制锁之外等待完成，让其他线程可以停止同步点位运动。"""
+        while True:
+            with self._rtde_c_lock:
+                with self._lock:
+                    if self._cmd_seq != cmd_seq:
+                        return
+                if not self.rtde_c.isProgramRunning():
+                    raise RuntimeError("点位运动中断：RTDE 控制脚本已停止")
+                if self.rtde_c.getAsyncOperationProgress() < 0:
+                    with self._lock:
+                        self._target_reached = True
+                    return
+            time.sleep(self.dt)
 
     def _record_direct_motion_state(
         self,

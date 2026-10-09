@@ -1,0 +1,1889 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
+  <widget class="QMenuBar" name="menubar">
+   <property name="geometry">
+    <rect>
+     <x>0</x>
+     <y>0</y>
+     <width>900</width>
+     <height>28</height>
+    </rect>
+   </property>
+   <property name="styleSheet">
+    <string notr="true">QMenuBar {
+    background-color: rgb(248, 228, 92);
+}</string>
+   </property>
+   <widget class="QMenu" name="menu_Interface">
+    <property name="title">
+     <string>界面</string>
+    </property>
+    <addaction name="actionLayoutModern" />
+    <addaction name="actionLayoutClassic" />
+   </widget>
+   <addaction name="menu_Interface" />
+  </widget>
+  <widget class="QStatusBar" name="statusbar">
+   <property name="styleSheet">
+    <string notr="true">QStatusBar {
+    background-color: rgb(192, 191, 188);
+}</string>
+   </property>
+   <property name="sizeGripEnabled">
+    <bool>true</bool>
+   </property>
+  </widget>
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1020</width>
+    <height>820</height>
+   </rect>
+  </property>
+  <property name="minimumSize">
+   <size>
+    <width>760</width>
+    <height>560</height>
+   </size>
+  </property>
+  <property name="font">
+   <font>
+    <pointsize>10</pointsize>
+   </font>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <layout class="QVBoxLayout" name="verticalLayout_Classic">
+    <property name="leftMargin">
+     <number>8</number>
+    </property>
+    <property name="topMargin">
+     <number>8</number>
+    </property>
+    <property name="rightMargin">
+     <number>8</number>
+    </property>
+    <property name="bottomMargin">
+     <number>8</number>
+    </property>
+    <property name="spacing">
+     <number>8</number>
+    </property>
+    <item>
+     <widget class="QFrame" name="frame_ClassicHeader">
+      <layout class="QHBoxLayout" name="horizontalLayout_ClassicHeader">
+       <property name="leftMargin">
+        <number>8</number>
+       </property>
+       <property name="topMargin">
+        <number>8</number>
+       </property>
+       <property name="rightMargin">
+        <number>8</number>
+       </property>
+       <property name="bottomMargin">
+        <number>8</number>
+       </property>
+       <property name="spacing">
+        <number>8</number>
+       </property>
+       <item>
+        <widget class="QLabel" name="label_ClassicTitle">
+         <property name="text">
+          <string>经典界面 · 原始布局</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <spacer name="spacer_ClassicHeader">
+         <property name="orientation">
+          <enum>Qt::Horizontal</enum>
+         </property>
+         <property name="sizeHint">
+          <size>
+           <width>0</width>
+           <height>0</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+       <item>
+        <widget class="QLabel" name="label_UiScale">
+         <property name="text">
+          <string>界面大小</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QComboBox" name="comboBox_UiScale">
+         <property name="toolTip">
+          <string>自动适配当前屏幕；百分比在自动大小基础上微调，并按显示器记忆。</string>
+         </property>
+         <item>
+          <property name="text">
+           <string>自动适配</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>紧凑 · 90%</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>放大 · 110%</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>大字 · 125%</string>
+          </property>
+         </item>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </item>
+    <item>
+     <widget class="QScrollArea" name="scrollArea_Classic">
+      <property name="widgetResizable">
+       <bool>true</bool>
+      </property>
+      <widget class="QWidget" name="classicCanvas">
+       <widget class="QPushButton" name="pushButton_IP">
+        <property name="geometry">
+         <rect>
+          <x>11</x>
+          <y>61</y>
+          <width>80</width>
+          <height>31</height>
+         </rect>
+        </property>
+        <property name="text">
+         <string>修改IP</string>
+        </property>
+       </widget>
+       <widget class="QLineEdit" name="lineEdit_IP">
+        <property name="geometry">
+         <rect>
+          <x>11</x>
+          <y>30</y>
+          <width>142</width>
+          <height>25</height>
+         </rect>
+        </property>
+       </widget>
+       <widget class="QLabel" name="label_IPset">
+        <property name="geometry">
+         <rect>
+          <x>11</x>
+          <y>1</y>
+          <width>104</width>
+          <height>23</height>
+         </rect>
+        </property>
+        <property name="text">
+         <string>实际连接：</string>
+        </property>
+       </widget>
+       <widget class="QLabel" name="label_IP_now">
+        <property name="geometry">
+         <rect>
+          <x>110</x>
+          <y>1</y>
+          <width>130</width>
+          <height>23</height>
+         </rect>
+        </property>
+        <property name="text">
+         <string>TextLabel</string>
+        </property>
+       </widget>
+       <widget class="QPushButton" name="pushButton_ConnectUR">
+        <property name="geometry">
+         <rect>
+          <x>11</x>
+          <y>98</y>
+          <width>80</width>
+          <height>31</height>
+         </rect>
+        </property>
+        <property name="text">
+         <string>连接UR</string>
+        </property>
+       </widget>
+       <widget class="QPushButton" name="pushButton_URPowerOn">
+        <property name="enabled">
+         <bool>false</bool>
+        </property>
+        <property name="geometry">
+         <rect>
+          <x>11</x>
+          <y>135</y>
+          <width>80</width>
+          <height>31</height>
+         </rect>
+        </property>
+        <property name="text">
+         <string>UR上电</string>
+        </property>
+       </widget>
+       <widget class="QPushButton" name="pushButton_URBrakeRelease">
+        <property name="enabled">
+         <bool>false</bool>
+        </property>
+        <property name="geometry">
+         <rect>
+          <x>11</x>
+          <y>172</y>
+          <width>80</width>
+          <height>31</height>
+         </rect>
+        </property>
+        <property name="text">
+         <string>UR松抱闸</string>
+        </property>
+       </widget>
+       <widget class="QPlainTextEdit" name="plainTextEdit_DashboardMessage">
+        <property name="geometry">
+         <rect>
+          <x>10</x>
+          <y>489</y>
+          <width>331</width>
+          <height>91</height>
+         </rect>
+        </property>
+        <property name="font">
+         <font>
+          <pointsize>8</pointsize>
+         </font>
+        </property>
+        <property name="readOnly">
+         <bool>true</bool>
+        </property>
+        <property name="plainText">
+         <string />
+        </property>
+       </widget>
+       <widget class="QPushButton" name="pushButton_Shutdown">
+        <property name="enabled">
+         <bool>false</bool>
+        </property>
+        <property name="geometry">
+         <rect>
+          <x>10</x>
+          <y>430</y>
+          <width>131</width>
+          <height>51</height>
+         </rect>
+        </property>
+        <property name="font">
+         <font>
+          <pointsize>20</pointsize>
+         </font>
+        </property>
+        <property name="styleSheet">
+         <string notr="true">QPushButton:enabled { background-color: rgb(240, 0, 0); color: #ffffff; border: 1px solid #60748b; }
+QPushButton:enabled:pressed { border: 2px solid #1d354f; }
+QPushButton:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; }</string>
+        </property>
+        <property name="text">
+         <string>UR下电</string>
+        </property>
+       </widget>
+       <widget class="QGroupBox" name="groupBox_Q_Actual">
+        <property name="geometry">
+         <rect>
+          <x>240</x>
+          <y>0</y>
+          <width>160</width>
+          <height>211</height>
+         </rect>
+        </property>
+        <property name="title">
+         <string>当前关节角</string>
+        </property>
+        <widget class="QLineEdit" name="lineEdit_QA1">
+         <property name="geometry">
+          <rect>
+           <x>40</x>
+           <y>30</y>
+           <width>80</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="readOnly">
+          <bool>true</bool>
+         </property>
+        </widget>
+        <widget class="QLineEdit" name="lineEdit_QA2">
+         <property name="geometry">
+          <rect>
+           <x>40</x>
+           <y>60</y>
+           <width>80</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="readOnly">
+          <bool>true</bool>
+         </property>
+        </widget>
+        <widget class="QLineEdit" name="lineEdit_QA3">
+         <property name="geometry">
+          <rect>
+           <x>40</x>
+           <y>90</y>
+           <width>80</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="readOnly">
+          <bool>true</bool>
+         </property>
+        </widget>
+        <widget class="QLineEdit" name="lineEdit_QA4">
+         <property name="geometry">
+          <rect>
+           <x>40</x>
+           <y>120</y>
+           <width>80</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="readOnly">
+          <bool>true</bool>
+         </property>
+        </widget>
+        <widget class="QLineEdit" name="lineEdit_QA5">
+         <property name="geometry">
+          <rect>
+           <x>40</x>
+           <y>150</y>
+           <width>80</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="readOnly">
+          <bool>true</bool>
+         </property>
+        </widget>
+        <widget class="QLineEdit" name="lineEdit_QA6">
+         <property name="geometry">
+          <rect>
+           <x>40</x>
+           <y>180</y>
+           <width>80</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="readOnly">
+          <bool>true</bool>
+         </property>
+        </widget>
+        <widget class="QPushButton" name="pushButton_JUp1">
+         <property name="geometry">
+          <rect>
+           <x>125</x>
+           <y>30</y>
+           <width>25</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="text">
+          <string>+</string>
+         </property>
+        </widget>
+        <widget class="QPushButton" name="pushButton_JDown1">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>30</y>
+           <width>25</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="text">
+          <string>-</string>
+         </property>
+        </widget>
+        <widget class="QPushButton" name="pushButton_JDown2">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>60</y>
+           <width>25</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="text">
+          <string>-</string>
+         </property>
+        </widget>
+        <widget class="QPushButton" name="pushButton_JDown3">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>90</y>
+           <width>25</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="text">
+          <string>-</string>
+         </property>
+        </widget>
+        <widget class="QPushButton" name="pushButton_JDown4">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>120</y>
+           <width>25</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="text">
+          <string>-</string>
+         </property>
+        </widget>
+        <widget class="QPushButton" name="pushButton_JDown5">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>150</y>
+           <width>25</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="text">
+          <string>-</string>
+         </property>
+        </widget>
+        <widget class="QPushButton" name="pushButton_JDown6">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>180</y>
+           <width>25</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="text">
+          <string>-</string>
+         </property>
+        </widget>
+        <widget class="QPushButton" name="pushButton_JUp2">
+         <property name="geometry">
+          <rect>
+           <x>125</x>
+           <y>60</y>
+           <width>25</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="text">
+          <string>+</string>
+         </property>
+        </widget>
+        <widget class="QPushButton" name="pushButton_JUp3">
+         <property name="geometry">
+          <rect>
+           <x>125</x>
+           <y>90</y>
+           <width>25</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="text">
+          <string>+</string>
+         </property>
+        </widget>
+        <widget class="QPushButton" name="pushButton_JUp4">
+         <property name="geometry">
+          <rect>
+           <x>125</x>
+           <y>120</y>
+           <width>25</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="text">
+          <string>+</string>
+         </property>
+        </widget>
+        <widget class="QPushButton" name="pushButton_JUp5">
+         <property name="geometry">
+          <rect>
+           <x>125</x>
+           <y>150</y>
+           <width>25</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="text">
+          <string>+</string>
+         </property>
+        </widget>
+        <widget class="QPushButton" name="pushButton_JUp6">
+         <property name="geometry">
+          <rect>
+           <x>125</x>
+           <y>180</y>
+           <width>25</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="text">
+          <string>+</string>
+         </property>
+        </widget>
+       </widget>
+       <widget class="QGroupBox" name="groupBox_Fex">
+        <property name="geometry">
+         <rect>
+          <x>685</x>
+          <y>0</y>
+          <width>100</width>
+          <height>211</height>
+         </rect>
+        </property>
+        <property name="title">
+         <string>力</string>
+        </property>
+        <widget class="QLineEdit" name="lineEdit_Fex1">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>30</y>
+           <width>80</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="readOnly">
+          <bool>true</bool>
+         </property>
+        </widget>
+        <widget class="QLineEdit" name="lineEdit_Fex2">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>60</y>
+           <width>80</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="readOnly">
+          <bool>true</bool>
+         </property>
+        </widget>
+        <widget class="QLineEdit" name="lineEdit_Fex3">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>90</y>
+           <width>80</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="readOnly">
+          <bool>true</bool>
+         </property>
+        </widget>
+        <widget class="QLineEdit" name="lineEdit_Fex4">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>120</y>
+           <width>80</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="readOnly">
+          <bool>true</bool>
+         </property>
+        </widget>
+        <widget class="QLineEdit" name="lineEdit_Fex5">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>150</y>
+           <width>80</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="readOnly">
+          <bool>true</bool>
+         </property>
+        </widget>
+        <widget class="QLineEdit" name="lineEdit_Fex6">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>180</y>
+           <width>80</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="readOnly">
+          <bool>true</bool>
+         </property>
+        </widget>
+        <widget class="QCheckBox" name="checkBox_FTSwitch">
+         <property name="geometry">
+          <rect>
+           <x>20</x>
+           <y>0</y>
+           <width>51</width>
+           <height>23</height>
+          </rect>
+         </property>
+         <property name="text">
+          <string>力矩</string>
+         </property>
+        </widget>
+       </widget>
+       <widget class="QGroupBox" name="groupBox_TControl">
+        <property name="geometry">
+         <rect>
+          <x>570</x>
+          <y>0</y>
+          <width>110</width>
+          <height>211</height>
+         </rect>
+        </property>
+        <property name="title">
+         <string>末端空间控制</string>
+        </property>
+        <widget class="QPushButton" name="pushButton_TDown3">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>90</y>
+           <width>40</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">QPushButton:enabled { background-color: rgb(153, 193, 241); color: #17283f; border: 1px solid #60748b; }
+QPushButton:enabled:pressed { border: 2px solid #1d354f; }
+QPushButton:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; }
+QPushButton:disabled { border-left: 3px solid rgb(153, 193, 241); }</string>
+         </property>
+         <property name="text">
+          <string>Z-</string>
+         </property>
+        </widget>
+        <widget class="QPushButton" name="pushButton_TUp1">
+         <property name="geometry">
+          <rect>
+           <x>60</x>
+           <y>30</y>
+           <width>40</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">QPushButton:enabled { background-color: rgb(246, 97, 81); color: #17283f; border: 1px solid #60748b; }
+QPushButton:enabled:pressed { border: 2px solid #1d354f; }
+QPushButton:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; }
+QPushButton:disabled { border-left: 3px solid rgb(246, 97, 81); }</string>
+         </property>
+         <property name="text">
+          <string>X+</string>
+         </property>
+        </widget>
+        <widget class="QPushButton" name="pushButton_TUp2">
+         <property name="geometry">
+          <rect>
+           <x>60</x>
+           <y>60</y>
+           <width>40</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">QPushButton:enabled { background-color: rgb(143, 240, 164); color: #17283f; border: 1px solid #60748b; }
+QPushButton:enabled:pressed { border: 2px solid #1d354f; }
+QPushButton:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; }
+QPushButton:disabled { border-left: 3px solid rgb(143, 240, 164); }</string>
+         </property>
+         <property name="text">
+          <string>Y+</string>
+         </property>
+        </widget>
+        <widget class="QPushButton" name="pushButton_TDown2">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>60</y>
+           <width>40</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">QPushButton:enabled { background-color: rgb(143, 240, 164); color: #17283f; border: 1px solid #60748b; }
+QPushButton:enabled:pressed { border: 2px solid #1d354f; }
+QPushButton:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; }
+QPushButton:disabled { border-left: 3px solid rgb(143, 240, 164); }</string>
+         </property>
+         <property name="text">
+          <string>Y-</string>
+         </property>
+        </widget>
+        <widget class="QPushButton" name="pushButton_TDown1">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>30</y>
+           <width>40</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">QPushButton:enabled { background-color: rgb(246, 97, 81); color: #17283f; border: 1px solid #60748b; }
+QPushButton:enabled:pressed { border: 2px solid #1d354f; }
+QPushButton:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; }
+QPushButton:disabled { border-left: 3px solid rgb(246, 97, 81); }</string>
+         </property>
+         <property name="text">
+          <string>X-</string>
+         </property>
+        </widget>
+        <widget class="QPushButton" name="pushButton_TUp3">
+         <property name="geometry">
+          <rect>
+           <x>60</x>
+           <y>90</y>
+           <width>40</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">QPushButton:enabled { background-color: rgb(153, 193, 241); color: #17283f; border: 1px solid #60748b; }
+QPushButton:enabled:pressed { border: 2px solid #1d354f; }
+QPushButton:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; }
+QPushButton:disabled { border-left: 3px solid rgb(153, 193, 241); }</string>
+         </property>
+         <property name="text">
+          <string>Z+</string>
+         </property>
+        </widget>
+        <widget class="QPushButton" name="pushButton_TUp5">
+         <property name="geometry">
+          <rect>
+           <x>60</x>
+           <y>150</y>
+           <width>40</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">QPushButton:enabled { background-color: rgb(38, 162, 105); color: #17283f; border: 1px solid #60748b; }
+QPushButton:enabled:pressed { border: 2px solid #1d354f; }
+QPushButton:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; }
+QPushButton:disabled { border-left: 3px solid rgb(38, 162, 105); }</string>
+         </property>
+         <property name="text">
+          <string>RY+</string>
+         </property>
+        </widget>
+        <widget class="QPushButton" name="pushButton_TDown6">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>180</y>
+           <width>40</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">QPushButton:enabled { background-color: rgb(26, 95, 180); color: #ffffff; border: 1px solid #60748b; }
+QPushButton:enabled:pressed { border: 2px solid #1d354f; }
+QPushButton:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; }
+QPushButton:disabled { border-left: 3px solid rgb(26, 95, 180); }</string>
+         </property>
+         <property name="text">
+          <string>RZ-</string>
+         </property>
+        </widget>
+        <widget class="QPushButton" name="pushButton_TDown4">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>120</y>
+           <width>40</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">QPushButton:enabled { background-color: rgb(165, 29, 45); color: #ffffff; border: 1px solid #60748b; }
+QPushButton:enabled:pressed { border: 2px solid #1d354f; }
+QPushButton:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; }
+QPushButton:disabled { border-left: 3px solid rgb(165, 29, 45); }</string>
+         </property>
+         <property name="text">
+          <string>RX-</string>
+         </property>
+        </widget>
+        <widget class="QPushButton" name="pushButton_TDown5">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>150</y>
+           <width>40</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">QPushButton:enabled { background-color: rgb(38, 162, 105); color: #17283f; border: 1px solid #60748b; }
+QPushButton:enabled:pressed { border: 2px solid #1d354f; }
+QPushButton:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; }
+QPushButton:disabled { border-left: 3px solid rgb(38, 162, 105); }</string>
+         </property>
+         <property name="text">
+          <string>RY-</string>
+         </property>
+        </widget>
+        <widget class="QPushButton" name="pushButton_TUp6">
+         <property name="geometry">
+          <rect>
+           <x>60</x>
+           <y>180</y>
+           <width>40</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">QPushButton:enabled { background-color: rgb(26, 95, 180); color: #ffffff; border: 1px solid #60748b; }
+QPushButton:enabled:pressed { border: 2px solid #1d354f; }
+QPushButton:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; }
+QPushButton:disabled { border-left: 3px solid rgb(26, 95, 180); }</string>
+         </property>
+         <property name="text">
+          <string>RZ+</string>
+         </property>
+        </widget>
+        <widget class="QPushButton" name="pushButton_TUp4">
+         <property name="geometry">
+          <rect>
+           <x>60</x>
+           <y>120</y>
+           <width>40</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">QPushButton:enabled { background-color: rgb(165, 29, 45); color: #ffffff; border: 1px solid #60748b; }
+QPushButton:enabled:pressed { border: 2px solid #1d354f; }
+QPushButton:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; }
+QPushButton:disabled { border-left: 3px solid rgb(165, 29, 45); }</string>
+         </property>
+         <property name="text">
+          <string>RX+</string>
+         </property>
+        </widget>
+       </widget>
+       <widget class="QGroupBox" name="groupBox_T_Actual">
+        <property name="geometry">
+         <rect>
+          <x>405</x>
+          <y>0</y>
+          <width>160</width>
+          <height>211</height>
+         </rect>
+        </property>
+        <property name="title">
+         <string>当前末端位姿</string>
+        </property>
+        <widget class="QLineEdit" name="lineEdit_TA1">
+         <property name="geometry">
+          <rect>
+           <x>40</x>
+           <y>30</y>
+           <width>80</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="readOnly">
+          <bool>true</bool>
+         </property>
+        </widget>
+        <widget class="QLineEdit" name="lineEdit_TA2">
+         <property name="geometry">
+          <rect>
+           <x>40</x>
+           <y>60</y>
+           <width>80</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="readOnly">
+          <bool>true</bool>
+         </property>
+        </widget>
+        <widget class="QLineEdit" name="lineEdit_TA3">
+         <property name="geometry">
+          <rect>
+           <x>40</x>
+           <y>90</y>
+           <width>80</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="readOnly">
+          <bool>true</bool>
+         </property>
+        </widget>
+        <widget class="QLineEdit" name="lineEdit_TA4">
+         <property name="geometry">
+          <rect>
+           <x>40</x>
+           <y>120</y>
+           <width>80</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="readOnly">
+          <bool>true</bool>
+         </property>
+        </widget>
+        <widget class="QLineEdit" name="lineEdit_TA5">
+         <property name="geometry">
+          <rect>
+           <x>40</x>
+           <y>150</y>
+           <width>80</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="readOnly">
+          <bool>true</bool>
+         </property>
+        </widget>
+        <widget class="QLineEdit" name="lineEdit_TA6">
+         <property name="geometry">
+          <rect>
+           <x>40</x>
+           <y>180</y>
+           <width>80</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="readOnly">
+          <bool>true</bool>
+         </property>
+        </widget>
+        <widget class="QPushButton" name="pushButton_TWUp1">
+         <property name="geometry">
+          <rect>
+           <x>125</x>
+           <y>30</y>
+           <width>25</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">QPushButton:enabled { background-color: rgb(246, 97, 81); color: #17283f; border: 1px solid #60748b; }
+QPushButton:enabled:pressed { border: 2px solid #1d354f; }
+QPushButton:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; }
+QPushButton:disabled { border-left: 3px solid rgb(246, 97, 81); }</string>
+         </property>
+         <property name="text">
+          <string>+</string>
+         </property>
+        </widget>
+        <widget class="QPushButton" name="pushButton_TWDown1">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>30</y>
+           <width>25</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">QPushButton:enabled { background-color: rgb(246, 97, 81); color: #17283f; border: 1px solid #60748b; }
+QPushButton:enabled:pressed { border: 2px solid #1d354f; }
+QPushButton:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; }
+QPushButton:disabled { border-left: 3px solid rgb(246, 97, 81); }</string>
+         </property>
+         <property name="text">
+          <string>-</string>
+         </property>
+        </widget>
+        <widget class="QPushButton" name="pushButton_TWDown2">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>60</y>
+           <width>25</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">QPushButton:enabled { background-color: rgb(143, 240, 164); color: #17283f; border: 1px solid #60748b; }
+QPushButton:enabled:pressed { border: 2px solid #1d354f; }
+QPushButton:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; }
+QPushButton:disabled { border-left: 3px solid rgb(143, 240, 164); }</string>
+         </property>
+         <property name="text">
+          <string>-</string>
+         </property>
+        </widget>
+        <widget class="QPushButton" name="pushButton_TWDown3">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>90</y>
+           <width>25</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">QPushButton:enabled { background-color: rgb(153, 193, 241); color: #17283f; border: 1px solid #60748b; }
+QPushButton:enabled:pressed { border: 2px solid #1d354f; }
+QPushButton:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; }
+QPushButton:disabled { border-left: 3px solid rgb(153, 193, 241); }</string>
+         </property>
+         <property name="text">
+          <string>-</string>
+         </property>
+        </widget>
+        <widget class="QPushButton" name="pushButton_TWDown4">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>120</y>
+           <width>25</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">QPushButton:enabled { background-color: rgb(165, 29, 45); color: #ffffff; border: 1px solid #60748b; }
+QPushButton:enabled:pressed { border: 2px solid #1d354f; }
+QPushButton:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; }
+QPushButton:disabled { border-left: 3px solid rgb(165, 29, 45); }</string>
+         </property>
+         <property name="text">
+          <string>-</string>
+         </property>
+        </widget>
+        <widget class="QPushButton" name="pushButton_TWDown5">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>150</y>
+           <width>25</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">QPushButton:enabled { background-color: rgb(38, 162, 105); color: #17283f; border: 1px solid #60748b; }
+QPushButton:enabled:pressed { border: 2px solid #1d354f; }
+QPushButton:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; }
+QPushButton:disabled { border-left: 3px solid rgb(38, 162, 105); }</string>
+         </property>
+         <property name="text">
+          <string>-</string>
+         </property>
+        </widget>
+        <widget class="QPushButton" name="pushButton_TWDown6">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>180</y>
+           <width>25</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">QPushButton:enabled { background-color: rgb(26, 95, 180); color: #ffffff; border: 1px solid #60748b; }
+QPushButton:enabled:pressed { border: 2px solid #1d354f; }
+QPushButton:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; }
+QPushButton:disabled { border-left: 3px solid rgb(26, 95, 180); }</string>
+         </property>
+         <property name="text">
+          <string>-</string>
+         </property>
+        </widget>
+        <widget class="QPushButton" name="pushButton_TWUp2">
+         <property name="geometry">
+          <rect>
+           <x>125</x>
+           <y>60</y>
+           <width>25</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">QPushButton:enabled { background-color: rgb(143, 240, 164); color: #17283f; border: 1px solid #60748b; }
+QPushButton:enabled:pressed { border: 2px solid #1d354f; }
+QPushButton:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; }
+QPushButton:disabled { border-left: 3px solid rgb(143, 240, 164); }</string>
+         </property>
+         <property name="text">
+          <string>+</string>
+         </property>
+        </widget>
+        <widget class="QPushButton" name="pushButton_TWUp3">
+         <property name="geometry">
+          <rect>
+           <x>125</x>
+           <y>90</y>
+           <width>25</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">QPushButton:enabled { background-color: rgb(153, 193, 241); color: #17283f; border: 1px solid #60748b; }
+QPushButton:enabled:pressed { border: 2px solid #1d354f; }
+QPushButton:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; }
+QPushButton:disabled { border-left: 3px solid rgb(153, 193, 241); }</string>
+         </property>
+         <property name="text">
+          <string>+</string>
+         </property>
+        </widget>
+        <widget class="QPushButton" name="pushButton_TWUp4">
+         <property name="geometry">
+          <rect>
+           <x>125</x>
+           <y>120</y>
+           <width>25</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">QPushButton:enabled { background-color: rgb(165, 29, 45); color: #ffffff; border: 1px solid #60748b; }
+QPushButton:enabled:pressed { border: 2px solid #1d354f; }
+QPushButton:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; }
+QPushButton:disabled { border-left: 3px solid rgb(165, 29, 45); }</string>
+         </property>
+         <property name="text">
+          <string>+</string>
+         </property>
+        </widget>
+        <widget class="QPushButton" name="pushButton_TWUp5">
+         <property name="geometry">
+          <rect>
+           <x>125</x>
+           <y>150</y>
+           <width>25</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">QPushButton:enabled { background-color: rgb(38, 162, 105); color: #17283f; border: 1px solid #60748b; }
+QPushButton:enabled:pressed { border: 2px solid #1d354f; }
+QPushButton:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; }
+QPushButton:disabled { border-left: 3px solid rgb(38, 162, 105); }</string>
+         </property>
+         <property name="text">
+          <string>+</string>
+         </property>
+        </widget>
+        <widget class="QPushButton" name="pushButton_TWUp6">
+         <property name="geometry">
+          <rect>
+           <x>125</x>
+           <y>180</y>
+           <width>25</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">QPushButton:enabled { background-color: rgb(26, 95, 180); color: #ffffff; border: 1px solid #60748b; }
+QPushButton:enabled:pressed { border: 2px solid #1d354f; }
+QPushButton:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; }
+QPushButton:disabled { border-left: 3px solid rgb(26, 95, 180); }</string>
+         </property>
+         <property name="text">
+          <string>+</string>
+         </property>
+        </widget>
+       </widget>
+       <widget class="QGroupBox" name="groupBox_Q_Target">
+        <property name="geometry">
+         <rect>
+          <x>790</x>
+          <y>220</y>
+          <width>100</width>
+          <height>251</height>
+         </rect>
+        </property>
+        <property name="title">
+         <string>目标关节角/°</string>
+        </property>
+        <widget class="QLineEdit" name="lineEdit_QT1">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>30</y>
+           <width>80</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="readOnly">
+          <bool>false</bool>
+         </property>
+        </widget>
+        <widget class="QLineEdit" name="lineEdit_QT2">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>60</y>
+           <width>80</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="readOnly">
+          <bool>false</bool>
+         </property>
+        </widget>
+        <widget class="QLineEdit" name="lineEdit_QT3">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>90</y>
+           <width>80</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="readOnly">
+          <bool>false</bool>
+         </property>
+        </widget>
+        <widget class="QLineEdit" name="lineEdit_QT4">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>120</y>
+           <width>80</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="readOnly">
+          <bool>false</bool>
+         </property>
+        </widget>
+        <widget class="QLineEdit" name="lineEdit_QT5">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>150</y>
+           <width>80</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="readOnly">
+          <bool>false</bool>
+         </property>
+        </widget>
+        <widget class="QLineEdit" name="lineEdit_QT6">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>180</y>
+           <width>80</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="readOnly">
+          <bool>false</bool>
+         </property>
+        </widget>
+        <widget class="QPushButton" name="pushButton_URScriptMoveJ">
+         <property name="enabled">
+          <bool>false</bool>
+         </property>
+         <property name="toolTip">
+          <string>RTDE 就绪后可用；运动过程中可点击“停止运动”中断</string>
+         </property>
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>210</y>
+           <width>80</width>
+           <height>31</height>
+          </rect>
+         </property>
+         <property name="text">
+          <string>开始运动</string>
+         </property>
+        </widget>
+       </widget>
+       <widget class="QPushButton" name="pushButton_Stop">
+        <property name="enabled">
+         <bool>false</bool>
+        </property>
+        <property name="geometry">
+         <rect>
+          <x>10</x>
+          <y>370</y>
+          <width>131</width>
+          <height>51</height>
+         </rect>
+        </property>
+        <property name="font">
+         <font>
+          <pointsize>20</pointsize>
+         </font>
+        </property>
+        <property name="styleSheet">
+         <string notr="true">QPushButton:enabled { background-color: rgb(248, 228, 92); color: #17283f; border: 1px solid #60748b; }
+QPushButton:enabled:pressed { border: 2px solid #1d354f; }
+QPushButton:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; }</string>
+        </property>
+        <property name="text">
+         <string>UR停止</string>
+        </property>
+       </widget>
+       <widget class="QPushButton" name="pushButton_RTDEUDP">
+        <property name="enabled">
+         <bool>false</bool>
+        </property>
+        <property name="geometry">
+         <rect>
+          <x>10</x>
+          <y>250</y>
+          <width>131</width>
+          <height>51</height>
+         </rect>
+        </property>
+        <property name="font">
+         <font>
+          <pointsize>12</pointsize>
+         </font>
+        </property>
+        <property name="styleSheet">
+         <string notr="true">QPushButton:enabled { background-color: rgb(143, 240, 164); color: #17283f; border: 1px solid #60748b; }
+QPushButton:enabled:pressed { border: 2px solid #1d354f; }
+QPushButton:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; }</string>
+        </property>
+        <property name="text">
+         <string>开启RTDE(外源)</string>
+        </property>
+       </widget>
+       <widget class="QPushButton" name="pushButton_StopRTDE">
+        <property name="enabled">
+         <bool>false</bool>
+        </property>
+        <property name="geometry">
+         <rect>
+          <x>10</x>
+          <y>310</y>
+          <width>131</width>
+          <height>51</height>
+         </rect>
+        </property>
+        <property name="font">
+         <font>
+          <pointsize>18</pointsize>
+         </font>
+        </property>
+        <property name="styleSheet">
+         <string notr="true">QPushButton:enabled { background-color: rgb(255, 190, 111); color: #17283f; border: 1px solid #60748b; }
+QPushButton:enabled:pressed { border: 2px solid #1d354f; }
+QPushButton:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; }</string>
+        </property>
+        <property name="text">
+         <string>停止RTDE</string>
+        </property>
+       </widget>
+       <widget class="QWidget" name="widget_RobotView" native="true">
+        <property name="geometry">
+         <rect>
+          <x>345</x>
+          <y>220</y>
+          <width>441</width>
+          <height>331</height>
+         </rect>
+        </property>
+        <layout class="QVBoxLayout" name="verticalLayout_RobotViewport">
+         <property name="leftMargin">
+          <number>0</number>
+         </property>
+         <property name="topMargin">
+          <number>0</number>
+         </property>
+         <property name="rightMargin">
+          <number>0</number>
+         </property>
+         <property name="bottomMargin">
+          <number>0</number>
+         </property>
+         <property name="spacing">
+          <number>8</number>
+         </property>
+        </layout>
+       </widget>
+       <widget class="QSlider" name="horizontalSlider_SpeedSlider">
+        <property name="geometry">
+         <rect>
+          <x>460</x>
+          <y>560</y>
+          <width>311</width>
+          <height>20</height>
+         </rect>
+        </property>
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+          <horstretch>0</horstretch>
+          <verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+        <property name="minimum">
+         <number>1</number>
+        </property>
+        <property name="maximum">
+         <number>100</number>
+        </property>
+        <property name="value">
+         <number>100</number>
+        </property>
+        <property name="orientation">
+         <enum>Qt::Horizontal</enum>
+        </property>
+        <property name="tickPosition">
+         <enum>QSlider::TicksBothSides</enum>
+        </property>
+       </widget>
+       <widget class="QLabel" name="label_SpeedSlider">
+        <property name="geometry">
+         <rect>
+          <x>370</x>
+          <y>559</y>
+          <width>91</width>
+          <height>20</height>
+         </rect>
+        </property>
+        <property name="text">
+         <string>限速: 100%</string>
+        </property>
+       </widget>
+       <widget class="QGroupBox" name="groupBox_UDP">
+        <property name="geometry">
+         <rect>
+          <x>240</x>
+          <y>210</y>
+          <width>100</width>
+          <height>271</height>
+         </rect>
+        </property>
+        <property name="title">
+         <string>外源信息</string>
+        </property>
+        <widget class="QLineEdit" name="lineEdit_UDP1">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>30</y>
+           <width>80</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="text">
+          <string />
+         </property>
+         <property name="readOnly">
+          <bool>true</bool>
+         </property>
+        </widget>
+        <widget class="QLineEdit" name="lineEdit_UDP2">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>60</y>
+           <width>80</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="readOnly">
+          <bool>true</bool>
+         </property>
+        </widget>
+        <widget class="QLineEdit" name="lineEdit_UDP3">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>90</y>
+           <width>80</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="readOnly">
+          <bool>true</bool>
+         </property>
+        </widget>
+        <widget class="QLineEdit" name="lineEdit_UDP4">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>120</y>
+           <width>80</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="readOnly">
+          <bool>true</bool>
+         </property>
+        </widget>
+        <widget class="QLineEdit" name="lineEdit_UDP5">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>150</y>
+           <width>80</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="readOnly">
+          <bool>true</bool>
+         </property>
+        </widget>
+        <widget class="QLineEdit" name="lineEdit_UDP6">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>180</y>
+           <width>80</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="readOnly">
+          <bool>true</bool>
+         </property>
+        </widget>
+        <widget class="QLineEdit" name="lineEdit_UDP7">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>210</y>
+           <width>80</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="readOnly">
+          <bool>true</bool>
+         </property>
+        </widget>
+        <widget class="QLineEdit" name="lineEdit_UDP8">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>240</y>
+           <width>80</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="readOnly">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </widget>
+       <widget class="QPushButton" name="pushButton_HOME">
+        <property name="toolTip">
+         <string>RTDE 就绪后可用；运动过程中可点击“停止运动”中断</string>
+        </property>
+        <property name="enabled">
+         <bool>false</bool>
+        </property>
+        <property name="geometry">
+         <rect>
+          <x>790</x>
+          <y>480</y>
+          <width>101</width>
+          <height>41</height>
+         </rect>
+        </property>
+        <property name="font">
+         <font>
+          <pointsize>18</pointsize>
+         </font>
+        </property>
+        <property name="styleSheet">
+         <string notr="true">QPushButton:enabled { background-color: rgb(143, 240, 164); color: #17283f; border: 1px solid #60748b; }
+QPushButton:enabled:pressed { border: 2px solid #1d354f; }
+QPushButton:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; }</string>
+        </property>
+        <property name="text">
+         <string>回零位</string>
+        </property>
+       </widget>
+       <widget class="QGroupBox" name="groupBox_Clamp">
+        <property name="geometry">
+         <rect>
+          <x>790</x>
+          <y>0</y>
+          <width>100</width>
+          <height>211</height>
+         </rect>
+        </property>
+        <property name="title">
+         <string>夹钳信息</string>
+        </property>
+        <widget class="QLineEdit" name="lineEdit_Clamp1">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>30</y>
+           <width>80</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="readOnly">
+          <bool>true</bool>
+         </property>
+        </widget>
+        <widget class="QLineEdit" name="lineEdit_Clamp2">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>60</y>
+           <width>80</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="readOnly">
+          <bool>true</bool>
+         </property>
+        </widget>
+        <widget class="QLineEdit" name="lineEdit_Clamp3">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>90</y>
+           <width>80</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="readOnly">
+          <bool>true</bool>
+         </property>
+         <property name="enabled">
+          <bool>false</bool>
+         </property>
+        </widget>
+        <widget class="QLineEdit" name="lineEdit_Clamp4">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>120</y>
+           <width>80</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="readOnly">
+          <bool>true</bool>
+         </property>
+         <property name="enabled">
+          <bool>false</bool>
+         </property>
+        </widget>
+        <widget class="QLineEdit" name="lineEdit_Clamp5">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>150</y>
+           <width>80</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="readOnly">
+          <bool>true</bool>
+         </property>
+         <property name="enabled">
+          <bool>false</bool>
+         </property>
+        </widget>
+        <widget class="QLineEdit" name="lineEdit_Clamp6">
+         <property name="geometry">
+          <rect>
+           <x>10</x>
+           <y>180</y>
+           <width>80</width>
+           <height>25</height>
+          </rect>
+         </property>
+         <property name="readOnly">
+          <bool>true</bool>
+         </property>
+         <property name="enabled">
+          <bool>false</bool>
+         </property>
+        </widget>
+       </widget>
+       <widget class="QCheckBox" name="checkBox_UDPVisual">
+        <property name="geometry">
+         <rect>
+          <x>10</x>
+          <y>220</y>
+          <width>161</width>
+          <height>23</height>
+         </rect>
+        </property>
+        <property name="text">
+         <string>可视化显示外源目标</string>
+        </property>
+       </widget>
+       <widget class="QPushButton" name="pushButton_UDPSync">
+        <property name="toolTip">
+         <string>RTDE 和主端指令就绪后可用；运动过程中可点击“停止运动”中断</string>
+        </property>
+        <property name="enabled">
+         <bool>false</bool>
+        </property>
+        <property name="geometry">
+         <rect>
+          <x>790</x>
+          <y>530</y>
+          <width>101</width>
+          <height>41</height>
+         </rect>
+        </property>
+        <property name="font">
+         <font>
+          <pointsize>12</pointsize>
+         </font>
+        </property>
+        <property name="styleSheet">
+         <string notr="true">QPushButton:enabled { background-color: rgb(143, 240, 164); color: #17283f; border: 1px solid #60748b; }
+QPushButton:enabled:pressed { border: 2px solid #1d354f; }
+QPushButton:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; }</string>
+        </property>
+        <property name="text">
+         <string>同步到主端</string>
+        </property>
+       </widget>
+       <widget class="AspectRatioLabel" name="label_camera1">
+        <property name="geometry">
+         <rect>
+          <x>10</x>
+          <y>590</y>
+          <width>436</width>
+          <height>327</height>
+         </rect>
+        </property>
+        <property name="frameShape">
+         <enum>QFrame::Box</enum>
+        </property>
+        <property name="text">
+         <string>Camera1</string>
+        </property>
+        <property name="alignment">
+         <set>Qt::AlignCenter</set>
+        </property>
+        <property name="scaledContents">
+         <bool>false</bool>
+        </property>
+       </widget>
+       <widget class="AspectRatioLabel" name="label_camera2">
+        <property name="geometry">
+         <rect>
+          <x>455</x>
+          <y>590</y>
+          <width>436</width>
+          <height>327</height>
+         </rect>
+        </property>
+        <property name="frameShape">
+         <enum>QFrame::Box</enum>
+        </property>
+        <property name="text">
+         <string>Camera2</string>
+        </property>
+        <property name="alignment">
+         <set>Qt::AlignCenter</set>
+        </property>
+        <property name="scaledContents">
+         <bool>false</bool>
+        </property>
+       </widget>
+       <widget class="QPushButton" name="pushButton_Collect">
+        <property name="geometry">
+         <rect>
+          <x>100</x>
+          <y>60</y>
+          <width>80</width>
+          <height>31</height>
+         </rect>
+        </property>
+        <property name="text">
+         <string>开始采集</string>
+        </property>
+       </widget>
+       <widget class="QCheckBox" name="checkBox_URSim">
+        <property name="geometry">
+         <rect>
+          <x>160</x>
+          <y>30</y>
+          <width>92</width>
+          <height>23</height>
+         </rect>
+        </property>
+        <property name="text">
+         <string>URSim</string>
+        </property>
+       </widget>
+       <property name="minimumSize">
+        <size>
+         <width>900</width>
+         <height>930</height>
+        </size>
+       </property>
+      </widget>
+     </widget>
+    </item>
+   </layout>
+  </widget>
+  <property name="windowTitle">
+   <string>URControl · 经典界面</string>
+  </property>
+  <property name="styleSheet">
+   <string>QPushButton:enabled { color: #17283f; }
+QPushButton:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; }
+QLineEdit:disabled, QComboBox:disabled { background: #d8dfe8; color: #8a95a5; }
+QFrame#frame_ClassicHeader { background: #e8edf4; border: 1px solid #cbd5e1; }
+QMenu::item:disabled { color: #8a95a5; }</string>
+  </property>
+  <action name="actionLayoutModern">
+   <property name="text">
+    <string>新版界面</string>
+   </property>
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="checked">
+    <bool>false</bool>
+   </property>
+   <property name="enabled">
+    <bool>true</bool>
+   </property>
+  </action>
+  <action name="actionLayoutClassic">
+   <property name="text">
+    <string>经典界面（改版前）</string>
+   </property>
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="checked">
+    <bool>true</bool>
+   </property>
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+  </action>
+ </widget>
+ <customwidgets>
+  <customwidget>
+   <class>AspectRatioLabel</class>
+   <extends>QLabel</extends>
+   <header>ui_widgets</header>
+  </customwidget>
+ </customwidgets>
+ <resources />
+ <connections />
+</ui>

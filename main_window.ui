@@ -1,1660 +1,3417 @@
-<?xml version="1.0" encoding="UTF-8"?>
+<?xml version='1.0' encoding='UTF-8'?>
 <ui version="4.0">
  <class>MainWindow</class>
  <widget class="QMainWindow" name="MainWindow">
-  <property name="geometry">
-   <rect>
-    <x>0</x>
-    <y>0</y>
-    <width>900</width>
-    <height>978</height>
-   </rect>
+  <property name="minimumSize">
+   <size>
+    <width>1080</width>
+    <height>640</height>
+   </size>
+  </property>
+  <property name="font">
+   <font>
+    <pointsize>11</pointsize>
+   </font>
   </property>
   <property name="windowTitle">
-   <string>UR机械臂控制</string>
+   <string>URControl · 机械臂控制与数据采集</string>
+  </property>
+  <property name="styleSheet">
+   <string>QMainWindow, QWidget#centralwidget { background: #f2f5f9; }
+QWidget { color: #243349; }
+QFrame#frame_Header, QFrame#frame_Connection, QFrame#frame_Actions,
+QGroupBox { background: #ffffff; border: 1px solid #d9e1eb; border-radius: 7px; }
+QGroupBox { margin-top: 12px; padding: 10px 8px 8px 8px; font-weight: bold; }
+QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 5px; color: #405571; }
+QLabel#label_AppTitle { color: #175c98; }
+QLabel#label_Subtitle, QLabel#label_ViewerHint, QLabel#label_JogHint,
+QLabel#label_GripperHint { color: #64748b; }
+QLabel#label_IP_now { color: #175c98; font-weight: bold; }
+QPushButton { background: #ffffff; color: #182d47; border: 1px solid #879cb5; border-radius: 5px; padding: 4px 10px; }
+QPushButton:enabled:hover { background: #e8f1fc; border-color: #286da9; }
+QPushButton:enabled:pressed { background: #c9dff5; border-color: #14518a; }
+QPushButton:enabled:focus, QComboBox:enabled:focus { border: 2px solid #175c98; }
+QPushButton#pushButton_ConnectUR:enabled, QPushButton#pushButton_URScriptMoveJ:enabled,
+QPushButton#pushButton_RTDEUDP:enabled { background: #216caa; color: white; border: 2px solid #175487; }
+QPushButton#pushButton_ConnectUR:enabled:hover, QPushButton#pushButton_URScriptMoveJ:enabled:hover,
+QPushButton#pushButton_RTDEUDP:enabled:hover { background: #18588e; }
+QPushButton#pushButton_Stop:enabled { background: #d52d3b; color: white; border: 2px solid #a01826; }
+QPushButton#pushButton_Stop:enabled:hover { background: #b51d2b; }
+QPushButton#pushButton_Shutdown:enabled { color: white; background: #992535; border: 2px solid #741b28; }
+QPushButton#pushButton_Shutdown:enabled:hover { background: #7f1d2b; }
+QPushButton#pushButton_StopRTDE:enabled { color: #831a27; background: #ffd9de; border: 2px solid #c25463; }
+QPushButton#pushButton_StopRTDE:enabled:hover { background: #ffc1ca; }
+QPushButton#pushButton_Collect:enabled { color: white; background: #167868; border: 2px solid #105b4f; }
+QPushButton#pushButton_Collect:enabled:hover { background: #105e52; }
+QPushButton#pushButton_URPowerOn:enabled, QPushButton#pushButton_URBrakeRelease:enabled,
+QPushButton#pushButton_HOME:enabled, QPushButton#pushButton_UDPSync:enabled { color: #144e7d; background: #e0efff; border-color: #568ab6; }
+QPushButton:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; }
+QLineEdit, QPlainTextEdit, QComboBox { background: white; border: 1px solid #cbd5e1; border-radius: 4px; padding: 4px 7px; selection-background-color: #216caa; selection-color: white; }
+QLineEdit:read-only { background: #f3f6fa; color: #405571; border-color: #e2e8f0; }
+QLineEdit:enabled:focus { border-color: #2d7ac4; }
+QComboBox { padding-right: 22px; }
+QComboBox QAbstractItemView { background: white; selection-background-color: #dcecff; selection-color: #243349; }
+QCheckBox { spacing: 6px; }
+QTabWidget::pane { background: white; border: 1px solid #d9e1eb; border-radius: 5px; }
+QTabBar::tab { background: #e8edf4; color: #596b82; padding: 6px 16px; border: 1px solid #d9e1eb; }
+QTabBar::tab:selected { background: white; color: #175c98; border-bottom-color: white; }
+QScrollArea { border: none; background: transparent; }
+QWidget#scrollArea_ControlContents { background: transparent; }
+QSplitter::handle { background: #e0e7f0; border-radius: 2px; }
+QSplitter::handle:hover { background: #9cb9d8; }
+QLabel#label_camera1, QLabel#label_camera2, QWidget#widget_RobotView { background: #172335; color: #b9c9dc; border: none; border-radius: 4px; }
+QSlider::groove:horizontal { height: 5px; background: #dce4ef; border-radius: 2px; }
+QSlider::sub-page:horizontal { background: #367fb7; border-radius: 2px; }
+QSlider::handle:horizontal { width: 16px; margin: -6px 0; border-radius: 8px; background: #216caa; }
+QStatusBar { background: #e8edf4; color: #52647d; }
+QStatusBar::item { border: none; }
+QLineEdit:disabled, QComboBox:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; }
+QCheckBox:disabled { color: #929dab; }
+QSlider::groove:horizontal:disabled { background: #d0d7e0; }
+QSlider::sub-page:horizontal:disabled { background: #abb6c4; }
+QSlider::handle:horizontal:disabled { background: #9ca9ba; border: 1px dashed #748499; }
+QMenuBar { background: #e8edf4; color: #243349; }
+QMenu { background: white; color: #243349; border: 1px solid #cbd5e1; }
+QMenu::item:selected { background: #dcecff; }
+QMenu::item:disabled { color: #8a95a5; }
+QPushButton#pushButton_TUp1:enabled, QPushButton#pushButton_TDown1:enabled, QPushButton#pushButton_TWUp1:enabled, QPushButton#pushButton_TWDown1:enabled { background: rgb(246, 97, 81); color: #17283f; border: 1px solid rgb(201, 79, 66); }
+QPushButton#pushButton_TUp1:enabled:hover, QPushButton#pushButton_TDown1:enabled:hover, QPushButton#pushButton_TWUp1:enabled:hover, QPushButton#pushButton_TWDown1:enabled:hover { background: rgb(247, 115, 101); }
+QPushButton#pushButton_TUp1:enabled:pressed, QPushButton#pushButton_TDown1:enabled:pressed, QPushButton#pushButton_TWUp1:enabled:pressed, QPushButton#pushButton_TWDown1:enabled:pressed { background: rgb(201, 79, 66); color: white; }
+QPushButton#pushButton_TUp1:disabled, QPushButton#pushButton_TDown1:disabled, QPushButton#pushButton_TWUp1:disabled, QPushButton#pushButton_TWDown1:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; border-left: 3px solid rgb(246, 97, 81); }
+QPushButton#pushButton_TUp2:enabled, QPushButton#pushButton_TDown2:enabled, QPushButton#pushButton_TWUp2:enabled, QPushButton#pushButton_TWDown2:enabled { background: rgb(143, 240, 164); color: #17283f; border: 1px solid rgb(117, 196, 134); }
+QPushButton#pushButton_TUp2:enabled:hover, QPushButton#pushButton_TDown2:enabled:hover, QPushButton#pushButton_TWUp2:enabled:hover, QPushButton#pushButton_TWDown2:enabled:hover { background: rgb(156, 241, 174); }
+QPushButton#pushButton_TUp2:enabled:pressed, QPushButton#pushButton_TDown2:enabled:pressed, QPushButton#pushButton_TWUp2:enabled:pressed, QPushButton#pushButton_TWDown2:enabled:pressed { background: rgb(117, 196, 134); color: white; }
+QPushButton#pushButton_TUp2:disabled, QPushButton#pushButton_TDown2:disabled, QPushButton#pushButton_TWUp2:disabled, QPushButton#pushButton_TWDown2:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; border-left: 3px solid rgb(143, 240, 164); }
+QPushButton#pushButton_TUp3:enabled, QPushButton#pushButton_TDown3:enabled, QPushButton#pushButton_TWUp3:enabled, QPushButton#pushButton_TWDown3:enabled { background: rgb(153, 193, 241); color: #17283f; border: 1px solid rgb(125, 158, 197); }
+QPushButton#pushButton_TUp3:enabled:hover, QPushButton#pushButton_TDown3:enabled:hover, QPushButton#pushButton_TWUp3:enabled:hover, QPushButton#pushButton_TWDown3:enabled:hover { background: rgb(165, 200, 242); }
+QPushButton#pushButton_TUp3:enabled:pressed, QPushButton#pushButton_TDown3:enabled:pressed, QPushButton#pushButton_TWUp3:enabled:pressed, QPushButton#pushButton_TWDown3:enabled:pressed { background: rgb(125, 158, 197); color: white; }
+QPushButton#pushButton_TUp3:disabled, QPushButton#pushButton_TDown3:disabled, QPushButton#pushButton_TWUp3:disabled, QPushButton#pushButton_TWDown3:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; border-left: 3px solid rgb(153, 193, 241); }
+QPushButton#pushButton_TUp4:enabled, QPushButton#pushButton_TDown4:enabled, QPushButton#pushButton_TWUp4:enabled, QPushButton#pushButton_TWDown4:enabled { background: rgb(165, 29, 45); color: #ffffff; border: 1px solid rgb(135, 23, 36); }
+QPushButton#pushButton_TUp4:enabled:hover, QPushButton#pushButton_TDown4:enabled:hover, QPushButton#pushButton_TWUp4:enabled:hover, QPushButton#pushButton_TWDown4:enabled:hover { background: rgb(175, 56, 70); }
+QPushButton#pushButton_TUp4:enabled:pressed, QPushButton#pushButton_TDown4:enabled:pressed, QPushButton#pushButton_TWUp4:enabled:pressed, QPushButton#pushButton_TWDown4:enabled:pressed { background: rgb(135, 23, 36); color: white; }
+QPushButton#pushButton_TUp4:disabled, QPushButton#pushButton_TDown4:disabled, QPushButton#pushButton_TWUp4:disabled, QPushButton#pushButton_TWDown4:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; border-left: 3px solid rgb(165, 29, 45); }
+QPushButton#pushButton_TUp5:enabled, QPushButton#pushButton_TDown5:enabled, QPushButton#pushButton_TWUp5:enabled, QPushButton#pushButton_TWDown5:enabled { background: rgb(38, 162, 105); color: #ffffff; border: 1px solid rgb(31, 132, 86); }
+QPushButton#pushButton_TUp5:enabled:hover, QPushButton#pushButton_TDown5:enabled:hover, QPushButton#pushButton_TWUp5:enabled:hover, QPushButton#pushButton_TWDown5:enabled:hover { background: rgb(64, 173, 123); }
+QPushButton#pushButton_TUp5:enabled:pressed, QPushButton#pushButton_TDown5:enabled:pressed, QPushButton#pushButton_TWUp5:enabled:pressed, QPushButton#pushButton_TWDown5:enabled:pressed { background: rgb(31, 132, 86); color: white; }
+QPushButton#pushButton_TUp5:disabled, QPushButton#pushButton_TDown5:disabled, QPushButton#pushButton_TWUp5:disabled, QPushButton#pushButton_TWDown5:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; border-left: 3px solid rgb(38, 162, 105); }
+QPushButton#pushButton_TUp6:enabled, QPushButton#pushButton_TDown6:enabled, QPushButton#pushButton_TWUp6:enabled, QPushButton#pushButton_TWDown6:enabled { background: rgb(26, 95, 180); color: #ffffff; border: 1px solid rgb(21, 77, 147); }
+QPushButton#pushButton_TUp6:enabled:hover, QPushButton#pushButton_TDown6:enabled:hover, QPushButton#pushButton_TWUp6:enabled:hover, QPushButton#pushButton_TWDown6:enabled:hover { background: rgb(53, 114, 189); }
+QPushButton#pushButton_TUp6:enabled:pressed, QPushButton#pushButton_TDown6:enabled:pressed, QPushButton#pushButton_TWUp6:enabled:pressed, QPushButton#pushButton_TWDown6:enabled:pressed { background: rgb(21, 77, 147); color: white; }
+QPushButton#pushButton_TUp6:disabled, QPushButton#pushButton_TDown6:disabled, QPushButton#pushButton_TWUp6:disabled, QPushButton#pushButton_TWDown6:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; border-left: 3px solid rgb(26, 95, 180); }
+</string>
   </property>
   <widget class="QWidget" name="centralwidget">
-   <widget class="QPushButton" name="pushButton_IP">
-    <property name="geometry">
-     <rect>
-      <x>11</x>
-      <y>61</y>
-      <width>80</width>
-      <height>31</height>
-     </rect>
-    </property>
-    <property name="text">
-     <string>修改IP</string>
-    </property>
-   </widget>
-   <widget class="QLineEdit" name="lineEdit_IP">
-    <property name="geometry">
-     <rect>
-      <x>11</x>
-      <y>30</y>
-      <width>142</width>
-      <height>25</height>
-     </rect>
-    </property>
-   </widget>
-   <widget class="QLabel" name="label_IPset">
-    <property name="geometry">
-     <rect>
-      <x>11</x>
-      <y>1</y>
-      <width>104</width>
-      <height>23</height>
-     </rect>
-    </property>
-    <property name="text">
-     <string>实际连接：</string>
-    </property>
-   </widget>
-   <widget class="QLabel" name="label_IP_now">
-    <property name="geometry">
-     <rect>
-      <x>110</x>
-      <y>1</y>
-      <width>130</width>
-      <height>23</height>
-     </rect>
-    </property>
-    <property name="text">
-     <string>TextLabel</string>
-    </property>
-   </widget>
-   <widget class="QPushButton" name="pushButton_ConnectUR">
-    <property name="geometry">
-     <rect>
-      <x>11</x>
-      <y>98</y>
-      <width>80</width>
-      <height>31</height>
-     </rect>
-    </property>
-    <property name="text">
-     <string>连接UR</string>
-    </property>
-   </widget>
-   <widget class="QPushButton" name="pushButton_URPowerOn">
-    <property name="enabled">
-     <bool>false</bool>
-    </property>
-    <property name="geometry">
-     <rect>
-      <x>11</x>
-      <y>135</y>
-      <width>80</width>
-      <height>31</height>
-     </rect>
-    </property>
-    <property name="text">
-     <string>UR上电</string>
-    </property>
-   </widget>
-   <widget class="QPushButton" name="pushButton_URBrakeRelease">
-    <property name="enabled">
-     <bool>false</bool>
-    </property>
-    <property name="geometry">
-     <rect>
-      <x>11</x>
-      <y>172</y>
-      <width>80</width>
-      <height>31</height>
-     </rect>
-    </property>
-    <property name="text">
-     <string>UR松抱闸</string>
-    </property>
-   </widget>
-   <widget class="QPlainTextEdit" name="plainTextEdit_DashboardMessage">
-    <property name="geometry">
-     <rect>
-      <x>10</x>
-      <y>489</y>
-      <width>331</width>
-      <height>91</height>
-     </rect>
-    </property>
-    <property name="font">
-     <font>
-      <pointsize>8</pointsize>
-     </font>
-    </property>
-    <property name="readOnly">
-     <bool>true</bool>
-    </property>
-    <property name="plainText">
-     <string/>
-    </property>
-   </widget>
-   <widget class="QPushButton" name="pushButton_Shutdown">
-    <property name="enabled">
-     <bool>false</bool>
-    </property>
-    <property name="geometry">
-     <rect>
-      <x>10</x>
-      <y>430</y>
-      <width>131</width>
-      <height>51</height>
-     </rect>
-    </property>
-    <property name="font">
-     <font>
-      <pointsize>20</pointsize>
-     </font>
-    </property>
-    <property name="styleSheet">
-     <string notr="true">QPushButton {
-    background-color: rgb(240, 0, 0);
-}
-</string>
-    </property>
-    <property name="text">
-     <string>UR下电</string>
-    </property>
-   </widget>
-   <widget class="QGroupBox" name="groupBox_Q_Actual">
-    <property name="geometry">
-     <rect>
-      <x>240</x>
-      <y>0</y>
-      <width>160</width>
-      <height>211</height>
-     </rect>
-    </property>
-    <property name="title">
-     <string>当前关节角</string>
-    </property>
-    <widget class="QLineEdit" name="lineEdit_QA1">
-     <property name="geometry">
-      <rect>
-       <x>40</x>
-       <y>30</y>
-       <width>80</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="readOnly">
-      <bool>true</bool>
-     </property>
-    </widget>
-    <widget class="QLineEdit" name="lineEdit_QA2">
-     <property name="geometry">
-      <rect>
-       <x>40</x>
-       <y>60</y>
-       <width>80</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="readOnly">
-      <bool>true</bool>
-     </property>
-    </widget>
-    <widget class="QLineEdit" name="lineEdit_QA3">
-     <property name="geometry">
-      <rect>
-       <x>40</x>
-       <y>90</y>
-       <width>80</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="readOnly">
-      <bool>true</bool>
-     </property>
-    </widget>
-    <widget class="QLineEdit" name="lineEdit_QA4">
-     <property name="geometry">
-      <rect>
-       <x>40</x>
-       <y>120</y>
-       <width>80</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="readOnly">
-      <bool>true</bool>
-     </property>
-    </widget>
-    <widget class="QLineEdit" name="lineEdit_QA5">
-     <property name="geometry">
-      <rect>
-       <x>40</x>
-       <y>150</y>
-       <width>80</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="readOnly">
-      <bool>true</bool>
-     </property>
-    </widget>
-    <widget class="QLineEdit" name="lineEdit_QA6">
-     <property name="geometry">
-      <rect>
-       <x>40</x>
-       <y>180</y>
-       <width>80</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="readOnly">
-      <bool>true</bool>
-     </property>
-    </widget>
-    <widget class="QPushButton" name="pushButton_JUp1">
-     <property name="geometry">
-      <rect>
-       <x>125</x>
-       <y>30</y>
-       <width>25</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="text">
-      <string>+</string>
-     </property>
-    </widget>
-    <widget class="QPushButton" name="pushButton_JDown1">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>30</y>
-       <width>25</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="text">
-      <string>-</string>
-     </property>
-    </widget>
-    <widget class="QPushButton" name="pushButton_JDown2">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>60</y>
-       <width>25</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="text">
-      <string>-</string>
-     </property>
-    </widget>
-    <widget class="QPushButton" name="pushButton_JDown3">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>90</y>
-       <width>25</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="text">
-      <string>-</string>
-     </property>
-    </widget>
-    <widget class="QPushButton" name="pushButton_JDown4">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>120</y>
-       <width>25</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="text">
-      <string>-</string>
-     </property>
-    </widget>
-    <widget class="QPushButton" name="pushButton_JDown5">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>150</y>
-       <width>25</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="text">
-      <string>-</string>
-     </property>
-    </widget>
-    <widget class="QPushButton" name="pushButton_JDown6">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>180</y>
-       <width>25</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="text">
-      <string>-</string>
-     </property>
-    </widget>
-    <widget class="QPushButton" name="pushButton_JUp2">
-     <property name="geometry">
-      <rect>
-       <x>125</x>
-       <y>60</y>
-       <width>25</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="text">
-      <string>+</string>
-     </property>
-    </widget>
-    <widget class="QPushButton" name="pushButton_JUp3">
-     <property name="geometry">
-      <rect>
-       <x>125</x>
-       <y>90</y>
-       <width>25</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="text">
-      <string>+</string>
-     </property>
-    </widget>
-    <widget class="QPushButton" name="pushButton_JUp4">
-     <property name="geometry">
-      <rect>
-       <x>125</x>
-       <y>120</y>
-       <width>25</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="text">
-      <string>+</string>
-     </property>
-    </widget>
-    <widget class="QPushButton" name="pushButton_JUp5">
-     <property name="geometry">
-      <rect>
-       <x>125</x>
-       <y>150</y>
-       <width>25</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="text">
-      <string>+</string>
-     </property>
-    </widget>
-    <widget class="QPushButton" name="pushButton_JUp6">
-     <property name="geometry">
-      <rect>
-       <x>125</x>
-       <y>180</y>
-       <width>25</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="text">
-      <string>+</string>
-     </property>
-    </widget>
-   </widget>
-   <widget class="QGroupBox" name="groupBox_Fex">
-    <property name="geometry">
-     <rect>
-      <x>685</x>
-      <y>0</y>
-      <width>100</width>
-      <height>211</height>
-     </rect>
-    </property>
-    <property name="title">
-     <string>力</string>
-    </property>
-    <widget class="QLineEdit" name="lineEdit_Fex1">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>30</y>
-       <width>80</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="readOnly">
-      <bool>true</bool>
-     </property>
-    </widget>
-    <widget class="QLineEdit" name="lineEdit_Fex2">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>60</y>
-       <width>80</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="readOnly">
-      <bool>true</bool>
-     </property>
-    </widget>
-    <widget class="QLineEdit" name="lineEdit_Fex3">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>90</y>
-       <width>80</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="readOnly">
-      <bool>true</bool>
-     </property>
-    </widget>
-    <widget class="QLineEdit" name="lineEdit_Fex4">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>120</y>
-       <width>80</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="readOnly">
-      <bool>true</bool>
-     </property>
-    </widget>
-    <widget class="QLineEdit" name="lineEdit_Fex5">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>150</y>
-       <width>80</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="readOnly">
-      <bool>true</bool>
-     </property>
-    </widget>
-    <widget class="QLineEdit" name="lineEdit_Fex6">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>180</y>
-       <width>80</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="readOnly">
-      <bool>true</bool>
-     </property>
-    </widget>
-    <widget class="QCheckBox" name="checkBox_FTSwitch">
-     <property name="geometry">
-      <rect>
-       <x>20</x>
-       <y>0</y>
-       <width>51</width>
-       <height>23</height>
-      </rect>
-     </property>
-     <property name="text">
-      <string>力矩</string>
-     </property>
-    </widget>
-   </widget>
-   <widget class="QGroupBox" name="groupBox_TControl">
-    <property name="geometry">
-     <rect>
-      <x>570</x>
-      <y>0</y>
-      <width>110</width>
-      <height>211</height>
-     </rect>
-    </property>
-    <property name="title">
-     <string>末端空间控制</string>
-    </property>
-    <widget class="QPushButton" name="pushButton_TDown3">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>90</y>
-       <width>40</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="styleSheet">
-      <string notr="true">QPushButton {
-	background-color: rgb(153, 193, 241)
-}</string>
-     </property>
-     <property name="text">
-      <string>Z-</string>
-     </property>
-    </widget>
-    <widget class="QPushButton" name="pushButton_TUp1">
-     <property name="geometry">
-      <rect>
-       <x>60</x>
-       <y>30</y>
-       <width>40</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="styleSheet">
-      <string notr="true">QPushButton {
-	background-color: rgb(246, 97, 81)
-}</string>
-     </property>
-     <property name="text">
-      <string>X+</string>
-     </property>
-    </widget>
-    <widget class="QPushButton" name="pushButton_TUp2">
-     <property name="geometry">
-      <rect>
-       <x>60</x>
-       <y>60</y>
-       <width>40</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="styleSheet">
-      <string notr="true">QPushButton {
-	background-color: rgb(143, 240, 164)
-}</string>
-     </property>
-     <property name="text">
-      <string>Y+</string>
-     </property>
-    </widget>
-    <widget class="QPushButton" name="pushButton_TDown2">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>60</y>
-       <width>40</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="styleSheet">
-      <string notr="true">QPushButton {
-	background-color: rgb(143, 240, 164)
-}</string>
-     </property>
-     <property name="text">
-      <string>Y-</string>
-     </property>
-    </widget>
-    <widget class="QPushButton" name="pushButton_TDown1">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>30</y>
-       <width>40</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="styleSheet">
-      <string notr="true">QPushButton {
-	background-color: rgb(246, 97, 81)
-}</string>
-     </property>
-     <property name="text">
-      <string>X-</string>
-     </property>
-    </widget>
-    <widget class="QPushButton" name="pushButton_TUp3">
-     <property name="geometry">
-      <rect>
-       <x>60</x>
-       <y>90</y>
-       <width>40</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="styleSheet">
-      <string notr="true">QPushButton {
-	background-color: rgb(153, 193, 241)
-}</string>
-     </property>
-     <property name="text">
-      <string>Z+</string>
-     </property>
-    </widget>
-    <widget class="QPushButton" name="pushButton_TUp5">
-     <property name="geometry">
-      <rect>
-       <x>60</x>
-       <y>150</y>
-       <width>40</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="styleSheet">
-      <string notr="true">QPushButton {
-	background-color: rgb(38, 162, 105)
-}</string>
-     </property>
-     <property name="text">
-      <string>RY+</string>
-     </property>
-    </widget>
-    <widget class="QPushButton" name="pushButton_TDown6">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>180</y>
-       <width>40</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="styleSheet">
-      <string notr="true">QPushButton {
-	background-color: rgb(26, 95, 180)
-}</string>
-     </property>
-     <property name="text">
-      <string>RZ-</string>
-     </property>
-    </widget>
-    <widget class="QPushButton" name="pushButton_TDown4">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>120</y>
-       <width>40</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="styleSheet">
-      <string notr="true">QPushButton {
-	background-color: rgb(165, 29, 45)
-}</string>
-     </property>
-     <property name="text">
-      <string>RX-</string>
-     </property>
-    </widget>
-    <widget class="QPushButton" name="pushButton_TDown5">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>150</y>
-       <width>40</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="styleSheet">
-      <string notr="true">QPushButton {
-	background-color: rgb(38, 162, 105)
-}</string>
-     </property>
-     <property name="text">
-      <string>RY-</string>
-     </property>
-    </widget>
-    <widget class="QPushButton" name="pushButton_TUp6">
-     <property name="geometry">
-      <rect>
-       <x>60</x>
-       <y>180</y>
-       <width>40</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="styleSheet">
-      <string notr="true">QPushButton {
-	background-color: rgb(26, 95, 180)
-}</string>
-     </property>
-     <property name="text">
-      <string>RZ+</string>
-     </property>
-    </widget>
-    <widget class="QPushButton" name="pushButton_TUp4">
-     <property name="geometry">
-      <rect>
-       <x>60</x>
-       <y>120</y>
-       <width>40</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="styleSheet">
-      <string notr="true">QPushButton {
-	background-color: rgb(165, 29, 45)
-}</string>
-     </property>
-     <property name="text">
-      <string>RX+</string>
-     </property>
-    </widget>
-   </widget>
-   <widget class="QGroupBox" name="groupBox_T_Actual">
-    <property name="geometry">
-     <rect>
-      <x>405</x>
-      <y>0</y>
-      <width>160</width>
-      <height>211</height>
-     </rect>
-    </property>
-    <property name="title">
-     <string>当前末端位姿</string>
-    </property>
-    <widget class="QLineEdit" name="lineEdit_TA1">
-     <property name="geometry">
-      <rect>
-       <x>40</x>
-       <y>30</y>
-       <width>80</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="readOnly">
-      <bool>true</bool>
-     </property>
-    </widget>
-    <widget class="QLineEdit" name="lineEdit_TA2">
-     <property name="geometry">
-      <rect>
-       <x>40</x>
-       <y>60</y>
-       <width>80</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="readOnly">
-      <bool>true</bool>
-     </property>
-    </widget>
-    <widget class="QLineEdit" name="lineEdit_TA3">
-     <property name="geometry">
-      <rect>
-       <x>40</x>
-       <y>90</y>
-       <width>80</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="readOnly">
-      <bool>true</bool>
-     </property>
-    </widget>
-    <widget class="QLineEdit" name="lineEdit_TA4">
-     <property name="geometry">
-      <rect>
-       <x>40</x>
-       <y>120</y>
-       <width>80</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="readOnly">
-      <bool>true</bool>
-     </property>
-    </widget>
-    <widget class="QLineEdit" name="lineEdit_TA5">
-     <property name="geometry">
-      <rect>
-       <x>40</x>
-       <y>150</y>
-       <width>80</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="readOnly">
-      <bool>true</bool>
-     </property>
-    </widget>
-    <widget class="QLineEdit" name="lineEdit_TA6">
-     <property name="geometry">
-      <rect>
-       <x>40</x>
-       <y>180</y>
-       <width>80</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="readOnly">
-      <bool>true</bool>
-     </property>
-    </widget>
-    <widget class="QPushButton" name="pushButton_TWUp1">
-     <property name="geometry">
-      <rect>
-       <x>125</x>
-       <y>30</y>
-       <width>25</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="styleSheet">
-      <string notr="true">QPushButton {
-	background-color: rgb(246, 97, 81)
-}</string>
-     </property>
-     <property name="text">
-      <string>+</string>
-     </property>
-    </widget>
-    <widget class="QPushButton" name="pushButton_TWDown1">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>30</y>
-       <width>25</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="styleSheet">
-      <string notr="true">QPushButton {
-	background-color: rgb(246, 97, 81)
-}</string>
-     </property>
-     <property name="text">
-      <string>-</string>
-     </property>
-    </widget>
-    <widget class="QPushButton" name="pushButton_TWDown2">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>60</y>
-       <width>25</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="styleSheet">
-      <string notr="true">QPushButton {
-	background-color: rgb(143, 240, 164)
-}</string>
-     </property>
-     <property name="text">
-      <string>-</string>
-     </property>
-    </widget>
-    <widget class="QPushButton" name="pushButton_TWDown3">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>90</y>
-       <width>25</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="styleSheet">
-      <string notr="true">QPushButton {
-	background-color: rgb(153, 193, 241)
-}</string>
-     </property>
-     <property name="text">
-      <string>-</string>
-     </property>
-    </widget>
-    <widget class="QPushButton" name="pushButton_TWDown4">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>120</y>
-       <width>25</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="styleSheet">
-      <string notr="true">QPushButton {
-	background-color: rgb(165, 29, 45)
-}</string>
-     </property>
-     <property name="text">
-      <string>-</string>
-     </property>
-    </widget>
-    <widget class="QPushButton" name="pushButton_TWDown5">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>150</y>
-       <width>25</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="styleSheet">
-      <string notr="true">QPushButton {
-	background-color: rgb(38, 162, 105)
-}</string>
-     </property>
-     <property name="text">
-      <string>-</string>
-     </property>
-    </widget>
-    <widget class="QPushButton" name="pushButton_TWDown6">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>180</y>
-       <width>25</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="styleSheet">
-      <string notr="true">QPushButton {
-	background-color: rgb(26, 95, 180)
-}</string>
-     </property>
-     <property name="text">
-      <string>-</string>
-     </property>
-    </widget>
-    <widget class="QPushButton" name="pushButton_TWUp2">
-     <property name="geometry">
-      <rect>
-       <x>125</x>
-       <y>60</y>
-       <width>25</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="styleSheet">
-      <string notr="true">QPushButton {
-	background-color: rgb(143, 240, 164)
-}</string>
-     </property>
-     <property name="text">
-      <string>+</string>
-     </property>
-    </widget>
-    <widget class="QPushButton" name="pushButton_TWUp3">
-     <property name="geometry">
-      <rect>
-       <x>125</x>
-       <y>90</y>
-       <width>25</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="styleSheet">
-      <string notr="true">QPushButton {
-	background-color: rgb(153, 193, 241)
-}</string>
-     </property>
-     <property name="text">
-      <string>+</string>
-     </property>
-    </widget>
-    <widget class="QPushButton" name="pushButton_TWUp4">
-     <property name="geometry">
-      <rect>
-       <x>125</x>
-       <y>120</y>
-       <width>25</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="styleSheet">
-      <string notr="true">QPushButton {
-	background-color: rgb(165, 29, 45)
-}</string>
-     </property>
-     <property name="text">
-      <string>+</string>
-     </property>
-    </widget>
-    <widget class="QPushButton" name="pushButton_TWUp5">
-     <property name="geometry">
-      <rect>
-       <x>125</x>
-       <y>150</y>
-       <width>25</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="styleSheet">
-      <string notr="true">QPushButton {
-	background-color: rgb(38, 162, 105)
-}</string>
-     </property>
-     <property name="text">
-      <string>+</string>
-     </property>
-    </widget>
-    <widget class="QPushButton" name="pushButton_TWUp6">
-     <property name="geometry">
-      <rect>
-       <x>125</x>
-       <y>180</y>
-       <width>25</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="styleSheet">
-      <string notr="true">QPushButton {
-	background-color: rgb(26, 95, 180)
-}</string>
-     </property>
-     <property name="text">
-      <string>+</string>
-     </property>
-    </widget>
-   </widget>
-   <widget class="QGroupBox" name="groupBox_Q_Target">
-    <property name="geometry">
-     <rect>
-      <x>790</x>
-      <y>220</y>
-      <width>100</width>
-      <height>251</height>
-     </rect>
-    </property>
-    <property name="title">
-     <string>目标关节角/°</string>
-    </property>
-    <widget class="QLineEdit" name="lineEdit_QT1">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>30</y>
-       <width>80</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="readOnly">
-      <bool>false</bool>
-     </property>
-    </widget>
-    <widget class="QLineEdit" name="lineEdit_QT2">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>60</y>
-       <width>80</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="readOnly">
-      <bool>false</bool>
-     </property>
-    </widget>
-    <widget class="QLineEdit" name="lineEdit_QT3">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>90</y>
-       <width>80</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="readOnly">
-      <bool>false</bool>
-     </property>
-    </widget>
-    <widget class="QLineEdit" name="lineEdit_QT4">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>120</y>
-       <width>80</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="readOnly">
-      <bool>false</bool>
-     </property>
-    </widget>
-    <widget class="QLineEdit" name="lineEdit_QT5">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>150</y>
-       <width>80</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="readOnly">
-      <bool>false</bool>
-     </property>
-    </widget>
-    <widget class="QLineEdit" name="lineEdit_QT6">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>180</y>
-       <width>80</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="readOnly">
-      <bool>false</bool>
-     </property>
-    </widget>
-    <widget class="QPushButton" name="pushButton_URScriptMoveJ">
-     <property name="enabled">
-      <bool>true</bool>
-     </property>
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>210</y>
-       <width>80</width>
-       <height>31</height>
-      </rect>
-     </property>
-     <property name="text">
-      <string>开始运动</string>
-     </property>
-    </widget>
-   </widget>
-   <widget class="QPushButton" name="pushButton_Stop">
-    <property name="enabled">
-     <bool>false</bool>
-    </property>
-    <property name="geometry">
-     <rect>
-      <x>10</x>
-      <y>370</y>
-      <width>131</width>
-      <height>51</height>
-     </rect>
-    </property>
-    <property name="font">
-     <font>
-      <pointsize>20</pointsize>
-     </font>
-    </property>
-    <property name="styleSheet">
-     <string notr="true">QPushButton {
-    background-color: rgb(248, 228, 92);
-}</string>
-    </property>
-    <property name="text">
-     <string>UR停止</string>
-    </property>
-   </widget>
-   <widget class="QPushButton" name="pushButton_RTDEUDP">
-    <property name="enabled">
-     <bool>false</bool>
-    </property>
-    <property name="geometry">
-     <rect>
-      <x>10</x>
-      <y>250</y>
-      <width>131</width>
-      <height>51</height>
-     </rect>
-    </property>
-    <property name="font">
-     <font>
-      <pointsize>12</pointsize>
-     </font>
-    </property>
-    <property name="styleSheet">
-     <string notr="true">QPushButton {
-    background-color: rgb(143, 240, 164)
-}</string>
-    </property>
-    <property name="text">
-     <string>开启RTDE(外源)</string>
-    </property>
-   </widget>
-   <widget class="QPushButton" name="pushButton_StopRTDE">
-    <property name="enabled">
-     <bool>false</bool>
-    </property>
-    <property name="geometry">
-     <rect>
-      <x>10</x>
-      <y>310</y>
-      <width>131</width>
-      <height>51</height>
-     </rect>
-    </property>
-    <property name="font">
-     <font>
-      <pointsize>18</pointsize>
-     </font>
-    </property>
-    <property name="styleSheet">
-     <string notr="true">QPushButton {
-    background-color: rgb(255, 190, 111)
-}</string>
-    </property>
-    <property name="text">
-     <string>停止RTDE</string>
-    </property>
-   </widget>
-   <widget class="QWidget" name="widget_RobotView" native="true">
-    <property name="geometry">
-     <rect>
-      <x>345</x>
-      <y>220</y>
-      <width>441</width>
-      <height>331</height>
-     </rect>
-    </property>
-   </widget>
-   <widget class="QSlider" name="horizontalSlider_SpeedSlider">
-    <property name="geometry">
-     <rect>
-      <x>460</x>
-      <y>560</y>
-      <width>311</width>
-      <height>20</height>
-     </rect>
-    </property>
-    <property name="sizePolicy">
-     <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
-      <horstretch>0</horstretch>
-      <verstretch>0</verstretch>
-     </sizepolicy>
-    </property>
-    <property name="minimum">
-     <number>1</number>
-    </property>
-    <property name="maximum">
-     <number>100</number>
-    </property>
-    <property name="value">
-     <number>100</number>
-    </property>
-    <property name="orientation">
-     <enum>Qt::Horizontal</enum>
-    </property>
-    <property name="tickPosition">
-     <enum>QSlider::TicksBothSides</enum>
-    </property>
-   </widget>
-   <widget class="QLabel" name="label_SpeedSlider">
-    <property name="geometry">
-     <rect>
-      <x>370</x>
-      <y>559</y>
-      <width>91</width>
-      <height>20</height>
-     </rect>
-    </property>
-    <property name="text">
-     <string>限速: 100%</string>
-    </property>
-   </widget>
-   <widget class="QGroupBox" name="groupBox_UDP">
-    <property name="geometry">
-     <rect>
-      <x>240</x>
-      <y>210</y>
-      <width>100</width>
-      <height>271</height>
-     </rect>
-    </property>
-    <property name="title">
-     <string>外源信息</string>
-    </property>
-    <widget class="QLineEdit" name="lineEdit_UDP1">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>30</y>
-       <width>80</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="text">
-      <string/>
-     </property>
-     <property name="readOnly">
-      <bool>true</bool>
-     </property>
-    </widget>
-    <widget class="QLineEdit" name="lineEdit_UDP2">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>60</y>
-       <width>80</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="readOnly">
-      <bool>true</bool>
-     </property>
-    </widget>
-    <widget class="QLineEdit" name="lineEdit_UDP3">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>90</y>
-       <width>80</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="readOnly">
-      <bool>true</bool>
-     </property>
-    </widget>
-    <widget class="QLineEdit" name="lineEdit_UDP4">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>120</y>
-       <width>80</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="readOnly">
-      <bool>true</bool>
-     </property>
-    </widget>
-    <widget class="QLineEdit" name="lineEdit_UDP5">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>150</y>
-       <width>80</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="readOnly">
-      <bool>true</bool>
-     </property>
-    </widget>
-    <widget class="QLineEdit" name="lineEdit_UDP6">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>180</y>
-       <width>80</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="readOnly">
-      <bool>true</bool>
-     </property>
-    </widget>
-    <widget class="QLineEdit" name="lineEdit_UDP7">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>210</y>
-       <width>80</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="readOnly">
-      <bool>true</bool>
-     </property>
-    </widget>
-    <widget class="QLineEdit" name="lineEdit_UDP8">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>240</y>
-       <width>80</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="readOnly">
-      <bool>true</bool>
-     </property>
-    </widget>
-   </widget>
-   <widget class="QPushButton" name="pushButton_HOME">
-    <property name="enabled">
-     <bool>false</bool>
-    </property>
-    <property name="geometry">
-     <rect>
-      <x>790</x>
-      <y>480</y>
-      <width>101</width>
-      <height>41</height>
-     </rect>
-    </property>
-    <property name="font">
-     <font>
-      <pointsize>18</pointsize>
-     </font>
-    </property>
-    <property name="styleSheet">
-     <string notr="true">QPushButton {
-    background-color: rgb(143, 240, 164)
-}</string>
-    </property>
-    <property name="text">
-     <string>回零位</string>
-    </property>
-   </widget>
-   <widget class="QGroupBox" name="groupBox_Clamp">
-    <property name="geometry">
-     <rect>
-      <x>790</x>
-      <y>0</y>
-      <width>100</width>
-      <height>211</height>
-     </rect>
-    </property>
-    <property name="title">
-     <string>夹钳信息</string>
-    </property>
-    <widget class="QLineEdit" name="lineEdit_Clamp1">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>30</y>
-       <width>80</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="readOnly">
-      <bool>true</bool>
-     </property>
-    </widget>
-    <widget class="QLineEdit" name="lineEdit_Clamp2">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>60</y>
-       <width>80</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="readOnly">
-      <bool>true</bool>
-     </property>
-    </widget>
-    <widget class="QLineEdit" name="lineEdit_Clamp3">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>90</y>
-       <width>80</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="readOnly">
-      <bool>true</bool>
-     </property>
-    </widget>
-    <widget class="QLineEdit" name="lineEdit_Clamp4">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>120</y>
-       <width>80</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="readOnly">
-      <bool>true</bool>
-     </property>
-    </widget>
-    <widget class="QLineEdit" name="lineEdit_Clamp5">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>150</y>
-       <width>80</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="readOnly">
-      <bool>true</bool>
-     </property>
-    </widget>
-    <widget class="QLineEdit" name="lineEdit_Clamp6">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>180</y>
-       <width>80</width>
-       <height>25</height>
-      </rect>
-     </property>
-     <property name="readOnly">
-      <bool>true</bool>
-     </property>
-    </widget>
-   </widget>
-   <widget class="QCheckBox" name="checkBox_UDPVisual">
-    <property name="geometry">
-     <rect>
-      <x>10</x>
-      <y>220</y>
-      <width>161</width>
-      <height>23</height>
-     </rect>
-    </property>
-    <property name="text">
-     <string>可视化显示外源目标</string>
-    </property>
-   </widget>
-   <widget class="QPushButton" name="pushButton_UDPSync">
-    <property name="enabled">
-     <bool>false</bool>
-    </property>
-    <property name="geometry">
-     <rect>
-      <x>790</x>
-      <y>530</y>
-      <width>101</width>
-      <height>41</height>
-     </rect>
-    </property>
-    <property name="font">
-     <font>
-      <pointsize>12</pointsize>
-     </font>
-    </property>
-    <property name="styleSheet">
-     <string notr="true">QPushButton {
-    background-color: rgb(143, 240, 164)
-}</string>
-    </property>
-    <property name="text">
-     <string>同步到主端</string>
-    </property>
-   </widget>
-   <widget class="QLabel" name="label_camera1">
-    <property name="geometry">
-     <rect>
-      <x>10</x>
-      <y>590</y>
-      <width>436</width>
-      <height>327</height>
-     </rect>
-    </property>
-    <property name="frameShape">
-     <enum>QFrame::Box</enum>
-    </property>
-    <property name="text">
-     <string>Camera1</string>
-    </property>
-    <property name="scaledContents">
-     <bool>true</bool>
-    </property>
-    <property name="alignment">
-     <set>Qt::AlignCenter</set>
-    </property>
-   </widget>
-   <widget class="QLabel" name="label_camera2">
-    <property name="geometry">
-     <rect>
-      <x>455</x>
-      <y>590</y>
-      <width>436</width>
-      <height>327</height>
-     </rect>
-    </property>
-    <property name="frameShape">
-     <enum>QFrame::Box</enum>
-    </property>
-    <property name="text">
-     <string>Camera2</string>
-    </property>
-    <property name="scaledContents">
-     <bool>true</bool>
-    </property>
-    <property name="alignment">
-     <set>Qt::AlignCenter</set>
-    </property>
-   </widget>
-   <widget class="QPushButton" name="pushButton_Collect">
-    <property name="geometry">
-     <rect>
-      <x>100</x>
-      <y>60</y>
-      <width>80</width>
-      <height>31</height>
-     </rect>
-    </property>
-    <property name="text">
-     <string>开始采集</string>
-    </property>
-   </widget>
-   <widget class="QCheckBox" name="checkBox_URSim">
-    <property name="geometry">
-     <rect>
-      <x>160</x>
-      <y>30</y>
-      <width>92</width>
-      <height>23</height>
-     </rect>
-    </property>
-    <property name="text">
-     <string>URSim</string>
-    </property>
-   </widget>
+   <layout class="QVBoxLayout" name="verticalLayout_Main" stretch="0,0,1,0">
+    <property name="leftMargin">
+     <number>12</number>
+    </property>
+    <property name="topMargin">
+     <number>12</number>
+    </property>
+    <property name="rightMargin">
+     <number>12</number>
+    </property>
+    <property name="bottomMargin">
+     <number>12</number>
+    </property>
+    <property name="spacing">
+     <number>10</number>
+    </property>
+    <item>
+     <widget class="QFrame" name="frame_Header">
+      <layout class="QHBoxLayout" name="horizontalLayout_Header">
+       <property name="leftMargin">
+        <number>12</number>
+       </property>
+       <property name="topMargin">
+        <number>12</number>
+       </property>
+       <property name="rightMargin">
+        <number>12</number>
+       </property>
+       <property name="bottomMargin">
+        <number>12</number>
+       </property>
+       <property name="spacing">
+        <number>8</number>
+       </property>
+       <item>
+        <widget class="QLabel" name="label_AppTitle">
+         <property name="text">
+          <string>URControl</string>
+         </property>
+         <property name="font">
+          <font>
+           <pointsize>14</pointsize>
+           <weight>75</weight>
+           <bold>true</bold>
+          </font>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="label_Subtitle">
+         <property name="text">
+          <string>机械臂控制与数据采集</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <spacer name="spacer_Header">
+         <property name="orientation">
+          <enum>Qt::Horizontal</enum>
+         </property>
+         <property name="sizeHint">
+          <size>
+           <width>0</width>
+           <height>0</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+       <item>
+        <widget class="QLabel" name="label_UiScale">
+         <property name="text">
+          <string>界面大小</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QComboBox" name="comboBox_UiScale">
+         <property name="toolTip">
+          <string>自动适配当前屏幕；百分比在自动大小基础上微调，并按显示器记忆。</string>
+         </property>
+         <item>
+          <property name="text">
+           <string>自动适配</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>紧凑 · 90%</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>放大 · 110%</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>大字 · 125%</string>
+          </property>
+         </item>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </item>
+    <item>
+     <widget class="QFrame" name="frame_Connection">
+      <layout class="QHBoxLayout" name="horizontalLayout_Connection">
+       <property name="leftMargin">
+        <number>12</number>
+       </property>
+       <property name="topMargin">
+        <number>12</number>
+       </property>
+       <property name="rightMargin">
+        <number>12</number>
+       </property>
+       <property name="bottomMargin">
+        <number>12</number>
+       </property>
+       <property name="spacing">
+        <number>8</number>
+       </property>
+       <item>
+        <widget class="QLabel" name="label_TargetIP">
+         <property name="text">
+          <string>目标 IP</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLineEdit" name="lineEdit_IP">
+         <property name="minimumSize">
+          <size>
+           <width>72</width>
+           <height>0</height>
+          </size>
+         </property>
+         <property name="placeholderText">
+          <string>—</string>
+         </property>
+         <property name="sizePolicy">
+          <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+           <horstretch>0</horstretch>
+           <verstretch>0</verstretch>
+          </sizepolicy>
+         </property>
+         <property name="text">
+          <string>192.168.3.15</string>
+         </property>
+         <property name="alignment">
+          <set>Qt::AlignLeft|Qt::AlignVCenter</set>
+         </property>
+         <property name="maximumSize">
+          <size>
+           <width>210</width>
+           <height>16777215</height>
+          </size>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="pushButton_IP">
+         <property name="text">
+          <string>修改IP</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QCheckBox" name="checkBox_URSim">
+         <property name="text">
+          <string>URSim</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <spacer name="spacer_Connection">
+         <property name="orientation">
+          <enum>Qt::Horizontal</enum>
+         </property>
+         <property name="sizeHint">
+          <size>
+           <width>0</width>
+           <height>0</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+       <item>
+        <widget class="QLabel" name="label_IPset">
+         <property name="text">
+          <string>实际连接：</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="label_IP_now">
+         <property name="text">
+          <string>未连接</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="pushButton_ConnectUR">
+         <property name="text">
+          <string>连接UR</string>
+         </property>
+         <property name="minimumSize">
+          <size>
+           <width>104</width>
+           <height>40</height>
+          </size>
+         </property>
+         <property name="font">
+          <font>
+           <pointsize>11</pointsize>
+           <weight>75</weight>
+           <bold>true</bold>
+          </font>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="pushButton_URPowerOn">
+         <property name="enabled">
+          <bool>false</bool>
+         </property>
+         <property name="text">
+          <string>UR上电</string>
+         </property>
+         <property name="minimumSize">
+          <size>
+           <width>88</width>
+           <height>38</height>
+          </size>
+         </property>
+         <property name="font">
+          <font>
+           <pointsize>11</pointsize>
+           <weight>75</weight>
+           <bold>true</bold>
+          </font>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="pushButton_URBrakeRelease">
+         <property name="enabled">
+          <bool>false</bool>
+         </property>
+         <property name="text">
+          <string>UR松抱闸</string>
+         </property>
+         <property name="minimumSize">
+          <size>
+           <width>96</width>
+           <height>38</height>
+          </size>
+         </property>
+         <property name="font">
+          <font>
+           <pointsize>11</pointsize>
+           <weight>75</weight>
+           <bold>true</bold>
+          </font>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </item>
+    <item>
+     <widget class="QSplitter" name="splitter_Main">
+      <property name="orientation">
+       <enum>Qt::Horizontal</enum>
+      </property>
+      <property name="childrenCollapsible">
+       <bool>false</bool>
+      </property>
+      <property name="handleWidth">
+       <number>6</number>
+      </property>
+      <widget class="QScrollArea" name="scrollArea_Control">
+       <property name="widgetResizable">
+        <bool>true</bool>
+       </property>
+       <property name="frameShape">
+        <enum>QFrame::NoFrame</enum>
+       </property>
+       <property name="minimumSize">
+        <size>
+         <width>560</width>
+         <height>0</height>
+        </size>
+       </property>
+       <widget class="QWidget" name="scrollArea_ControlContents">
+        <layout class="QVBoxLayout" name="verticalLayout_Control" stretch="0,1">
+         <property name="leftMargin">
+          <number>0</number>
+         </property>
+         <property name="topMargin">
+          <number>0</number>
+         </property>
+         <property name="rightMargin">
+          <number>0</number>
+         </property>
+         <property name="bottomMargin">
+          <number>0</number>
+         </property>
+         <property name="spacing">
+          <number>10</number>
+         </property>
+         <item>
+          <widget class="QTabWidget" name="tabWidget_Control">
+           <property name="currentIndex">
+            <number>0</number>
+           </property>
+           <widget class="QWidget" name="tab_Joints">
+            <attribute name="title">
+             <string>关节控制</string>
+            </attribute>
+            <layout class="QVBoxLayout" name="verticalLayout_Joints">
+             <property name="leftMargin">
+              <number>10</number>
+             </property>
+             <property name="topMargin">
+              <number>10</number>
+             </property>
+             <property name="rightMargin">
+              <number>10</number>
+             </property>
+             <property name="bottomMargin">
+              <number>10</number>
+             </property>
+             <property name="spacing">
+              <number>8</number>
+             </property>
+             <item>
+              <layout class="QHBoxLayout" name="horizontalLayout_Joints" stretch="1,1">
+               <item>
+                <widget class="QGroupBox" name="groupBox_Q_Actual">
+                 <property name="title">
+                  <string>当前关节角 · °</string>
+                 </property>
+                 <layout class="QGridLayout" name="gridLayout_JointActual">
+                  <property name="leftMargin">
+                   <number>4</number>
+                  </property>
+                  <property name="topMargin">
+                   <number>4</number>
+                  </property>
+                  <property name="rightMargin">
+                   <number>4</number>
+                  </property>
+                  <property name="bottomMargin">
+                   <number>4</number>
+                  </property>
+                  <property name="spacing">
+                   <number>6</number>
+                  </property>
+                  <item row="0" column="0">
+                   <widget class="QLabel" name="label_JointActual1">
+                    <property name="text">
+                     <string>J1</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="0" column="1">
+                   <widget class="QPushButton" name="pushButton_JDown1">
+                    <property name="text">
+                     <string>−</string>
+                    </property>
+                    <property name="toolTip">
+                     <string>按住：J1 负向点动；松开停止</string>
+                    </property>
+                    <property name="enabled">
+                     <bool>false</bool>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>30</width>
+                      <height>0</height>
+                     </size>
+                    </property>
+                    <property name="autoRepeat">
+                     <bool>false</bool>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="0" column="2">
+                   <widget class="QLineEdit" name="lineEdit_QA1">
+                    <property name="readOnly">
+                     <bool>true</bool>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>72</width>
+                      <height>0</height>
+                     </size>
+                    </property>
+                    <property name="placeholderText">
+                     <string>—</string>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight|Qt::AlignVCenter</set>
+                    </property>
+                    <property name="sizePolicy">
+                     <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                      <horstretch>0</horstretch>
+                      <verstretch>0</verstretch>
+                     </sizepolicy>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="0" column="3">
+                   <widget class="QPushButton" name="pushButton_JUp1">
+                    <property name="text">
+                     <string>+</string>
+                    </property>
+                    <property name="toolTip">
+                     <string>按住：J1 正向点动；松开停止</string>
+                    </property>
+                    <property name="enabled">
+                     <bool>false</bool>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>30</width>
+                      <height>0</height>
+                     </size>
+                    </property>
+                    <property name="autoRepeat">
+                     <bool>false</bool>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="1" column="0">
+                   <widget class="QLabel" name="label_JointActual2">
+                    <property name="text">
+                     <string>J2</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="1" column="1">
+                   <widget class="QPushButton" name="pushButton_JDown2">
+                    <property name="text">
+                     <string>−</string>
+                    </property>
+                    <property name="toolTip">
+                     <string>按住：J2 负向点动；松开停止</string>
+                    </property>
+                    <property name="enabled">
+                     <bool>false</bool>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>30</width>
+                      <height>0</height>
+                     </size>
+                    </property>
+                    <property name="autoRepeat">
+                     <bool>false</bool>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="1" column="2">
+                   <widget class="QLineEdit" name="lineEdit_QA2">
+                    <property name="readOnly">
+                     <bool>true</bool>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>72</width>
+                      <height>0</height>
+                     </size>
+                    </property>
+                    <property name="placeholderText">
+                     <string>—</string>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight|Qt::AlignVCenter</set>
+                    </property>
+                    <property name="sizePolicy">
+                     <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                      <horstretch>0</horstretch>
+                      <verstretch>0</verstretch>
+                     </sizepolicy>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="1" column="3">
+                   <widget class="QPushButton" name="pushButton_JUp2">
+                    <property name="text">
+                     <string>+</string>
+                    </property>
+                    <property name="toolTip">
+                     <string>按住：J2 正向点动；松开停止</string>
+                    </property>
+                    <property name="enabled">
+                     <bool>false</bool>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>30</width>
+                      <height>0</height>
+                     </size>
+                    </property>
+                    <property name="autoRepeat">
+                     <bool>false</bool>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="2" column="0">
+                   <widget class="QLabel" name="label_JointActual3">
+                    <property name="text">
+                     <string>J3</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="2" column="1">
+                   <widget class="QPushButton" name="pushButton_JDown3">
+                    <property name="text">
+                     <string>−</string>
+                    </property>
+                    <property name="toolTip">
+                     <string>按住：J3 负向点动；松开停止</string>
+                    </property>
+                    <property name="enabled">
+                     <bool>false</bool>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>30</width>
+                      <height>0</height>
+                     </size>
+                    </property>
+                    <property name="autoRepeat">
+                     <bool>false</bool>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="2" column="2">
+                   <widget class="QLineEdit" name="lineEdit_QA3">
+                    <property name="readOnly">
+                     <bool>true</bool>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>72</width>
+                      <height>0</height>
+                     </size>
+                    </property>
+                    <property name="placeholderText">
+                     <string>—</string>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight|Qt::AlignVCenter</set>
+                    </property>
+                    <property name="sizePolicy">
+                     <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                      <horstretch>0</horstretch>
+                      <verstretch>0</verstretch>
+                     </sizepolicy>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="2" column="3">
+                   <widget class="QPushButton" name="pushButton_JUp3">
+                    <property name="text">
+                     <string>+</string>
+                    </property>
+                    <property name="toolTip">
+                     <string>按住：J3 正向点动；松开停止</string>
+                    </property>
+                    <property name="enabled">
+                     <bool>false</bool>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>30</width>
+                      <height>0</height>
+                     </size>
+                    </property>
+                    <property name="autoRepeat">
+                     <bool>false</bool>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="3" column="0">
+                   <widget class="QLabel" name="label_JointActual4">
+                    <property name="text">
+                     <string>J4</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="3" column="1">
+                   <widget class="QPushButton" name="pushButton_JDown4">
+                    <property name="text">
+                     <string>−</string>
+                    </property>
+                    <property name="toolTip">
+                     <string>按住：J4 负向点动；松开停止</string>
+                    </property>
+                    <property name="enabled">
+                     <bool>false</bool>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>30</width>
+                      <height>0</height>
+                     </size>
+                    </property>
+                    <property name="autoRepeat">
+                     <bool>false</bool>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="3" column="2">
+                   <widget class="QLineEdit" name="lineEdit_QA4">
+                    <property name="readOnly">
+                     <bool>true</bool>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>72</width>
+                      <height>0</height>
+                     </size>
+                    </property>
+                    <property name="placeholderText">
+                     <string>—</string>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight|Qt::AlignVCenter</set>
+                    </property>
+                    <property name="sizePolicy">
+                     <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                      <horstretch>0</horstretch>
+                      <verstretch>0</verstretch>
+                     </sizepolicy>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="3" column="3">
+                   <widget class="QPushButton" name="pushButton_JUp4">
+                    <property name="text">
+                     <string>+</string>
+                    </property>
+                    <property name="toolTip">
+                     <string>按住：J4 正向点动；松开停止</string>
+                    </property>
+                    <property name="enabled">
+                     <bool>false</bool>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>30</width>
+                      <height>0</height>
+                     </size>
+                    </property>
+                    <property name="autoRepeat">
+                     <bool>false</bool>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="4" column="0">
+                   <widget class="QLabel" name="label_JointActual5">
+                    <property name="text">
+                     <string>J5</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="4" column="1">
+                   <widget class="QPushButton" name="pushButton_JDown5">
+                    <property name="text">
+                     <string>−</string>
+                    </property>
+                    <property name="toolTip">
+                     <string>按住：J5 负向点动；松开停止</string>
+                    </property>
+                    <property name="enabled">
+                     <bool>false</bool>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>30</width>
+                      <height>0</height>
+                     </size>
+                    </property>
+                    <property name="autoRepeat">
+                     <bool>false</bool>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="4" column="2">
+                   <widget class="QLineEdit" name="lineEdit_QA5">
+                    <property name="readOnly">
+                     <bool>true</bool>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>72</width>
+                      <height>0</height>
+                     </size>
+                    </property>
+                    <property name="placeholderText">
+                     <string>—</string>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight|Qt::AlignVCenter</set>
+                    </property>
+                    <property name="sizePolicy">
+                     <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                      <horstretch>0</horstretch>
+                      <verstretch>0</verstretch>
+                     </sizepolicy>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="4" column="3">
+                   <widget class="QPushButton" name="pushButton_JUp5">
+                    <property name="text">
+                     <string>+</string>
+                    </property>
+                    <property name="toolTip">
+                     <string>按住：J5 正向点动；松开停止</string>
+                    </property>
+                    <property name="enabled">
+                     <bool>false</bool>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>30</width>
+                      <height>0</height>
+                     </size>
+                    </property>
+                    <property name="autoRepeat">
+                     <bool>false</bool>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="5" column="0">
+                   <widget class="QLabel" name="label_JointActual6">
+                    <property name="text">
+                     <string>J6</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="5" column="1">
+                   <widget class="QPushButton" name="pushButton_JDown6">
+                    <property name="text">
+                     <string>−</string>
+                    </property>
+                    <property name="toolTip">
+                     <string>按住：J6 负向点动；松开停止</string>
+                    </property>
+                    <property name="enabled">
+                     <bool>false</bool>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>30</width>
+                      <height>0</height>
+                     </size>
+                    </property>
+                    <property name="autoRepeat">
+                     <bool>false</bool>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="5" column="2">
+                   <widget class="QLineEdit" name="lineEdit_QA6">
+                    <property name="readOnly">
+                     <bool>true</bool>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>72</width>
+                      <height>0</height>
+                     </size>
+                    </property>
+                    <property name="placeholderText">
+                     <string>—</string>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight|Qt::AlignVCenter</set>
+                    </property>
+                    <property name="sizePolicy">
+                     <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                      <horstretch>0</horstretch>
+                      <verstretch>0</verstretch>
+                     </sizepolicy>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="5" column="3">
+                   <widget class="QPushButton" name="pushButton_JUp6">
+                    <property name="text">
+                     <string>+</string>
+                    </property>
+                    <property name="toolTip">
+                     <string>按住：J6 正向点动；松开停止</string>
+                    </property>
+                    <property name="enabled">
+                     <bool>false</bool>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>30</width>
+                      <height>0</height>
+                     </size>
+                    </property>
+                    <property name="autoRepeat">
+                     <bool>false</bool>
+                    </property>
+                   </widget>
+                  </item>
+                 </layout>
+                </widget>
+               </item>
+               <item>
+                <widget class="QGroupBox" name="groupBox_Q_Target">
+                 <property name="title">
+                  <string>目标关节角 · °</string>
+                 </property>
+                 <layout class="QGridLayout" name="gridLayout_JointTarget">
+                  <property name="leftMargin">
+                   <number>4</number>
+                  </property>
+                  <property name="topMargin">
+                   <number>4</number>
+                  </property>
+                  <property name="rightMargin">
+                   <number>4</number>
+                  </property>
+                  <property name="bottomMargin">
+                   <number>4</number>
+                  </property>
+                  <property name="spacing">
+                   <number>6</number>
+                  </property>
+                  <item row="0" column="0">
+                   <widget class="QLabel" name="label_JointTarget1">
+                    <property name="text">
+                     <string>J1</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="0" column="1">
+                   <widget class="QLineEdit" name="lineEdit_QT1">
+                    <property name="readOnly">
+                     <bool>false</bool>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>72</width>
+                      <height>0</height>
+                     </size>
+                    </property>
+                    <property name="placeholderText">
+                     <string>—</string>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight|Qt::AlignVCenter</set>
+                    </property>
+                    <property name="sizePolicy">
+                     <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                      <horstretch>0</horstretch>
+                      <verstretch>0</verstretch>
+                     </sizepolicy>
+                    </property>
+                    <property name="toolTip">
+                     <string>关节目标角度，范围 −360° 至 360°</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="1" column="0">
+                   <widget class="QLabel" name="label_JointTarget2">
+                    <property name="text">
+                     <string>J2</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="1" column="1">
+                   <widget class="QLineEdit" name="lineEdit_QT2">
+                    <property name="readOnly">
+                     <bool>false</bool>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>72</width>
+                      <height>0</height>
+                     </size>
+                    </property>
+                    <property name="placeholderText">
+                     <string>—</string>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight|Qt::AlignVCenter</set>
+                    </property>
+                    <property name="sizePolicy">
+                     <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                      <horstretch>0</horstretch>
+                      <verstretch>0</verstretch>
+                     </sizepolicy>
+                    </property>
+                    <property name="toolTip">
+                     <string>关节目标角度，范围 −360° 至 360°</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="2" column="0">
+                   <widget class="QLabel" name="label_JointTarget3">
+                    <property name="text">
+                     <string>J3</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="2" column="1">
+                   <widget class="QLineEdit" name="lineEdit_QT3">
+                    <property name="readOnly">
+                     <bool>false</bool>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>72</width>
+                      <height>0</height>
+                     </size>
+                    </property>
+                    <property name="placeholderText">
+                     <string>—</string>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight|Qt::AlignVCenter</set>
+                    </property>
+                    <property name="sizePolicy">
+                     <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                      <horstretch>0</horstretch>
+                      <verstretch>0</verstretch>
+                     </sizepolicy>
+                    </property>
+                    <property name="toolTip">
+                     <string>关节目标角度，范围 −360° 至 360°</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="3" column="0">
+                   <widget class="QLabel" name="label_JointTarget4">
+                    <property name="text">
+                     <string>J4</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="3" column="1">
+                   <widget class="QLineEdit" name="lineEdit_QT4">
+                    <property name="readOnly">
+                     <bool>false</bool>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>72</width>
+                      <height>0</height>
+                     </size>
+                    </property>
+                    <property name="placeholderText">
+                     <string>—</string>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight|Qt::AlignVCenter</set>
+                    </property>
+                    <property name="sizePolicy">
+                     <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                      <horstretch>0</horstretch>
+                      <verstretch>0</verstretch>
+                     </sizepolicy>
+                    </property>
+                    <property name="toolTip">
+                     <string>关节目标角度，范围 −360° 至 360°</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="4" column="0">
+                   <widget class="QLabel" name="label_JointTarget5">
+                    <property name="text">
+                     <string>J5</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="4" column="1">
+                   <widget class="QLineEdit" name="lineEdit_QT5">
+                    <property name="readOnly">
+                     <bool>false</bool>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>72</width>
+                      <height>0</height>
+                     </size>
+                    </property>
+                    <property name="placeholderText">
+                     <string>—</string>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight|Qt::AlignVCenter</set>
+                    </property>
+                    <property name="sizePolicy">
+                     <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                      <horstretch>0</horstretch>
+                      <verstretch>0</verstretch>
+                     </sizepolicy>
+                    </property>
+                    <property name="toolTip">
+                     <string>关节目标角度，范围 −360° 至 360°</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="5" column="0">
+                   <widget class="QLabel" name="label_JointTarget6">
+                    <property name="text">
+                     <string>J6</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="5" column="1">
+                   <widget class="QLineEdit" name="lineEdit_QT6">
+                    <property name="readOnly">
+                     <bool>false</bool>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>72</width>
+                      <height>0</height>
+                     </size>
+                    </property>
+                    <property name="placeholderText">
+                     <string>—</string>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight|Qt::AlignVCenter</set>
+                    </property>
+                    <property name="sizePolicy">
+                     <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                      <horstretch>0</horstretch>
+                      <verstretch>0</verstretch>
+                     </sizepolicy>
+                    </property>
+                    <property name="toolTip">
+                     <string>关节目标角度，范围 −360° 至 360°</string>
+                    </property>
+                   </widget>
+                  </item>
+                 </layout>
+                </widget>
+               </item>
+              </layout>
+             </item>
+             <item>
+              <layout class="QHBoxLayout" name="horizontalLayout_JointActions">
+               <item>
+                <widget class="QLabel" name="label_JogHint">
+                 <property name="text">
+                  <string>按住 ± 点动，松开停止</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <spacer name="spacer_JointActions">
+                 <property name="orientation">
+                  <enum>Qt::Horizontal</enum>
+                 </property>
+                 <property name="sizeHint">
+                  <size>
+                   <width>0</width>
+                   <height>0</height>
+                  </size>
+                 </property>
+                </spacer>
+               </item>
+               <item>
+                <widget class="QPushButton" name="pushButton_HOME">
+                 <property name="toolTip">
+                  <string>RTDE 就绪后可用；运动过程中可点击“停止运动”中断</string>
+                 </property>
+                 <property name="enabled">
+                  <bool>false</bool>
+                 </property>
+                 <property name="text">
+                  <string>回零位</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <widget class="QPushButton" name="pushButton_URScriptMoveJ">
+                 <property name="toolTip">
+                  <string>RTDE 就绪后可用；运动过程中可点击“停止运动”中断</string>
+                 </property>
+                 <property name="text">
+                  <string>执行关节目标</string>
+                 </property>
+                 <property name="enabled">
+                  <bool>false</bool>
+                 </property>
+                 <property name="minimumSize">
+                  <size>
+                   <width>146</width>
+                   <height>42</height>
+                  </size>
+                 </property>
+                 <property name="font">
+                  <font>
+                   <pointsize>12</pointsize>
+                   <weight>75</weight>
+                   <bold>true</bold>
+                  </font>
+                 </property>
+                </widget>
+               </item>
+              </layout>
+             </item>
+            </layout>
+           </widget>
+           <widget class="QWidget" name="tab_TCP">
+            <attribute name="title">
+             <string>末端 / TCP</string>
+            </attribute>
+            <layout class="QHBoxLayout" name="horizontalLayout_TCP">
+             <property name="leftMargin">
+              <number>10</number>
+             </property>
+             <property name="topMargin">
+              <number>10</number>
+             </property>
+             <property name="rightMargin">
+              <number>10</number>
+             </property>
+             <property name="bottomMargin">
+              <number>10</number>
+             </property>
+             <property name="spacing">
+              <number>8</number>
+             </property>
+             <item>
+              <widget class="QGroupBox" name="groupBox_T_Actual">
+               <property name="title">
+                <string>基座坐标系 · 位姿 / 点动</string>
+               </property>
+               <layout class="QGridLayout" name="gridLayout_TCPActual">
+                <property name="leftMargin">
+                 <number>4</number>
+                </property>
+                <property name="topMargin">
+                 <number>4</number>
+                </property>
+                <property name="rightMargin">
+                 <number>4</number>
+                </property>
+                <property name="bottomMargin">
+                 <number>4</number>
+                </property>
+                <property name="spacing">
+                 <number>6</number>
+                </property>
+                <item row="0" column="0">
+                 <widget class="QLabel" name="label_TCPAxis1">
+                  <property name="text">
+                   <string>X · mm</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="0" column="1">
+                 <widget class="QPushButton" name="pushButton_TWDown1">
+                  <property name="text">
+                   <string>−</string>
+                  </property>
+                  <property name="toolTip">
+                   <string>按住：基座坐标系 X 负向点动</string>
+                  </property>
+                  <property name="enabled">
+                   <bool>false</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>30</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="autoRepeat">
+                   <bool>false</bool>
+                  </property>
+                 </widget>
+                </item>
+                <item row="0" column="2">
+                 <widget class="QLineEdit" name="lineEdit_TA1">
+                  <property name="readOnly">
+                   <bool>true</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>72</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="placeholderText">
+                   <string>—</string>
+                  </property>
+                  <property name="alignment">
+                   <set>Qt::AlignRight|Qt::AlignVCenter</set>
+                  </property>
+                  <property name="sizePolicy">
+                   <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                    <horstretch>0</horstretch>
+                    <verstretch>0</verstretch>
+                   </sizepolicy>
+                  </property>
+                 </widget>
+                </item>
+                <item row="0" column="3">
+                 <widget class="QPushButton" name="pushButton_TWUp1">
+                  <property name="text">
+                   <string>+</string>
+                  </property>
+                  <property name="toolTip">
+                   <string>按住：基座坐标系 X 正向点动</string>
+                  </property>
+                  <property name="enabled">
+                   <bool>false</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>30</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="autoRepeat">
+                   <bool>false</bool>
+                  </property>
+                 </widget>
+                </item>
+                <item row="1" column="0">
+                 <widget class="QLabel" name="label_TCPAxis2">
+                  <property name="text">
+                   <string>Y · mm</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="1" column="1">
+                 <widget class="QPushButton" name="pushButton_TWDown2">
+                  <property name="text">
+                   <string>−</string>
+                  </property>
+                  <property name="toolTip">
+                   <string>按住：基座坐标系 Y 负向点动</string>
+                  </property>
+                  <property name="enabled">
+                   <bool>false</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>30</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="autoRepeat">
+                   <bool>false</bool>
+                  </property>
+                 </widget>
+                </item>
+                <item row="1" column="2">
+                 <widget class="QLineEdit" name="lineEdit_TA2">
+                  <property name="readOnly">
+                   <bool>true</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>72</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="placeholderText">
+                   <string>—</string>
+                  </property>
+                  <property name="alignment">
+                   <set>Qt::AlignRight|Qt::AlignVCenter</set>
+                  </property>
+                  <property name="sizePolicy">
+                   <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                    <horstretch>0</horstretch>
+                    <verstretch>0</verstretch>
+                   </sizepolicy>
+                  </property>
+                 </widget>
+                </item>
+                <item row="1" column="3">
+                 <widget class="QPushButton" name="pushButton_TWUp2">
+                  <property name="text">
+                   <string>+</string>
+                  </property>
+                  <property name="toolTip">
+                   <string>按住：基座坐标系 Y 正向点动</string>
+                  </property>
+                  <property name="enabled">
+                   <bool>false</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>30</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="autoRepeat">
+                   <bool>false</bool>
+                  </property>
+                 </widget>
+                </item>
+                <item row="2" column="0">
+                 <widget class="QLabel" name="label_TCPAxis3">
+                  <property name="text">
+                   <string>Z · mm</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="2" column="1">
+                 <widget class="QPushButton" name="pushButton_TWDown3">
+                  <property name="text">
+                   <string>−</string>
+                  </property>
+                  <property name="toolTip">
+                   <string>按住：基座坐标系 Z 负向点动</string>
+                  </property>
+                  <property name="enabled">
+                   <bool>false</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>30</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="autoRepeat">
+                   <bool>false</bool>
+                  </property>
+                 </widget>
+                </item>
+                <item row="2" column="2">
+                 <widget class="QLineEdit" name="lineEdit_TA3">
+                  <property name="readOnly">
+                   <bool>true</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>72</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="placeholderText">
+                   <string>—</string>
+                  </property>
+                  <property name="alignment">
+                   <set>Qt::AlignRight|Qt::AlignVCenter</set>
+                  </property>
+                  <property name="sizePolicy">
+                   <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                    <horstretch>0</horstretch>
+                    <verstretch>0</verstretch>
+                   </sizepolicy>
+                  </property>
+                 </widget>
+                </item>
+                <item row="2" column="3">
+                 <widget class="QPushButton" name="pushButton_TWUp3">
+                  <property name="text">
+                   <string>+</string>
+                  </property>
+                  <property name="toolTip">
+                   <string>按住：基座坐标系 Z 正向点动</string>
+                  </property>
+                  <property name="enabled">
+                   <bool>false</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>30</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="autoRepeat">
+                   <bool>false</bool>
+                  </property>
+                 </widget>
+                </item>
+                <item row="3" column="0">
+                 <widget class="QLabel" name="label_TCPAxis4">
+                  <property name="text">
+                   <string>Rx · °</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="3" column="1">
+                 <widget class="QPushButton" name="pushButton_TWDown4">
+                  <property name="text">
+                   <string>−</string>
+                  </property>
+                  <property name="toolTip">
+                   <string>按住：基座坐标系 Rx 负向点动</string>
+                  </property>
+                  <property name="enabled">
+                   <bool>false</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>30</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="autoRepeat">
+                   <bool>false</bool>
+                  </property>
+                 </widget>
+                </item>
+                <item row="3" column="2">
+                 <widget class="QLineEdit" name="lineEdit_TA4">
+                  <property name="readOnly">
+                   <bool>true</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>72</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="placeholderText">
+                   <string>—</string>
+                  </property>
+                  <property name="alignment">
+                   <set>Qt::AlignRight|Qt::AlignVCenter</set>
+                  </property>
+                  <property name="sizePolicy">
+                   <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                    <horstretch>0</horstretch>
+                    <verstretch>0</verstretch>
+                   </sizepolicy>
+                  </property>
+                 </widget>
+                </item>
+                <item row="3" column="3">
+                 <widget class="QPushButton" name="pushButton_TWUp4">
+                  <property name="text">
+                   <string>+</string>
+                  </property>
+                  <property name="toolTip">
+                   <string>按住：基座坐标系 Rx 正向点动</string>
+                  </property>
+                  <property name="enabled">
+                   <bool>false</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>30</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="autoRepeat">
+                   <bool>false</bool>
+                  </property>
+                 </widget>
+                </item>
+                <item row="4" column="0">
+                 <widget class="QLabel" name="label_TCPAxis5">
+                  <property name="text">
+                   <string>Ry · °</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="4" column="1">
+                 <widget class="QPushButton" name="pushButton_TWDown5">
+                  <property name="text">
+                   <string>−</string>
+                  </property>
+                  <property name="toolTip">
+                   <string>按住：基座坐标系 Ry 负向点动</string>
+                  </property>
+                  <property name="enabled">
+                   <bool>false</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>30</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="autoRepeat">
+                   <bool>false</bool>
+                  </property>
+                 </widget>
+                </item>
+                <item row="4" column="2">
+                 <widget class="QLineEdit" name="lineEdit_TA5">
+                  <property name="readOnly">
+                   <bool>true</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>72</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="placeholderText">
+                   <string>—</string>
+                  </property>
+                  <property name="alignment">
+                   <set>Qt::AlignRight|Qt::AlignVCenter</set>
+                  </property>
+                  <property name="sizePolicy">
+                   <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                    <horstretch>0</horstretch>
+                    <verstretch>0</verstretch>
+                   </sizepolicy>
+                  </property>
+                 </widget>
+                </item>
+                <item row="4" column="3">
+                 <widget class="QPushButton" name="pushButton_TWUp5">
+                  <property name="text">
+                   <string>+</string>
+                  </property>
+                  <property name="toolTip">
+                   <string>按住：基座坐标系 Ry 正向点动</string>
+                  </property>
+                  <property name="enabled">
+                   <bool>false</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>30</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="autoRepeat">
+                   <bool>false</bool>
+                  </property>
+                 </widget>
+                </item>
+                <item row="5" column="0">
+                 <widget class="QLabel" name="label_TCPAxis6">
+                  <property name="text">
+                   <string>Rz · °</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="5" column="1">
+                 <widget class="QPushButton" name="pushButton_TWDown6">
+                  <property name="text">
+                   <string>−</string>
+                  </property>
+                  <property name="toolTip">
+                   <string>按住：基座坐标系 Rz 负向点动</string>
+                  </property>
+                  <property name="enabled">
+                   <bool>false</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>30</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="autoRepeat">
+                   <bool>false</bool>
+                  </property>
+                 </widget>
+                </item>
+                <item row="5" column="2">
+                 <widget class="QLineEdit" name="lineEdit_TA6">
+                  <property name="readOnly">
+                   <bool>true</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>72</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="placeholderText">
+                   <string>—</string>
+                  </property>
+                  <property name="alignment">
+                   <set>Qt::AlignRight|Qt::AlignVCenter</set>
+                  </property>
+                  <property name="sizePolicy">
+                   <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                    <horstretch>0</horstretch>
+                    <verstretch>0</verstretch>
+                   </sizepolicy>
+                  </property>
+                 </widget>
+                </item>
+                <item row="5" column="3">
+                 <widget class="QPushButton" name="pushButton_TWUp6">
+                  <property name="text">
+                   <string>+</string>
+                  </property>
+                  <property name="toolTip">
+                   <string>按住：基座坐标系 Rz 正向点动</string>
+                  </property>
+                  <property name="enabled">
+                   <bool>false</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>30</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="autoRepeat">
+                   <bool>false</bool>
+                  </property>
+                 </widget>
+                </item>
+               </layout>
+               <property name="toolTip">
+                <string>Rx / Ry / Rz 为旋转向量分量，以度显示；点动在基座坐标系下执行。</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QGroupBox" name="groupBox_TControl">
+               <property name="title">
+                <string>工具坐标系 · 点动</string>
+               </property>
+               <layout class="QGridLayout" name="gridLayout_TCPTool">
+                <property name="leftMargin">
+                 <number>4</number>
+                </property>
+                <property name="topMargin">
+                 <number>4</number>
+                </property>
+                <property name="rightMargin">
+                 <number>4</number>
+                </property>
+                <property name="bottomMargin">
+                 <number>4</number>
+                </property>
+                <property name="spacing">
+                 <number>6</number>
+                </property>
+                <item row="0" column="0">
+                 <widget class="QPushButton" name="pushButton_TDown1">
+                  <property name="text">
+                   <string>X −</string>
+                  </property>
+                  <property name="toolTip">
+                   <string>按住：工具坐标系 X 负向点动</string>
+                  </property>
+                  <property name="enabled">
+                   <bool>false</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>30</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="autoRepeat">
+                   <bool>false</bool>
+                  </property>
+                 </widget>
+                </item>
+                <item row="0" column="1">
+                 <widget class="QPushButton" name="pushButton_TUp1">
+                  <property name="text">
+                   <string>X +</string>
+                  </property>
+                  <property name="toolTip">
+                   <string>按住：工具坐标系 X 正向点动</string>
+                  </property>
+                  <property name="enabled">
+                   <bool>false</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>30</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="autoRepeat">
+                   <bool>false</bool>
+                  </property>
+                 </widget>
+                </item>
+                <item row="1" column="0">
+                 <widget class="QPushButton" name="pushButton_TDown2">
+                  <property name="text">
+                   <string>Y −</string>
+                  </property>
+                  <property name="toolTip">
+                   <string>按住：工具坐标系 Y 负向点动</string>
+                  </property>
+                  <property name="enabled">
+                   <bool>false</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>30</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="autoRepeat">
+                   <bool>false</bool>
+                  </property>
+                 </widget>
+                </item>
+                <item row="1" column="1">
+                 <widget class="QPushButton" name="pushButton_TUp2">
+                  <property name="text">
+                   <string>Y +</string>
+                  </property>
+                  <property name="toolTip">
+                   <string>按住：工具坐标系 Y 正向点动</string>
+                  </property>
+                  <property name="enabled">
+                   <bool>false</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>30</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="autoRepeat">
+                   <bool>false</bool>
+                  </property>
+                 </widget>
+                </item>
+                <item row="2" column="0">
+                 <widget class="QPushButton" name="pushButton_TDown3">
+                  <property name="text">
+                   <string>Z −</string>
+                  </property>
+                  <property name="toolTip">
+                   <string>按住：工具坐标系 Z 负向点动</string>
+                  </property>
+                  <property name="enabled">
+                   <bool>false</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>30</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="autoRepeat">
+                   <bool>false</bool>
+                  </property>
+                 </widget>
+                </item>
+                <item row="2" column="1">
+                 <widget class="QPushButton" name="pushButton_TUp3">
+                  <property name="text">
+                   <string>Z +</string>
+                  </property>
+                  <property name="toolTip">
+                   <string>按住：工具坐标系 Z 正向点动</string>
+                  </property>
+                  <property name="enabled">
+                   <bool>false</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>30</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="autoRepeat">
+                   <bool>false</bool>
+                  </property>
+                 </widget>
+                </item>
+                <item row="3" column="0">
+                 <widget class="QPushButton" name="pushButton_TDown4">
+                  <property name="text">
+                   <string>Rx −</string>
+                  </property>
+                  <property name="toolTip">
+                   <string>按住：工具坐标系 Rx 负向点动</string>
+                  </property>
+                  <property name="enabled">
+                   <bool>false</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>30</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="autoRepeat">
+                   <bool>false</bool>
+                  </property>
+                 </widget>
+                </item>
+                <item row="3" column="1">
+                 <widget class="QPushButton" name="pushButton_TUp4">
+                  <property name="text">
+                   <string>Rx +</string>
+                  </property>
+                  <property name="toolTip">
+                   <string>按住：工具坐标系 Rx 正向点动</string>
+                  </property>
+                  <property name="enabled">
+                   <bool>false</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>30</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="autoRepeat">
+                   <bool>false</bool>
+                  </property>
+                 </widget>
+                </item>
+                <item row="4" column="0">
+                 <widget class="QPushButton" name="pushButton_TDown5">
+                  <property name="text">
+                   <string>Ry −</string>
+                  </property>
+                  <property name="toolTip">
+                   <string>按住：工具坐标系 Ry 负向点动</string>
+                  </property>
+                  <property name="enabled">
+                   <bool>false</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>30</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="autoRepeat">
+                   <bool>false</bool>
+                  </property>
+                 </widget>
+                </item>
+                <item row="4" column="1">
+                 <widget class="QPushButton" name="pushButton_TUp5">
+                  <property name="text">
+                   <string>Ry +</string>
+                  </property>
+                  <property name="toolTip">
+                   <string>按住：工具坐标系 Ry 正向点动</string>
+                  </property>
+                  <property name="enabled">
+                   <bool>false</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>30</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="autoRepeat">
+                   <bool>false</bool>
+                  </property>
+                 </widget>
+                </item>
+                <item row="5" column="0">
+                 <widget class="QPushButton" name="pushButton_TDown6">
+                  <property name="text">
+                   <string>Rz −</string>
+                  </property>
+                  <property name="toolTip">
+                   <string>按住：工具坐标系 Rz 负向点动</string>
+                  </property>
+                  <property name="enabled">
+                   <bool>false</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>30</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="autoRepeat">
+                   <bool>false</bool>
+                  </property>
+                 </widget>
+                </item>
+                <item row="5" column="1">
+                 <widget class="QPushButton" name="pushButton_TUp6">
+                  <property name="text">
+                   <string>Rz +</string>
+                  </property>
+                  <property name="toolTip">
+                   <string>按住：工具坐标系 Rz 正向点动</string>
+                  </property>
+                  <property name="enabled">
+                   <bool>false</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>30</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="autoRepeat">
+                   <bool>false</bool>
+                  </property>
+                 </widget>
+                </item>
+               </layout>
+              </widget>
+             </item>
+            </layout>
+           </widget>
+          </widget>
+         </item>
+         <item>
+          <widget class="QTabWidget" name="tabWidget_Telemetry">
+           <property name="currentIndex">
+            <number>0</number>
+           </property>
+           <widget class="QWidget" name="tab_UDP">
+            <attribute name="title">
+             <string>外源 / UDP</string>
+            </attribute>
+            <layout class="QVBoxLayout" name="verticalLayout_UDP">
+             <property name="leftMargin">
+              <number>10</number>
+             </property>
+             <property name="topMargin">
+              <number>10</number>
+             </property>
+             <property name="rightMargin">
+              <number>10</number>
+             </property>
+             <property name="bottomMargin">
+              <number>10</number>
+             </property>
+             <property name="spacing">
+              <number>6</number>
+             </property>
+             <item>
+              <widget class="QGroupBox" name="groupBox_UDP">
+               <property name="title">
+                <string>主端指令</string>
+               </property>
+               <layout class="QGridLayout" name="gridLayout_UDP">
+                <property name="leftMargin">
+                 <number>4</number>
+                </property>
+                <property name="topMargin">
+                 <number>4</number>
+                </property>
+                <property name="rightMargin">
+                 <number>4</number>
+                </property>
+                <property name="bottomMargin">
+                 <number>4</number>
+                </property>
+                <property name="spacing">
+                 <number>6</number>
+                </property>
+                <item row="0" column="0">
+                 <widget class="QLabel" name="label_UDPField1">
+                  <property name="text">
+                   <string>模式</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="0" column="1">
+                 <widget class="QLineEdit" name="lineEdit_UDP1">
+                  <property name="text">
+                   <string />
+                  </property>
+                  <property name="readOnly">
+                   <bool>true</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>72</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="placeholderText">
+                   <string>—</string>
+                  </property>
+                  <property name="alignment">
+                   <set>Qt::AlignRight|Qt::AlignVCenter</set>
+                  </property>
+                  <property name="sizePolicy">
+                   <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                    <horstretch>0</horstretch>
+                    <verstretch>0</verstretch>
+                   </sizepolicy>
+                  </property>
+                 </widget>
+                </item>
+                <item row="0" column="2">
+                 <widget class="QLabel" name="label_UDPField8">
+                  <property name="text">
+                   <string>夹爪指令</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="0" column="3">
+                 <widget class="QLineEdit" name="lineEdit_UDP8">
+                  <property name="readOnly">
+                   <bool>true</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>72</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="placeholderText">
+                   <string>—</string>
+                  </property>
+                  <property name="alignment">
+                   <set>Qt::AlignRight|Qt::AlignVCenter</set>
+                  </property>
+                  <property name="sizePolicy">
+                   <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                    <horstretch>0</horstretch>
+                    <verstretch>0</verstretch>
+                   </sizepolicy>
+                  </property>
+                 </widget>
+                </item>
+                <item row="1" column="0">
+                 <widget class="QLabel" name="label_UDPField2">
+                  <property name="text">
+                   <string>J1 · °</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="1" column="1">
+                 <widget class="QLineEdit" name="lineEdit_UDP2">
+                  <property name="readOnly">
+                   <bool>true</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>72</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="placeholderText">
+                   <string>—</string>
+                  </property>
+                  <property name="alignment">
+                   <set>Qt::AlignRight|Qt::AlignVCenter</set>
+                  </property>
+                  <property name="sizePolicy">
+                   <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                    <horstretch>0</horstretch>
+                    <verstretch>0</verstretch>
+                   </sizepolicy>
+                  </property>
+                 </widget>
+                </item>
+                <item row="1" column="2">
+                 <widget class="QLabel" name="label_UDPField5">
+                  <property name="text">
+                   <string>J4 · °</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="1" column="3">
+                 <widget class="QLineEdit" name="lineEdit_UDP5">
+                  <property name="readOnly">
+                   <bool>true</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>72</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="placeholderText">
+                   <string>—</string>
+                  </property>
+                  <property name="alignment">
+                   <set>Qt::AlignRight|Qt::AlignVCenter</set>
+                  </property>
+                  <property name="sizePolicy">
+                   <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                    <horstretch>0</horstretch>
+                    <verstretch>0</verstretch>
+                   </sizepolicy>
+                  </property>
+                 </widget>
+                </item>
+                <item row="2" column="0">
+                 <widget class="QLabel" name="label_UDPField3">
+                  <property name="text">
+                   <string>J2 · °</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="2" column="1">
+                 <widget class="QLineEdit" name="lineEdit_UDP3">
+                  <property name="readOnly">
+                   <bool>true</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>72</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="placeholderText">
+                   <string>—</string>
+                  </property>
+                  <property name="alignment">
+                   <set>Qt::AlignRight|Qt::AlignVCenter</set>
+                  </property>
+                  <property name="sizePolicy">
+                   <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                    <horstretch>0</horstretch>
+                    <verstretch>0</verstretch>
+                   </sizepolicy>
+                  </property>
+                 </widget>
+                </item>
+                <item row="2" column="2">
+                 <widget class="QLabel" name="label_UDPField6">
+                  <property name="text">
+                   <string>J5 · °</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="2" column="3">
+                 <widget class="QLineEdit" name="lineEdit_UDP6">
+                  <property name="readOnly">
+                   <bool>true</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>72</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="placeholderText">
+                   <string>—</string>
+                  </property>
+                  <property name="alignment">
+                   <set>Qt::AlignRight|Qt::AlignVCenter</set>
+                  </property>
+                  <property name="sizePolicy">
+                   <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                    <horstretch>0</horstretch>
+                    <verstretch>0</verstretch>
+                   </sizepolicy>
+                  </property>
+                 </widget>
+                </item>
+                <item row="3" column="0">
+                 <widget class="QLabel" name="label_UDPField4">
+                  <property name="text">
+                   <string>J3 · °</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="3" column="1">
+                 <widget class="QLineEdit" name="lineEdit_UDP4">
+                  <property name="readOnly">
+                   <bool>true</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>72</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="placeholderText">
+                   <string>—</string>
+                  </property>
+                  <property name="alignment">
+                   <set>Qt::AlignRight|Qt::AlignVCenter</set>
+                  </property>
+                  <property name="sizePolicy">
+                   <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                    <horstretch>0</horstretch>
+                    <verstretch>0</verstretch>
+                   </sizepolicy>
+                  </property>
+                 </widget>
+                </item>
+                <item row="3" column="2">
+                 <widget class="QLabel" name="label_UDPField7">
+                  <property name="text">
+                   <string>J6 · °</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="3" column="3">
+                 <widget class="QLineEdit" name="lineEdit_UDP7">
+                  <property name="readOnly">
+                   <bool>true</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>72</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="placeholderText">
+                   <string>—</string>
+                  </property>
+                  <property name="alignment">
+                   <set>Qt::AlignRight|Qt::AlignVCenter</set>
+                  </property>
+                  <property name="sizePolicy">
+                   <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                    <horstretch>0</horstretch>
+                    <verstretch>0</verstretch>
+                   </sizepolicy>
+                  </property>
+                 </widget>
+                </item>
+               </layout>
+              </widget>
+             </item>
+             <item>
+              <widget class="QCheckBox" name="checkBox_UDPVisual">
+               <property name="text">
+                <string>可视化显示外源目标</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <layout class="QHBoxLayout" name="horizontalLayout_UDPActions">
+               <item>
+                <widget class="QPushButton" name="pushButton_UDPSync">
+                 <property name="toolTip">
+                  <string>RTDE 和主端指令就绪后可用；运动过程中可点击“停止运动”中断</string>
+                 </property>
+                 <property name="enabled">
+                  <bool>false</bool>
+                 </property>
+                 <property name="text">
+                  <string>同步到主端</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <widget class="QPushButton" name="pushButton_RTDEUDP">
+                 <property name="enabled">
+                  <bool>false</bool>
+                 </property>
+                 <property name="text">
+                  <string>开始外源跟随</string>
+                 </property>
+                 <property name="minimumSize">
+                  <size>
+                   <width>140</width>
+                   <height>42</height>
+                  </size>
+                 </property>
+                 <property name="font">
+                  <font>
+                   <pointsize>12</pointsize>
+                   <weight>75</weight>
+                   <bold>true</bold>
+                  </font>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <widget class="QPushButton" name="pushButton_StopRTDE">
+                 <property name="enabled">
+                  <bool>false</bool>
+                 </property>
+                 <property name="text">
+                  <string>停止外源跟随</string>
+                 </property>
+                 <property name="minimumSize">
+                  <size>
+                   <width>140</width>
+                   <height>42</height>
+                  </size>
+                 </property>
+                 <property name="font">
+                  <font>
+                   <pointsize>12</pointsize>
+                   <weight>75</weight>
+                   <bold>true</bold>
+                  </font>
+                 </property>
+                </widget>
+               </item>
+              </layout>
+             </item>
+            </layout>
+           </widget>
+           <widget class="QWidget" name="tab_Force">
+            <attribute name="title">
+             <string>力 / 力矩</string>
+            </attribute>
+            <layout class="QVBoxLayout" name="verticalLayout_Force">
+             <property name="leftMargin">
+              <number>10</number>
+             </property>
+             <property name="topMargin">
+              <number>10</number>
+             </property>
+             <property name="rightMargin">
+              <number>10</number>
+             </property>
+             <property name="bottomMargin">
+              <number>10</number>
+             </property>
+             <property name="spacing">
+              <number>8</number>
+             </property>
+             <item>
+              <widget class="QGroupBox" name="groupBox_Fex">
+               <property name="title">
+                <string>TCP 广义力</string>
+               </property>
+               <layout class="QGridLayout" name="gridLayout_Force">
+                <property name="leftMargin">
+                 <number>4</number>
+                </property>
+                <property name="topMargin">
+                 <number>4</number>
+                </property>
+                <property name="rightMargin">
+                 <number>4</number>
+                </property>
+                <property name="bottomMargin">
+                 <number>4</number>
+                </property>
+                <property name="spacing">
+                 <number>6</number>
+                </property>
+                <item row="0" column="0">
+                 <widget class="QLabel" name="label_ForceAxis1">
+                  <property name="text">
+                   <string>Fx · N</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="0" column="1">
+                 <widget class="QLineEdit" name="lineEdit_Fex1">
+                  <property name="readOnly">
+                   <bool>true</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>72</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="placeholderText">
+                   <string>—</string>
+                  </property>
+                  <property name="alignment">
+                   <set>Qt::AlignRight|Qt::AlignVCenter</set>
+                  </property>
+                  <property name="sizePolicy">
+                   <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                    <horstretch>0</horstretch>
+                    <verstretch>0</verstretch>
+                   </sizepolicy>
+                  </property>
+                 </widget>
+                </item>
+                <item row="1" column="0">
+                 <widget class="QLabel" name="label_ForceAxis2">
+                  <property name="text">
+                   <string>Fy · N</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="1" column="1">
+                 <widget class="QLineEdit" name="lineEdit_Fex2">
+                  <property name="readOnly">
+                   <bool>true</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>72</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="placeholderText">
+                   <string>—</string>
+                  </property>
+                  <property name="alignment">
+                   <set>Qt::AlignRight|Qt::AlignVCenter</set>
+                  </property>
+                  <property name="sizePolicy">
+                   <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                    <horstretch>0</horstretch>
+                    <verstretch>0</verstretch>
+                   </sizepolicy>
+                  </property>
+                 </widget>
+                </item>
+                <item row="2" column="0">
+                 <widget class="QLabel" name="label_ForceAxis3">
+                  <property name="text">
+                   <string>Fz · N</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="2" column="1">
+                 <widget class="QLineEdit" name="lineEdit_Fex3">
+                  <property name="readOnly">
+                   <bool>true</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>72</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="placeholderText">
+                   <string>—</string>
+                  </property>
+                  <property name="alignment">
+                   <set>Qt::AlignRight|Qt::AlignVCenter</set>
+                  </property>
+                  <property name="sizePolicy">
+                   <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                    <horstretch>0</horstretch>
+                    <verstretch>0</verstretch>
+                   </sizepolicy>
+                  </property>
+                 </widget>
+                </item>
+                <item row="0" column="2">
+                 <widget class="QLabel" name="label_ForceAxis4">
+                  <property name="text">
+                   <string>Mx · N·m</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="0" column="3">
+                 <widget class="QLineEdit" name="lineEdit_Fex4">
+                  <property name="readOnly">
+                   <bool>true</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>72</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="placeholderText">
+                   <string>—</string>
+                  </property>
+                  <property name="alignment">
+                   <set>Qt::AlignRight|Qt::AlignVCenter</set>
+                  </property>
+                  <property name="sizePolicy">
+                   <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                    <horstretch>0</horstretch>
+                    <verstretch>0</verstretch>
+                   </sizepolicy>
+                  </property>
+                 </widget>
+                </item>
+                <item row="1" column="2">
+                 <widget class="QLabel" name="label_ForceAxis5">
+                  <property name="text">
+                   <string>My · N·m</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="1" column="3">
+                 <widget class="QLineEdit" name="lineEdit_Fex5">
+                  <property name="readOnly">
+                   <bool>true</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>72</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="placeholderText">
+                   <string>—</string>
+                  </property>
+                  <property name="alignment">
+                   <set>Qt::AlignRight|Qt::AlignVCenter</set>
+                  </property>
+                  <property name="sizePolicy">
+                   <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                    <horstretch>0</horstretch>
+                    <verstretch>0</verstretch>
+                   </sizepolicy>
+                  </property>
+                 </widget>
+                </item>
+                <item row="2" column="2">
+                 <widget class="QLabel" name="label_ForceAxis6">
+                  <property name="text">
+                   <string>Mz · N·m</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="2" column="3">
+                 <widget class="QLineEdit" name="lineEdit_Fex6">
+                  <property name="readOnly">
+                   <bool>true</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>72</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="placeholderText">
+                   <string>—</string>
+                  </property>
+                  <property name="alignment">
+                   <set>Qt::AlignRight|Qt::AlignVCenter</set>
+                  </property>
+                  <property name="sizePolicy">
+                   <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                    <horstretch>0</horstretch>
+                    <verstretch>0</verstretch>
+                   </sizepolicy>
+                  </property>
+                 </widget>
+                </item>
+               </layout>
+              </widget>
+             </item>
+             <item>
+              <widget class="QCheckBox" name="checkBox_FTSwitch">
+               <property name="text">
+                <string>显示关节力矩（N·m）</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <spacer name="spacer_Force">
+               <property name="orientation">
+                <enum>Qt::Vertical</enum>
+               </property>
+               <property name="sizeHint">
+                <size>
+                 <width>0</width>
+                 <height>0</height>
+                </size>
+               </property>
+              </spacer>
+             </item>
+            </layout>
+           </widget>
+           <widget class="QWidget" name="tab_Gripper">
+            <attribute name="title">
+             <string>夹爪</string>
+            </attribute>
+            <layout class="QVBoxLayout" name="verticalLayout_Gripper">
+             <property name="leftMargin">
+              <number>10</number>
+             </property>
+             <property name="topMargin">
+              <number>10</number>
+             </property>
+             <property name="rightMargin">
+              <number>10</number>
+             </property>
+             <property name="bottomMargin">
+              <number>10</number>
+             </property>
+             <property name="spacing">
+              <number>8</number>
+             </property>
+             <item>
+              <widget class="QGroupBox" name="groupBox_Clamp">
+               <property name="title">
+                <string>夹爪反馈</string>
+               </property>
+               <layout class="QGridLayout" name="gridLayout_Gripper">
+                <property name="leftMargin">
+                 <number>4</number>
+                </property>
+                <property name="topMargin">
+                 <number>4</number>
+                </property>
+                <property name="rightMargin">
+                 <number>4</number>
+                </property>
+                <property name="bottomMargin">
+                 <number>4</number>
+                </property>
+                <property name="spacing">
+                 <number>6</number>
+                </property>
+                <item row="0" column="0">
+                 <widget class="QLabel" name="label_ClampField1">
+                  <property name="text">
+                   <string>位置</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="0" column="1">
+                 <widget class="QLineEdit" name="lineEdit_Clamp1">
+                  <property name="readOnly">
+                   <bool>true</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>72</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="placeholderText">
+                   <string>—</string>
+                  </property>
+                  <property name="alignment">
+                   <set>Qt::AlignRight|Qt::AlignVCenter</set>
+                  </property>
+                  <property name="sizePolicy">
+                   <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                    <horstretch>0</horstretch>
+                    <verstretch>0</verstretch>
+                   </sizepolicy>
+                  </property>
+                 </widget>
+                </item>
+                <item row="1" column="0">
+                 <widget class="QLabel" name="label_ClampField2">
+                  <property name="text">
+                   <string>电流</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="1" column="1">
+                 <widget class="QLineEdit" name="lineEdit_Clamp2">
+                  <property name="readOnly">
+                   <bool>true</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>72</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="placeholderText">
+                   <string>—</string>
+                  </property>
+                  <property name="alignment">
+                   <set>Qt::AlignRight|Qt::AlignVCenter</set>
+                  </property>
+                  <property name="sizePolicy">
+                   <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                    <horstretch>0</horstretch>
+                    <verstretch>0</verstretch>
+                   </sizepolicy>
+                  </property>
+                 </widget>
+                </item>
+                <item row="2" column="0">
+                 <widget class="QLabel" name="label_ClampField3">
+                  <property name="text">
+                   <string>预留 3</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="2" column="1">
+                 <widget class="QLineEdit" name="lineEdit_Clamp3">
+                  <property name="readOnly">
+                   <bool>true</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>72</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="placeholderText">
+                   <string>—</string>
+                  </property>
+                  <property name="alignment">
+                   <set>Qt::AlignRight|Qt::AlignVCenter</set>
+                  </property>
+                  <property name="sizePolicy">
+                   <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                    <horstretch>0</horstretch>
+                    <verstretch>0</verstretch>
+                   </sizepolicy>
+                  </property>
+                  <property name="enabled">
+                   <bool>false</bool>
+                  </property>
+                  <property name="toolTip">
+                   <string>当前版本未提供此反馈字段</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="0" column="2">
+                 <widget class="QLabel" name="label_ClampField4">
+                  <property name="text">
+                   <string>预留 4</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="0" column="3">
+                 <widget class="QLineEdit" name="lineEdit_Clamp4">
+                  <property name="readOnly">
+                   <bool>true</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>72</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="placeholderText">
+                   <string>—</string>
+                  </property>
+                  <property name="alignment">
+                   <set>Qt::AlignRight|Qt::AlignVCenter</set>
+                  </property>
+                  <property name="sizePolicy">
+                   <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                    <horstretch>0</horstretch>
+                    <verstretch>0</verstretch>
+                   </sizepolicy>
+                  </property>
+                  <property name="enabled">
+                   <bool>false</bool>
+                  </property>
+                  <property name="toolTip">
+                   <string>当前版本未提供此反馈字段</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="1" column="2">
+                 <widget class="QLabel" name="label_ClampField5">
+                  <property name="text">
+                   <string>预留 5</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="1" column="3">
+                 <widget class="QLineEdit" name="lineEdit_Clamp5">
+                  <property name="readOnly">
+                   <bool>true</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>72</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="placeholderText">
+                   <string>—</string>
+                  </property>
+                  <property name="alignment">
+                   <set>Qt::AlignRight|Qt::AlignVCenter</set>
+                  </property>
+                  <property name="sizePolicy">
+                   <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                    <horstretch>0</horstretch>
+                    <verstretch>0</verstretch>
+                   </sizepolicy>
+                  </property>
+                  <property name="enabled">
+                   <bool>false</bool>
+                  </property>
+                  <property name="toolTip">
+                   <string>当前版本未提供此反馈字段</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="2" column="2">
+                 <widget class="QLabel" name="label_ClampField6">
+                  <property name="text">
+                   <string>预留 6</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="2" column="3">
+                 <widget class="QLineEdit" name="lineEdit_Clamp6">
+                  <property name="readOnly">
+                   <bool>true</bool>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>72</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="placeholderText">
+                   <string>—</string>
+                  </property>
+                  <property name="alignment">
+                   <set>Qt::AlignRight|Qt::AlignVCenter</set>
+                  </property>
+                  <property name="sizePolicy">
+                   <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                    <horstretch>0</horstretch>
+                    <verstretch>0</verstretch>
+                   </sizepolicy>
+                  </property>
+                  <property name="enabled">
+                   <bool>false</bool>
+                  </property>
+                  <property name="toolTip">
+                   <string>当前版本未提供此反馈字段</string>
+                  </property>
+                 </widget>
+                </item>
+               </layout>
+              </widget>
+             </item>
+             <item>
+              <widget class="QLabel" name="label_GripperHint">
+               <property name="text">
+                <string>位置、电流显示设备原始反馈值；预留字段暂无数据。</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <spacer name="spacer_Gripper">
+               <property name="orientation">
+                <enum>Qt::Vertical</enum>
+               </property>
+               <property name="sizeHint">
+                <size>
+                 <width>0</width>
+                 <height>0</height>
+                </size>
+               </property>
+              </spacer>
+             </item>
+            </layout>
+           </widget>
+           <widget class="QWidget" name="tab_Log">
+            <attribute name="title">
+             <string>运行日志</string>
+            </attribute>
+            <layout class="QVBoxLayout" name="verticalLayout_LogTab">
+             <item>
+              <widget class="QGroupBox" name="groupBox_Log">
+               <property name="title">
+                <string>运行日志</string>
+               </property>
+               <layout class="QVBoxLayout" name="verticalLayout_Log">
+                <property name="leftMargin">
+                 <number>4</number>
+                </property>
+                <property name="topMargin">
+                 <number>4</number>
+                </property>
+                <property name="rightMargin">
+                 <number>4</number>
+                </property>
+                <property name="bottomMargin">
+                 <number>4</number>
+                </property>
+                <property name="spacing">
+                 <number>8</number>
+                </property>
+                <item>
+                 <widget class="QPlainTextEdit" name="plainTextEdit_DashboardMessage">
+                  <property name="readOnly">
+                   <bool>true</bool>
+                  </property>
+                  <property name="plainText">
+                   <string />
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>0</width>
+                    <height>75</height>
+                   </size>
+                  </property>
+                  <property name="maximumBlockCount">
+                   <number>1000</number>
+                  </property>
+                  <property name="placeholderText">
+                   <string>连接、控制和采集消息将在这里显示。</string>
+                  </property>
+                 </widget>
+                </item>
+               </layout>
+              </widget>
+             </item>
+            </layout>
+           </widget>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+      </widget>
+      <widget class="QSplitter" name="splitter_Views">
+       <property name="orientation">
+        <enum>Qt::Vertical</enum>
+       </property>
+       <property name="childrenCollapsible">
+        <bool>false</bool>
+       </property>
+       <property name="handleWidth">
+        <number>6</number>
+       </property>
+       <property name="minimumSize">
+        <size>
+         <width>360</width>
+         <height>0</height>
+        </size>
+       </property>
+       <widget class="QGroupBox" name="groupBox_Robot">
+        <property name="title">
+         <string>机械臂预览</string>
+        </property>
+        <layout class="QVBoxLayout" name="verticalLayout_Robot" stretch="1,0">
+         <property name="leftMargin">
+          <number>4</number>
+         </property>
+         <property name="topMargin">
+          <number>4</number>
+         </property>
+         <property name="rightMargin">
+          <number>4</number>
+         </property>
+         <property name="bottomMargin">
+          <number>4</number>
+         </property>
+         <property name="spacing">
+          <number>6</number>
+         </property>
+         <item>
+          <widget class="QWidget" name="widget_RobotView" native="true">
+           <property name="minimumSize">
+            <size>
+             <width>0</width>
+             <height>180</height>
+            </size>
+           </property>
+           <layout class="QVBoxLayout" name="verticalLayout_RobotViewport">
+            <property name="leftMargin">
+             <number>0</number>
+            </property>
+            <property name="topMargin">
+             <number>0</number>
+            </property>
+            <property name="rightMargin">
+             <number>0</number>
+            </property>
+            <property name="bottomMargin">
+             <number>0</number>
+            </property>
+            <property name="spacing">
+             <number>0</number>
+            </property>
+           </layout>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLabel" name="label_ViewerHint">
+           <property name="text">
+            <string>左键旋转 · 中键平移 · 滚轮缩放</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+       <widget class="QSplitter" name="splitter_Cameras">
+        <property name="orientation">
+         <enum>Qt::Horizontal</enum>
+        </property>
+        <property name="childrenCollapsible">
+         <bool>false</bool>
+        </property>
+        <property name="handleWidth">
+         <number>6</number>
+        </property>
+        <widget class="QGroupBox" name="groupBox_Camera1">
+         <property name="title">
+          <string>相机 1 · D405</string>
+         </property>
+         <layout class="QVBoxLayout" name="verticalLayout_Camera1">
+          <property name="leftMargin">
+           <number>4</number>
+          </property>
+          <property name="topMargin">
+           <number>4</number>
+          </property>
+          <property name="rightMargin">
+           <number>4</number>
+          </property>
+          <property name="bottomMargin">
+           <number>4</number>
+          </property>
+          <property name="spacing">
+           <number>8</number>
+          </property>
+          <item>
+           <widget class="AspectRatioLabel" name="label_camera1">
+            <property name="alignment">
+             <set>Qt::AlignCenter</set>
+            </property>
+            <property name="frameShape">
+             <enum>QFrame::NoFrame</enum>
+            </property>
+            <property name="scaledContents">
+             <bool>false</bool>
+            </property>
+            <property name="text">
+             <string>相机 1 未连接</string>
+            </property>
+            <property name="minimumSize">
+             <size>
+              <width>140</width>
+              <height>120</height>
+             </size>
+            </property>
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Ignored" vsizetype="Ignored">
+              <horstretch>0</horstretch>
+              <verstretch>0</verstretch>
+             </sizepolicy>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+        <widget class="QGroupBox" name="groupBox_Camera2">
+         <property name="title">
+          <string>相机 2 · D435i</string>
+         </property>
+         <layout class="QVBoxLayout" name="verticalLayout_Camera2">
+          <property name="leftMargin">
+           <number>4</number>
+          </property>
+          <property name="topMargin">
+           <number>4</number>
+          </property>
+          <property name="rightMargin">
+           <number>4</number>
+          </property>
+          <property name="bottomMargin">
+           <number>4</number>
+          </property>
+          <property name="spacing">
+           <number>8</number>
+          </property>
+          <item>
+           <widget class="AspectRatioLabel" name="label_camera2">
+            <property name="alignment">
+             <set>Qt::AlignCenter</set>
+            </property>
+            <property name="frameShape">
+             <enum>QFrame::NoFrame</enum>
+            </property>
+            <property name="scaledContents">
+             <bool>false</bool>
+            </property>
+            <property name="text">
+             <string>相机 2 未连接</string>
+            </property>
+            <property name="minimumSize">
+             <size>
+              <width>140</width>
+              <height>120</height>
+             </size>
+            </property>
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Ignored" vsizetype="Ignored">
+              <horstretch>0</horstretch>
+              <verstretch>0</verstretch>
+             </sizepolicy>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </widget>
+      </widget>
+     </widget>
+    </item>
+    <item>
+     <widget class="QFrame" name="frame_Actions">
+      <layout class="QHBoxLayout" name="horizontalLayout_Actions">
+       <property name="leftMargin">
+        <number>12</number>
+       </property>
+       <property name="topMargin">
+        <number>12</number>
+       </property>
+       <property name="rightMargin">
+        <number>12</number>
+       </property>
+       <property name="bottomMargin">
+        <number>12</number>
+       </property>
+       <property name="spacing">
+        <number>10</number>
+       </property>
+       <item>
+        <widget class="QLabel" name="label_SpeedSlider">
+         <property name="text">
+          <string>限速: 100%</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QSlider" name="horizontalSlider_SpeedSlider">
+         <property name="minimum">
+          <number>1</number>
+         </property>
+         <property name="maximum">
+          <number>100</number>
+         </property>
+         <property name="value">
+          <number>100</number>
+         </property>
+         <property name="orientation">
+          <enum>Qt::Horizontal</enum>
+         </property>
+         <property name="enabled">
+          <bool>false</bool>
+         </property>
+         <property name="tickPosition">
+          <enum>QSlider::NoTicks</enum>
+         </property>
+         <property name="minimumSize">
+          <size>
+           <width>120</width>
+           <height>0</height>
+          </size>
+         </property>
+         <property name="maximumSize">
+          <size>
+           <width>280</width>
+           <height>16777215</height>
+          </size>
+         </property>
+         <property name="toolTip">
+          <string>机器人速度比例，范围 1%–100%</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <spacer name="spacer_Actions">
+         <property name="orientation">
+          <enum>Qt::Horizontal</enum>
+         </property>
+         <property name="sizeHint">
+          <size>
+           <width>0</width>
+           <height>0</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+       <item>
+        <widget class="QPushButton" name="pushButton_Collect">
+         <property name="text">
+          <string>开始采集</string>
+         </property>
+         <property name="minimumSize">
+          <size>
+           <width>136</width>
+           <height>46</height>
+          </size>
+         </property>
+         <property name="font">
+          <font>
+           <pointsize>12</pointsize>
+           <weight>75</weight>
+           <bold>true</bold>
+          </font>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="pushButton_Stop">
+         <property name="enabled">
+          <bool>false</bool>
+         </property>
+         <property name="text">
+          <string>停止运动</string>
+         </property>
+         <property name="minimumSize">
+          <size>
+           <width>150</width>
+           <height>52</height>
+          </size>
+         </property>
+         <property name="font">
+          <font>
+           <pointsize>15</pointsize>
+           <weight>75</weight>
+           <bold>true</bold>
+          </font>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="pushButton_Shutdown">
+         <property name="enabled">
+          <bool>false</bool>
+         </property>
+         <property name="text">
+          <string>UR 下电</string>
+         </property>
+         <property name="minimumSize">
+          <size>
+           <width>130</width>
+           <height>46</height>
+          </size>
+         </property>
+         <property name="font">
+          <font>
+           <pointsize>12</pointsize>
+           <weight>75</weight>
+           <bold>true</bold>
+          </font>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </item>
+   </layout>
   </widget>
   <widget class="QMenuBar" name="menubar">
-   <property name="geometry">
-    <rect>
-     <x>0</x>
-     <y>0</y>
-     <width>900</width>
-     <height>28</height>
-    </rect>
-   </property>
-   <property name="styleSheet">
-    <string notr="true">QMenuBar {
-    background-color: rgb(248, 228, 92);
-}</string>
-   </property>
+   <widget class="QMenu" name="menu_Interface">
+    <property name="title">
+     <string>界面</string>
+    </property>
+    <addaction name="actionLayoutModern" />
+    <addaction name="actionLayoutClassic" />
+   </widget>
+   <addaction name="menu_Interface" />
   </widget>
   <widget class="QStatusBar" name="statusbar">
-   <property name="styleSheet">
-    <string notr="true">QStatusBar {
-    background-color: rgb(192, 191, 188);
-}</string>
-   </property>
    <property name="sizeGripEnabled">
     <bool>true</bool>
    </property>
   </widget>
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1360</width>
+    <height>800</height>
+   </rect>
+  </property>
+  <action name="actionLayoutModern">
+   <property name="text">
+    <string>新版界面</string>
+   </property>
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="checked">
+    <bool>true</bool>
+   </property>
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+  </action>
+  <action name="actionLayoutClassic">
+   <property name="text">
+    <string>经典界面（改版前）</string>
+   </property>
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="checked">
+    <bool>false</bool>
+   </property>
+   <property name="enabled">
+    <bool>true</bool>
+   </property>
+  </action>
  </widget>
- <resources/>
- <connections/>
+ <customwidgets>
+  <customwidget>
+   <class>AspectRatioLabel</class>
+   <extends>QLabel</extends>
+   <header>ui_widgets</header>
+  </customwidget>
+ </customwidgets>
+ <tabstops>
+  <tabstop>comboBox_UiScale</tabstop>
+  <tabstop>lineEdit_IP</tabstop>
+  <tabstop>pushButton_IP</tabstop>
+  <tabstop>checkBox_URSim</tabstop>
+  <tabstop>pushButton_ConnectUR</tabstop>
+  <tabstop>pushButton_URPowerOn</tabstop>
+  <tabstop>pushButton_URBrakeRelease</tabstop>
+  <tabstop>tabWidget_Control</tabstop>
+  <tabstop>lineEdit_QT1</tabstop>
+  <tabstop>lineEdit_QT2</tabstop>
+  <tabstop>lineEdit_QT3</tabstop>
+  <tabstop>lineEdit_QT4</tabstop>
+  <tabstop>lineEdit_QT5</tabstop>
+  <tabstop>lineEdit_QT6</tabstop>
+  <tabstop>pushButton_HOME</tabstop>
+  <tabstop>pushButton_URScriptMoveJ</tabstop>
+  <tabstop>tabWidget_Telemetry</tabstop>
+  <tabstop>checkBox_UDPVisual</tabstop>
+  <tabstop>pushButton_UDPSync</tabstop>
+  <tabstop>pushButton_RTDEUDP</tabstop>
+  <tabstop>pushButton_StopRTDE</tabstop>
+  <tabstop>horizontalSlider_SpeedSlider</tabstop>
+  <tabstop>pushButton_Collect</tabstop>
+  <tabstop>pushButton_Stop</tabstop>
+  <tabstop>pushButton_Shutdown</tabstop>
+ </tabstops>
+ <resources />
+ <connections />
 </ui>
