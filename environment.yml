@@ -1,0 +1,26 @@
+name: urcontrol
+channels:
+  - conda-forge
+  - nodefaults
+variables:
+  # 激活环境后不混用用户目录中的 Python 包。
+  PYTHONNOUSERSITE: "1"
+dependencies:
+  # 与现有开发环境保持一致，使用支持 MJCF 的机器人运动学库。
+  - python=3.10
+  - numpy=2.2.6
+  - pinocchio=4.0.0
+  - pip
+  - pip:
+      - PyQt5==5.15.9
+      # 图形界面由 PyQt5 提供，避免引入另一套 Qt 插件。
+      - opencv-python-headless==4.13.0.92
+      - PyOpenGL==3.1.10
+      - trimesh==4.12.2
+      - pyserial==3.5
+      - minimalmodbus==2.1.1
+      - pyrealsense2==2.57.7.10387
+      # 提供 rtde_control、rtde_receive 和 rtde_io。
+      - ur-rtde==1.6.3
+      # 官方客户端提供 rtde 模块，与上面的 ur-rtde 是两个包。
+      - "UrRtde @ git+https://github.com/UniversalRobots/RTDE_Python_Client_Library.git@v2.7.12"
