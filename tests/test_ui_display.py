@@ -3,6 +3,7 @@
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
@@ -168,6 +169,55 @@ class DisplayTests(unittest.TestCase):
                                        self.ui.widget_RobotView.font().pointSizeF())
         collect.click()
         self.assertEqual(clicks, [True])
+
+    def test_classic_switch_fits_full_canvas_without_manual_resize(self):
+        self.display.dispose()
+        self.ui = switch_layout(self.window, self.ui, 'classic')
+        self.display = WindowDisplayController(self.window, self.ui, self.settings)
+        original_frame = self.window.frameGeometry
+        # offscreen 没有真实系统标题栏，额外模拟其占用的空间。
+        with mock.patch.object(self.window, 'frameGeometry',
+                               side_effect=lambda: original_frame().adjusted(0, 0, 8, 36)):
+            for screen in (self.four_k, self.two_k, self.four_k):
+                with self.subTest(screen=screen.name()):
+                    self.display._on_screen_changed(screen)
+                    self.app.processEvents()
+                    self.app.processEvents()
+                    scroll = self.ui.scrollArea_Classic
+                    self.assertEqual(scroll.horizontalScrollBar().maximum(), 0)
+                    self.assertEqual(scroll.verticalScrollBar().maximum(), 0)
+                    for camera in (self.ui.label_camera1, self.ui.label_camera2):
+                        rect = QtCore.QRect(camera.mapTo(scroll.viewport(), QtCore.QPoint()),
+                                            camera.size())
+                        self.assertTrue(scroll.viewport().rect().contains(rect))
+                    self.assertTrue(screen.area.contains(self.window.frameGeometry()))
+                    self.assertFalse(self.window.isMaximized())
+                    self.assertFalse(self.window.isFullScreen())
+
+    def test_classic_startup_and_scale_changes_fit_or_scroll_within_screen(self):
+        self.display.dispose()
+        self.window.hide()
+        self.ui = switch_layout(self.window, self.ui, 'classic')
+        self.display = WindowDisplayController(self.window, self.ui, self.settings)
+        self.display._on_screen_changed(self.four_k)
+        self.window.show()
+        for screen, scale_index, expect_scroll in ((self.four_k, 0, False),
+                                                   (self.four_k, 3, True),
+                                                   (self.four_k, 0, False),
+                                                   (ScreenStub('small', 1280, 720), 0, True)):
+            with self.subTest(screen=screen.name(), scale=scale_index):
+                self.display._on_screen_changed(screen)
+                self.ui.comboBox_UiScale.setCurrentIndex(scale_index)
+                self.app.processEvents()
+                self.app.processEvents()
+                scroll = self.ui.scrollArea_Classic
+                self.assertEqual(scroll.horizontalScrollBar().maximum(), 0)
+                self.assertEqual(scroll.verticalScrollBar().maximum() > 0, expect_scroll)
+                self.assertTrue(screen.area.contains(self.window.frameGeometry()))
+                scroll.verticalScrollBar().setValue(scroll.verticalScrollBar().maximum())
+                camera = self.ui.label_camera2
+                bottom = camera.mapTo(scroll.viewport(), camera.rect().bottomRight())
+                self.assertTrue(scroll.viewport().rect().contains(bottom))
 
     def test_axis_colors_and_disabled_controls_have_distinct_fill(self):
         self.ui.tabWidget_Control.setCurrentIndex(1)

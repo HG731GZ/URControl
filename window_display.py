@@ -35,6 +35,10 @@ class WindowDisplayController(QtCore.QObject):
         self.classic = hasattr(ui, 'scrollArea_Classic')
         self._connections = []
         if self.classic:
+            # 首次显示后窗口装饰和布局尺寸才稳定，再校准一次；切换时可取消。
+            self._fit_timer = QtCore.QTimer(self)
+            self._fit_timer.setSingleShot(True)
+            self._connect(self._fit_timer.timeout, self._settle_classic_window)
             self._canvas_size = QtCore.QSize(ui.classicCanvas.minimumSize())
             self._fixed_rects = [(widget, QtCore.QRect(widget.geometry()))
                                  for widget in vars(ui).values()
@@ -82,6 +86,8 @@ class WindowDisplayController(QtCore.QObject):
 
     def dispose(self):
         """切换布局前解除显示层信号，业务控件的信号连接保持不变。"""
+        if self.classic:
+            self._fit_timer.stop()
         for signal, slot in self._connections:
             signal.disconnect(slot)
         if self._screen is not None:
@@ -119,15 +125,65 @@ class WindowDisplayController(QtCore.QObject):
         self.ui.comboBox_UiScale.setCurrentIndex(index)
         del blocker
         self._apply_display(fit_window=True)
+        if self.classic:
+            self._fit_timer.start(0)
 
     def _on_metrics_changed(self, *_):
         self._apply_display(fit_window=True)
+        if self.classic:
+            self._fit_timer.start(0)
 
     def _on_scale_changed(self, index):
         if self._screen is None:
             return
         self.settings.setValue(self._settings_key(), index)
-        self._apply_display(fit_window=False)
+        self._apply_display(fit_window=self.classic)
+        if self.classic:
+            self._fit_timer.start(0)
+
+    def _settle_classic_window(self):
+        self._apply_display(fit_window=True)
+
+    def _apply_scale(self, scale):
+        for widget, base_font in self._fonts:
+            font = QtGui.QFont(base_font)
+            if base_font.pointSizeF() > 0:
+                font.setPointSizeF(base_font.pointSizeF() * scale)
+            else:
+                font.setPixelSize(max(1, round(base_font.pixelSize() * scale)))
+            widget.setFont(font)
+        if self.classic:
+            self.ui.classicCanvas.setMinimumSize(
+                round(self._canvas_size.width() * scale),
+                round(self._canvas_size.height() * scale))
+            for widget, rect in self._fixed_rects:
+                widget.setGeometry(round(rect.x() * scale), round(rect.y() * scale),
+                                   round(rect.width() * scale), round(rect.height() * scale))
+
+    def _classic_window_size(self, available, scale, automatic):
+        # 保留少量桌面边距；窗口尺寸不包含系统标题栏和边框。
+        decoration = self.window.frameGeometry().size() - self.window.size()
+        limit = available.size() - decoration - QtCore.QSize(16, 16)
+        for attempt in range(4):
+            self.window.layout().activate()
+            self.ui.centralwidget.layout().activate()
+            # maximumViewportSize 排除滚动条，避免已有滚动条抬高目标尺寸。
+            chrome = self.window.size() - self.ui.scrollArea_Classic.maximumViewportSize()
+            canvas = self.ui.classicCanvas.minimumSize()
+            room = limit - chrome
+            fitted_scale = min(scale, max(0.85, scale * min(
+                room.width() / canvas.width(), room.height() / canvas.height())))
+            if not automatic or fitted_scale >= scale - 0.001 or attempt == 3:
+                break
+            scale = fitted_scale
+            self._apply_scale(scale)
+        # 自动模式优先完整显示，达到可读性下限或用户选择大字时保留滚动条。
+        desired = self.ui.classicCanvas.minimumSize() + chrome
+        if desired.height() > limit.height():
+            # 纵向滚动条占用宽度，预留后避免同时出现不必要的横向滚动。
+            desired.setWidth(desired.width() + self.ui.scrollArea_Classic.style().pixelMetric(
+                QtWidgets.QStyle.PM_ScrollBarExtent, None, self.ui.scrollArea_Classic))
+        return desired.boundedTo(limit)
 
     def _apply_display(self, *, fit_window):
         if self._updating or self._screen is None:
@@ -137,27 +193,19 @@ class WindowDisplayController(QtCore.QObject):
             available = self._screen.availableGeometry()
             index = self.ui.comboBox_UiScale.currentIndex()
             scale = automatic_scale(available.size()) * self.SCALE_MULTIPLIERS[index]
-            for widget, base_font in self._fonts:
-                font = QtGui.QFont(base_font)
-                if base_font.pointSizeF() > 0:
-                    font.setPointSizeF(base_font.pointSizeF() * scale)
-                else:
-                    font.setPixelSize(max(1, round(base_font.pixelSize() * scale)))
-                widget.setFont(font)
-            if self.classic:
-                self.ui.classicCanvas.setMinimumSize(
-                    round(self._canvas_size.width() * scale),
-                    round(self._canvas_size.height() * scale))
-                for widget, rect in self._fixed_rects:
-                    widget.setGeometry(round(rect.x() * scale), round(rect.y() * scale),
-                                       round(rect.width() * scale), round(rect.height() * scale))
+            self._apply_scale(scale)
+            normal_fit = fit_window and not (self.window.isMaximized() or self.window.isFullScreen())
+            classic_size = (self._classic_window_size(available, scale, index == 0)
+                            if self.classic and normal_fit else None)
             self.ui.comboBox_UiScale.setToolTip(
                 f'{self._screen.name()} · 可用区域 {available.width()} × '
                 f'{available.height()} 逻辑像素\n'
                 f'当前基准字号 {self.window.font().pointSizeF():.1f} pt；'
                 '百分比相对自动适配大小，按显示器记忆。')
-            if fit_window and not (self.window.isMaximized() or self.window.isFullScreen()):
-                if self._available is None:
+            if normal_fit:
+                if classic_size is not None:
+                    width, height = classic_size.width(), classic_size.height()
+                elif self._available is None:
                     auto = automatic_scale(available.size())
                     width = min(round(self._initial_size.width() * auto),
                                 round(available.width() * 0.82))
