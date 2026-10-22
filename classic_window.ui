@@ -147,6 +147,94 @@
      </widget>
     </item>
     <item>
+     <widget class="QGroupBox" name="groupBox_Admittance">
+      <property name="title">
+       <string>导纳控制</string>
+      </property>
+      <layout class="QGridLayout" name="gridLayout_Admittance">
+       <property name="leftMargin">
+        <number>10</number>
+       </property>
+       <property name="topMargin">
+        <number>10</number>
+       </property>
+       <property name="rightMargin">
+        <number>10</number>
+       </property>
+       <property name="bottomMargin">
+        <number>8</number>
+       </property>
+       <property name="horizontalSpacing">
+        <number>16</number>
+       </property>
+       <property name="verticalSpacing">
+        <number>6</number>
+       </property>
+       <item row="0" column="0">
+        <widget class="QRadioButton" name="radioButton_AdmittanceJoint">
+         <property name="text">
+          <string>关节导纳</string>
+         </property>
+         <property name="checked">
+          <bool>true</bool>
+         </property>
+         <property name="toolTip">
+          <string>使用补偿关节力矩产生导纳运动；停止后可切换。</string>
+         </property>
+        </widget>
+       </item>
+       <item row="0" column="1">
+        <widget class="QRadioButton" name="radioButton_AdmittanceCartesian">
+         <property name="text">
+          <string>末端导纳</string>
+         </property>
+         <property name="toolTip">
+          <string>使用末端外力与力矩产生导纳运动；停止后可切换。</string>
+         </property>
+        </widget>
+       </item>
+       <item row="0" column="2">
+        <widget class="QLabel" name="label_AdmittanceStatus">
+         <property name="text">
+          <string>未开启</string>
+         </property>
+         <property name="wordWrap">
+          <bool>true</bool>
+         </property>
+         <property name="sizePolicy">
+          <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+           <horstretch>1</horstretch>
+           <verstretch>0</verstretch>
+          </sizepolicy>
+         </property>
+         <property name="toolTip">
+          <string>显示本轮导纳场景、运行阶段或退出原因。</string>
+         </property>
+        </widget>
+       </item>
+       <item row="0" column="3">
+        <widget class="QPushButton" name="pushButton_Admittance">
+         <property name="enabled">
+          <bool>false</bool>
+         </property>
+         <property name="text">
+          <string>开启导纳</string>
+         </property>
+         <property name="minimumSize">
+          <size>
+           <width>130</width>
+           <height>40</height>
+          </size>
+         </property>
+         <property name="toolTip">
+          <string>机器人就绪后可开启；有新鲜关节跟随指令时使用遥操作导纳，无新鲜 UDP 数据时使用主动柔顺。</string>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </item>
+    <item>
      <widget class="QScrollArea" name="scrollArea_Classic">
       <property name="widgetResizable">
        <bool>true</bool>

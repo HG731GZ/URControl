@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import wraps
 import time
 import threading
 from typing import Optional, Sequence, Literal
@@ -10,12 +11,24 @@ import rtde_control
 import rtde_io
 import rtde_receive
 from UR_Utils.URRTDETorqueClient import URRTDETorqueClient
+from UR_Utils.URAdmittanceController import URAdmittanceController
+from UR_Utils import admittance_config
 from UR_Utils.ur_pose_math import (
     apply_pose_delta,
     is_pose_reached,
     rate_limit_tcp_pose,
     twist_to_base,
 )
+
+
+def _ordinary_motion(method):
+    """将普通运动提交与导纳接管互斥，避免检查后发生执行权切换。"""
+    @wraps(method)
+    def guarded(self, *args, **kwargs):
+        with self._lifecycle_lock:
+            self._require_ordinary_motion()
+            return method(self, *args, **kwargs)
+    return guarded
 
 
 class URRTDEController:
@@ -171,6 +184,8 @@ class URRTDEController:
         self._speed_watchdog_deadline: Optional[float] = None
         self._last_speed_command_kind: Optional[str] = None
         self._direct_motion_kind: Optional[str] = None
+        self._admittance: Optional[URAdmittanceController] = None
+        self._ordinary_connected = True
 
     # ------------------------------------------------------------------
     # 对外接口
@@ -202,6 +217,11 @@ class URRTDEController:
         with self._lifecycle_lock:
             if self._is_shutdown:
                 raise RuntimeError("Controller has been shutdown. Please create a new object.")
+            if self._admittance is not None and self._admittance.active:
+                with self._lock:
+                    self._last_error = "导纳仍占有控制权，请先停止并等待确认"
+                return False
+            self._restore_ordinary_connection()
 
             self._cancel_speed_watchdog()
 
@@ -288,7 +308,93 @@ class URRTDEController:
 
             return True
 
+    def start_admittance(
+        self, reference_source: str, space: str, *,
+        q_master: Optional[Sequence[float]] = None, source_seq: Optional[int] = None,
+    ) -> bool:
+        """选择本轮参考来源与导纳空间，完成接管后由后台线程异步启动。"""
+        with self._lifecycle_lock:
+            if self._is_shutdown:
+                raise RuntimeError("控制器已经关闭")
+            self._require_ordinary_motion()
+            cfg = admittance_config.snapshot()
+            cfg["JOINT_POSITION_LIMIT_RAD"] = self._joint_position_limit.tolist()
+            backend = URAdmittanceController(
+                self.robot_ip, reference_source, space,
+                q_master=q_master, source_seq=source_seq, config=cfg,
+            )
+            # 先发布本轮后端，使其他线程在等待生命周期锁时也能保留停止请求。
+            self._admittance = backend
+            try:
+                self._stop_ordinary(stop_script=True)
+                with self._rtde_c_lock:
+                    if self._ordinary_connected:
+                        # 本项目 ur-rtde 1.6.3 默认 flags=1 使用下半区；交接时仍释放完整控制连接。
+                        # 专用导纳申请上半区，URCap 占用会在输入配方设置时明确报错。
+                        self.rtde_c.disconnect()
+                        self._ordinary_connected = False
+                with self._lock:
+                    self._last_error = None
+                backend.start()
+                return True
+            except Exception as exc:
+                backend.cancel_before_start(f"导纳接管失败：{exc}")
+                with self._lock:
+                    self._last_error = f"导纳接管失败：{exc}"
+                return False
+
     def stop(self, stop_script: bool = False) -> None:
+        """停止当前执行后端；自定义程序只通过专用配方请求停止。"""
+        backend = self._admittance
+        if backend is not None and backend.active:
+            backend.request_stop()
+        with self._lifecycle_lock:
+            backend = self._admittance
+            if backend is not None and backend.active:
+                try:
+                    backend.stop()
+                except RuntimeError:
+                    if not backend.needs_external_stop_confirmation() or not self._confirm_admittance_stopped(backend):
+                        raise
+            if self._ordinary_connected:
+                self._stop_ordinary(stop_script=stop_script)
+
+    def _confirm_admittance_stopped(self, backend: URAdmittanceController) -> bool:
+        """专用通信故障时，用原只读连接的连续新鲜反馈确认程序退出。"""
+        if not self.rtde_r.isConnected():
+            return False
+        first_timestamp = float(self.rtde_r.getTimestamp())
+        deadline = time.monotonic() + min(0.5, backend.parameters["ADMITTANCE_STOP_TIMEOUT_S"])
+        stopped_since = None
+        last_timestamp = first_timestamp
+        while time.monotonic() < deadline:
+            if not self.rtde_r.isConnected():
+                return False
+            timestamp = float(self.rtde_r.getTimestamp())
+            if timestamp > last_timestamp:
+                last_timestamp = timestamp
+                stopped = (
+                    self.rtde_r.getRuntimeState() == 1
+                    and max(abs(v) for v in self.rtde_r.getActualQd())
+                    <= backend.parameters["STATIONARY_MAX_QD_RAD_S"]
+                )
+                if stopped:
+                    if stopped_since is None:
+                        stopped_since = time.monotonic()
+                    elif time.monotonic() - stopped_since >= 0.05:
+                        backend.confirm_external_stop({
+                            "timestamp": timestamp, "runtime_state": 1,
+                            "actual_q": list(self.rtde_r.getActualQ()),
+                            "actual_qd": list(self.rtde_r.getActualQd()),
+                            "actual_TCP_pose": list(self.rtde_r.getActualTCPPose()),
+                        })
+                        return True
+                else:
+                    stopped_since = None
+            time.sleep(0.01)
+        return False
+
+    def _stop_ordinary(self, stop_script: bool = False) -> None:
         """
         停止 RTDE 控制线程，但不销毁 RTDE 连接。
 
@@ -305,12 +411,15 @@ class URRTDEController:
 
             if self._thread is not None:
                 self._thread.join(timeout=2.0)
+                if self._thread.is_alive():
+                    raise RuntimeError("原控制线程未退出，不能交接或释放连接")
                 self._thread = None
 
-            self._stop_motion()
-            with self._rtde_c_lock:
-                if stop_script and self.rtde_c.isProgramRunning():
-                    self.rtde_c.stopScript()
+            if self._ordinary_connected:
+                self._stop_motion()
+                with self._rtde_c_lock:
+                    if stop_script and self.rtde_c.isProgramRunning():
+                        self.rtde_c.stopScript()
 
             try:
                 q_now = np.asarray(self.rtde_r.getActualQ(), dtype=float)
@@ -343,6 +452,8 @@ class URRTDEController:
     def _stop_motion(self) -> None:
         """使用当前运动对应的停止接口，已退出的脚本不再接收控制指令。"""
         with self._rtde_c_lock:
+            if not self._ordinary_connected:
+                return
             if self.rtde_c.isProgramRunning():
                 if self._direct_motion_kind == "moveJ":
                     self.rtde_c.stopJ(self.servo_stop_acc)
@@ -355,7 +466,9 @@ class URRTDEController:
             self._direct_motion_kind = None
 
     def is_running(self) -> bool:
-        """返回控制线程是否正在运行。"""
+        """启动、运行和未确认停止期间，当前后端仍占有控制权。"""
+        if self._admittance is not None and self._admittance.active:
+            return True
         return self._thread is not None and self._thread.is_alive()
 
     def shutdown(self) -> None:
@@ -364,12 +477,15 @@ class URRTDEController:
         程序退出时才调用。
         调用后，这个对象不建议再 start()。
         """
+        backend = self._admittance
+        if backend is not None and backend.active:
+            backend.request_stop()
         with self._lifecycle_lock:
             if self._is_shutdown:
                 return
 
-            self.stop_raw_torque_stream()
             self.stop(stop_script=True)
+            self.stop_raw_torque_stream()
             self._speed_watchdog_stop.set()
             if self._speed_watchdog_thread is not None:
                 self._speed_watchdog_thread.join(timeout=1.0)
@@ -401,6 +517,8 @@ class URRTDEController:
         self,
         q: Sequence[float],
         dq_max: Optional[float | Sequence[float]] = None,
+        *,
+        source_seq: Optional[int] = None,
     ) -> None:
         """
         闭环跟踪输入关节角 q。
@@ -412,27 +530,38 @@ class URRTDEController:
                 关节限速。
                 可以是一个标量，例如 0.5，表示每个关节最大 0.5 rad/s；
                 也可以是长度 6 的列表，例如 [0.5, 0.5, 0.4, 0.8, 0.8, 1.0]。
+                导纳期间采用本轮配置中的名义与最终速度限制。
+            source_seq:
+                主端原始帧身份；相同缓存重复提交必须保留同一序号。
+                导纳停止后的主端帧不会自动恢复普通运动，需要先显式 start()。
         """
         q = self._parse_vec6(q, "q")
         new_dq_max = self._parse_dq_max(dq_max) if dq_max is not None else None
 
-        self._ensure_started_for_command()
+        with self._lifecycle_lock:
+            backend = self._admittance
+            if backend is not None and backend.active:
+                backend.submit_reference(q, source_seq=source_seq)
+            else:
+                if backend is not None and not self._ordinary_connected and source_seq is not None:
+                    raise RuntimeError("本轮导纳已结束，主端新帧不能自动恢复运动，请先调用 start()")
+                self._ensure_started_for_command()
+            with self._lock:
+                self._target_q = q.copy()
+                self._target_tcp_pose = None
+                self._target_tcp_dx_max = None
+                self._target_tcp_dq_max = None
+                self._pending_tcp_cmd_seq = None
+                self._pending_tcp_servo_deadline = None
+                self._last_target_q = q.copy()
+                self._last_target_tcp_pose = None
+                if new_dq_max is not None:
+                    self._dq_max = new_dq_max
+                self._target_reached = False
+                self._cmd_seq += 1
+                self._last_error = None
 
-        with self._lock:
-            self._target_q = q.copy()
-            self._target_tcp_pose = None
-            self._target_tcp_dx_max = None
-            self._target_tcp_dq_max = None
-            self._pending_tcp_cmd_seq = None
-            self._pending_tcp_servo_deadline = None
-            self._last_target_q = q.copy()
-            self._last_target_tcp_pose = None
-            if new_dq_max is not None:
-                self._dq_max = new_dq_max
-            self._target_reached = False
-            self._cmd_seq += 1
-            self._last_error = None
-
+    @_ordinary_motion
     def move_joint_delta(
         self,
         delta_q: Sequence[float],
@@ -477,6 +606,7 @@ class URRTDEController:
 
         return target_q.copy()
 
+    @_ordinary_motion
     def track_tcp_pose(
         self,
         pose: Sequence[float],
@@ -524,6 +654,7 @@ class URRTDEController:
             self._pending_tcp_servo_deadline = time.monotonic() + max(0.2, 20.0 * self.dt)
             self._last_error = None
 
+    @_ordinary_motion
     def move_tcp_delta(
         self,
         delta_pose: Sequence[float],
@@ -610,19 +741,20 @@ class URRTDEController:
     ) -> bool:
         """执行关节目标运动；同步等待期间也允许其他线程调用 stop()。"""
         q = self._parse_vec6(q, "q")
-        self._prepare_direct_motion_command("moveJ")
-        with self._rtde_c_lock:
-            ok = self.rtde_c.moveJ(q.tolist(), speed, acceleration, True)
-            if not ok:
-                raise RuntimeError("moveJ() 返回失败")
-            self._direct_motion_kind = "moveJ"
-            cmd_seq = self._cmd_seq
-            self._record_direct_motion_state(
-                actual_q=np.asarray(self.rtde_r.getActualQ(), dtype=float),
-                actual_tcp_pose=np.asarray(self.rtde_r.getActualTCPPose(), dtype=float),
-                target_q=q,
-                reached=False,
-            )
+        with self._lifecycle_lock:
+            self._prepare_direct_motion_command("moveJ")
+            with self._rtde_c_lock:
+                ok = self.rtde_c.moveJ(q.tolist(), speed, acceleration, True)
+                if not ok:
+                    raise RuntimeError("moveJ() 返回失败")
+                self._direct_motion_kind = "moveJ"
+                cmd_seq = self._cmd_seq
+                self._record_direct_motion_state(
+                    actual_q=np.asarray(self.rtde_r.getActualQ(), dtype=float),
+                    actual_tcp_pose=np.asarray(self.rtde_r.getActualTCPPose(), dtype=float),
+                    target_q=q,
+                    reached=False,
+                )
         if not asynchronous:
             self._wait_for_direct_motion(cmd_seq)
         return bool(ok)
@@ -663,36 +795,38 @@ class URRTDEController:
         if acceleration <= 0.0 or not np.isfinite(acceleration):
             raise ValueError("acceleration must be a positive finite scalar")
 
-        self._prepare_direct_motion_command("moveL")
+        with self._lifecycle_lock:
+            self._prepare_direct_motion_command("moveL")
 
-        pose_actual = np.asarray(self.rtde_r.getActualTCPPose(), dtype=float)
-        target_pose = apply_pose_delta(
-            pose_now=pose_actual,
-            delta_pose=delta_pose,
-            frame=frame,
-        )
+            pose_actual = np.asarray(self.rtde_r.getActualTCPPose(), dtype=float)
+            target_pose = apply_pose_delta(
+                pose_now=pose_actual,
+                delta_pose=delta_pose,
+                frame=frame,
+            )
 
-        with self._rtde_c_lock:
-            ok = self.rtde_c.moveL(
-                target_pose.tolist(),
-                speed,
-                acceleration,
-                True,
-            )
-            if not ok:
-                raise RuntimeError("moveL() returned False")
-            self._direct_motion_kind = "moveL"
-            cmd_seq = self._cmd_seq
-            self._record_direct_motion_state(
-                actual_q=np.asarray(self.rtde_r.getActualQ(), dtype=float),
-                actual_tcp_pose=np.asarray(self.rtde_r.getActualTCPPose(), dtype=float),
-                target_tcp_pose=target_pose,
-                reached=False,
-            )
+            with self._rtde_c_lock:
+                ok = self.rtde_c.moveL(
+                    target_pose.tolist(),
+                    speed,
+                    acceleration,
+                    True,
+                )
+                if not ok:
+                    raise RuntimeError("moveL() returned False")
+                self._direct_motion_kind = "moveL"
+                cmd_seq = self._cmd_seq
+                self._record_direct_motion_state(
+                    actual_q=np.asarray(self.rtde_r.getActualQ(), dtype=float),
+                    actual_tcp_pose=np.asarray(self.rtde_r.getActualTCPPose(), dtype=float),
+                    target_tcp_pose=target_pose,
+                    reached=False,
+                )
         if not asynchronous:
             self._wait_for_direct_motion(cmd_seq)
         return target_pose.copy()
 
+    @_ordinary_motion
     def speedJ(
         self,
         qd: Sequence[float],
@@ -743,6 +877,7 @@ class URRTDEController:
         )
         return ok
 
+    @_ordinary_motion
     def speedL(
         self,
         xd: Sequence[float],
@@ -828,6 +963,7 @@ class URRTDEController:
         """读取当前实际关节角，单位 rad。"""
         return np.asarray(self.rtde_r.getActualQ(), dtype=float)
 
+    @_ordinary_motion
     def get_joint_torques(self) -> np.ndarray:
         """
         读取补偿后的六轴关节力矩，单位 Nm。
@@ -836,6 +972,8 @@ class URRTDEController:
         顺序为基座、肩部、肘部、腕部一、腕部二、腕部三。
         调用时机器人端的 RTDE 控制脚本需处于运行状态。
         """
+        if not self._ordinary_connected:
+            raise RuntimeError("原控制通道已经退出；导纳力反馈请读取 get_status()['admittance']")
         with self._rtde_c_lock:
             return np.asarray(self.rtde_c.getJointTorques(), dtype=float)
 
@@ -917,8 +1055,17 @@ class URRTDEController:
 
     def get_status(self) -> dict:
         """读取控制器内部状态。"""
+        backend = self._admittance
+        admittance = backend.get_status() if backend is not None else {
+            "active": False, "running": False, "starting": False, "stopping": False,
+            "stopped_confirmed": True, "phase": 4, "phase_name": "未开启",
+            "reference_source": None, "space": None, "last_error": None,
+            "exit_reason": 0, "exit_reason_text": "正常", "parameters": None,
+            "robot_configuration": None,
+        }
+        running = self.is_running()
         with self._lock:
-            return {
+            status = {
                 "target_reached": self._target_reached,
                 "last_error": self._last_error,
                 "last_actual_q": None if self._last_actual_q is None else self._last_actual_q.copy(),
@@ -933,7 +1080,9 @@ class URRTDEController:
                 "loop_count": self._loop_count,
                 "servo_count": self._servo_count,
                 "last_servo_time": self._last_servo_time,
-                "is_running": self.is_running(),
+                "is_running": running,
+                "running": running,
+                "admittance": admittance,
                 "use_safety_check": self.use_safety_check,
                 "use_rtde_safety_check": self.use_rtde_safety_check,
                 "speed_watchdog_timeout": self.speed_watchdog_timeout,
@@ -941,6 +1090,17 @@ class URRTDEController:
                 "speed_watchdog_deadline": self._speed_watchdog_deadline,
                 "last_speed_command_kind": self._last_speed_command_kind,
             }
+        if backend is not None and not self._ordinary_connected:
+            status["last_error"] = admittance["last_error"]
+            status["target_reached"] = admittance["stopped_confirmed"]
+            for name, source in (("last_actual_q", "actual_q"), ("last_commanded_q", "q_cmd"),
+                                 ("last_actual_tcp_pose", "actual_TCP_pose")):
+                if admittance[source] is not None:
+                    status[name] = np.asarray(admittance[source], dtype=float)
+            status["last_target_q"] = (None if admittance["q_master"] is None else
+                                       np.asarray(admittance["q_master"], dtype=float))
+            status["loop_count"] = admittance["cycle_count"]
+        return status
 
 
     def debug_status_string(self) -> str:
@@ -1198,6 +1358,7 @@ class URRTDEController:
     # ------------------------------------------------------------------
 
 
+    @_ordinary_motion
     def check_joint_safety(self, q: Sequence[float]) -> dict:
         """
         手动检查一个关节目标的安全判定结果，便于排查 URSim/PolyScope 的安全限制。
@@ -1210,6 +1371,8 @@ class URRTDEController:
                 它会受当前安全配置、TCP、安全平面、姿态偏差限制等影响。
         """
         q_arr = self._parse_vec6(q, "q")
+        if not self._ordinary_connected:
+            raise RuntimeError("原控制通道尚未恢复，不能执行其关节安全查询")
         local_ok = bool(np.all(np.abs(q_arr) <= self._joint_position_limit))
         result = {
             "q": q_arr.copy(),
@@ -1229,9 +1392,12 @@ class URRTDEController:
 
         return result
 
+    @_ordinary_motion
     def check_pose_safety(self, pose: Sequence[float]) -> dict:
         """手动检查一个 TCP pose 在 UR 控制器内部安全检查中的结果。"""
         pose_arr = self._parse_vec6(pose, "pose")
+        if not self._ordinary_connected:
+            raise RuntimeError("原控制通道尚未恢复，不能执行其位姿安全查询")
         result = {
             "pose": pose_arr.copy(),
             "rtde_isPoseWithinSafetyLimits": None,
@@ -1255,6 +1421,7 @@ class URRTDEController:
         """
         if self._is_shutdown:
             raise RuntimeError("Controller has been shutdown. Please create a new object.")
+        self._require_ordinary_motion()
 
         thread_alive = self._thread is not None and self._thread.is_alive()
         with self._lock:
@@ -1268,6 +1435,19 @@ class URRTDEController:
 
         if not self.start(force_reupload=True):
             raise RuntimeError(f"Failed to start URRTDEController: {self.get_status()['last_error']}")
+
+    def _require_ordinary_motion(self) -> None:
+        """当前导纳确认停止之前，不接受普通运动或旧脚本查询。"""
+        if self._admittance is not None and self._admittance.active:
+            raise RuntimeError("导纳仍占有控制权，请先停止并等待确认")
+
+    def _restore_ordinary_connection(self) -> None:
+        """下一次显式普通运动才重新申请寄存器并上传原控制脚本。"""
+        self._require_ordinary_motion()
+        if not self._ordinary_connected:
+            with self._rtde_c_lock:
+                self.rtde_c = rtde_control.RTDEControlInterface(self.robot_ip, self.frequency)
+                self._ordinary_connected = True
 
     def _snapshot_command(self) -> dict:
         with self._lock:
@@ -1366,6 +1546,8 @@ class URRTDEController:
         """
         if self._is_shutdown:
             raise RuntimeError("Controller has been shutdown. Please create a new object.")
+        self._require_ordinary_motion()
+        self._restore_ordinary_connection()
 
         if (self.is_running() or self._direct_motion_kind != command_kind
                 or command_kind in ("moveJ", "moveL")):

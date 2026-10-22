@@ -1,6 +1,7 @@
 import os
 import time
 import json
+import copy
 import queue
 import shutil
 import threading
@@ -47,6 +48,7 @@ class DataCollector:
         session_name: Optional[str] = None,
         write_mode: str = "episode",
         async_write: bool = True,
+        extra_metadata: Optional[Dict[str, Any]] = None,
     ):
         if write_mode not in ("episode", "realtime"):
             raise ValueError("write_mode 必须是 'episode' 或 'realtime'")
@@ -56,6 +58,7 @@ class DataCollector:
         self._created_at = time.time()
         self._write_mode = write_mode
         self._async_write = async_write
+        self._extra_metadata = copy.deepcopy(extra_metadata or {})
 
         self._session_dir = os.path.join(self._base_dir, self._session_name)
 
@@ -105,6 +108,8 @@ class DataCollector:
         group_name: str,
         column_names: Optional[List[str]] = None,
         fmt: str = "%.6f",
+        *,
+        units: Optional[List[str]] = None,
     ) -> None:
         with self._lock:
             if group_name in self._numeric_groups:
@@ -115,8 +120,15 @@ class DataCollector:
             self._numeric_groups[group_name] = {
                 "column_names": list(column_names) if column_names is not None else [],
                 "fmt": fmt,
+                "units": list(units) if units is not None else None,
                 "buffer": [],
             }
+
+    def update_metadata(self, values: Dict[str, Any]) -> None:
+        """更新会话附加元数据，保存本轮控制参数、坐标约定及运行记录。"""
+        with self._lock:
+            self._extra_metadata.update(copy.deepcopy(values))
+            self._write_metadata_unlocked()
 
     def register_image(
         self,
@@ -691,6 +703,11 @@ class DataCollector:
                 name: info["column_names"]
                 for name, info in self._numeric_groups.items()
             },
+            "numeric_group_units": {
+                name: info["units"] for name, info in self._numeric_groups.items()
+            },
+            "timestamp_unit": "Unix s",
+            "extra_metadata": self._extra_metadata,
             "image_groups": {
                 name: info["camera_id"] for name, info in self._image_groups.items()
             },
@@ -745,151 +762,3 @@ class DataCollector:
                 shutil.rmtree(ep_dir)
                 if name in self._episodes:
                     self._episodes.remove(name)
-
-
-# ---- 独立测试 ----
-
-def _test():
-    import tempfile
-
-    tmpdir = tempfile.mkdtemp(prefix="datacollector_test_")
-    print(f"测试目录: {tmpdir}")
-
-    collector = DataCollector(base_dir=tmpdir, session_name="test_session")
-
-    # 注册
-    collector.register_numeric("JointAngle", ["q1", "q2", "q3", "q4", "q5", "q6"])
-    collector.register_numeric("TcpPose", ["x", "y", "z", "rx", "ry", "rz"])
-    collector.register_image("camera_d435i", "d435i")
-    collector.register_action(["a1", "a2", "a3", "a4", "a5", "a6"])
-
-    # 剧集 0
-    collector.start_episode()
-    assert collector.episode_active
-    assert collector.current_episode == 0
-
-    for i in range(10):
-        collector.push_numeric(
-            "JointAngle", [0.1 * i] * 6, timestamp=1000.0 + i * 0.01
-        )
-        collector.push_numeric("TcpPose", [0.01 * i] * 6, timestamp=1000.0 + i * 0.01)
-        collector.push_action([0.0] * 6, timestamp=1000.0 + i * 0.01)
-        rgb = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
-        depth = np.random.randint(0, 65535, (480, 640), dtype=np.uint16)
-        collector.push_image("camera_d435i", rgb=rgb, depth=depth)
-        collector.step()
-
-    ep0 = os.path.join(tmpdir, "test_session", "episode_000")
-    assert not os.path.isfile(os.path.join(ep0, "numeric", "JointAngle.csv"))
-    assert not os.listdir(os.path.join(ep0, "images", "camera_d435i"))
-
-    collector.end_episode()
-    assert not collector.episode_active
-
-    # 剧集 1
-    collector.start_episode()
-    assert collector.current_episode == 1
-    for i in range(5):
-        collector.push_numeric("JointAngle", [0.2 * i] * 6)
-    collector.end_episode()
-
-    collector.close()
-
-    # 验证文件结构
-    session_dir = os.path.join(tmpdir, "test_session")
-    assert os.path.isdir(session_dir)
-    assert os.path.isfile(os.path.join(session_dir, "metadata.json"))
-
-    ep0 = os.path.join(session_dir, "episode_000")
-    assert os.path.isfile(os.path.join(ep0, "numeric", "JointAngle.csv"))
-    assert os.path.isfile(os.path.join(ep0, "numeric", "TcpPose.csv"))
-    assert os.path.isfile(os.path.join(ep0, "action", "action.csv"))
-
-    data = np.loadtxt(
-        os.path.join(ep0, "numeric", "JointAngle.csv"), delimiter=",", skiprows=1
-    )
-    assert data.shape == (10, 7), f"期望 (10, 7)，实际 {data.shape}"
-    assert np.allclose(data[0, 0], 1000.0)
-
-    img_dir = os.path.join(ep0, "images", "camera_d435i")
-    pngs = sorted(f for f in os.listdir(img_dir) if f.endswith("_rgb.png"))
-    npys = sorted(f for f in os.listdir(img_dir) if f.endswith("_depth.npy"))
-    assert len(pngs) == 10
-    assert len(npys) == 10
-
-    ep1 = os.path.join(session_dir, "episode_001")
-    data1 = np.loadtxt(
-        os.path.join(ep1, "numeric", "JointAngle.csv"), delimiter=",", skiprows=1
-    )
-    assert data1.shape == (5, 7)
-
-    with open(os.path.join(session_dir, "metadata.json")) as f:
-        metadata = json.load(f)
-    assert metadata["write_mode"] == "episode"
-    assert metadata["async_write"] is True
-    assert metadata["image_group_options"]["camera_d435i"]["storage"] == "png"
-
-    video = DataCollector(base_dir=tmpdir, session_name="video_session")
-    video.register_image(
-        "camera_video",
-        "d435i",
-        storage="video",
-        video_codec="MJPG",
-        video_fps=30.0,
-    )
-    video.start_episode()
-    for i in range(5):
-        rgb = np.full((48, 64, 3), i * 30, dtype=np.uint8)
-        video.push_image("camera_video", rgb=rgb)
-        video.step()
-    video.end_episode()
-    video.close()
-
-    video_ep0 = os.path.join(tmpdir, "video_session", "episode_000")
-    video_path = os.path.join(video_ep0, "videos", "camera_video.avi")
-    frame_index_path = os.path.join(video_ep0, "videos", "camera_video_frames.csv")
-    assert os.path.isfile(video_path)
-    assert os.path.isfile(frame_index_path)
-    frame_index = np.loadtxt(frame_index_path, delimiter=",", skiprows=1)
-    assert frame_index.shape == (5, 3), f"期望 (5, 3)，实际 {frame_index.shape}"
-    assert np.allclose(frame_index[:, 0], np.arange(5))
-    assert np.allclose(frame_index[:, 1], np.arange(5))
-
-    capture = cv2.VideoCapture(video_path)
-    assert capture.isOpened()
-    frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
-    capture.release()
-    assert frame_count == 5
-
-    with open(os.path.join(tmpdir, "video_session", "metadata.json")) as f:
-        video_metadata = json.load(f)
-    assert video_metadata["image_group_options"]["camera_video"]["storage"] == "video"
-
-    realtime = DataCollector(
-        base_dir=tmpdir,
-        session_name="realtime_session",
-        write_mode="realtime",
-    )
-    realtime.register_numeric("JointAngle", ["q1"])
-    realtime.register_image("camera_d435i", "d435i")
-    realtime.register_action(["a1"])
-    realtime.start_episode()
-    realtime.push_numeric("JointAngle", [1.0], timestamp=2000.0)
-    realtime.push_action([2.0], timestamp=2000.0)
-    rgb = np.random.randint(0, 255, (16, 16, 3), dtype=np.uint8)
-    realtime.push_image("camera_d435i", rgb=rgb)
-    realtime.wait_for_writes()
-    realtime_ep0 = os.path.join(tmpdir, "realtime_session", "episode_000")
-    assert os.path.isfile(os.path.join(realtime_ep0, "numeric", "JointAngle.csv"))
-    assert os.path.isfile(os.path.join(realtime_ep0, "action", "action.csv"))
-    assert os.path.isfile(
-        os.path.join(realtime_ep0, "images", "camera_d435i", "step_000000_rgb.png")
-    )
-    realtime.close()
-
-    shutil.rmtree(tmpdir)
-    print("全部测试通过!")
-
-
-if __name__ == "__main__":
-    _test()

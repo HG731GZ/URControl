@@ -1,0 +1,459 @@
+def ur_admittance_control():
+  # 本程序独占运动输出；遥操作与主动柔顺都只在一个循环中调用 servoj。
+  global adm_source = ${REFERENCE_SOURCE}
+  global adm_space = ${ADMITTANCE_SPACE}
+  global adm_i = ${ADMITTANCE_INPUT_INT_BASE}
+  global adm_f = ${ADMITTANCE_INPUT_FLOAT_BASE}
+  global adm_oi = ${ADMITTANCE_OUTPUT_INT_BASE}
+  global adm_of = ${ADMITTANCE_OUTPUT_FLOAT_BASE}
+  global adm_dt = get_steptime()
+  global adm_tcp = get_tcp_offset()
+  global adm_phase = 0
+  global adm_reason = 0
+  global adm_cycle = 0
+  global adm_seq = -1
+  global adm_heartbeat = read_input_integer_register(adm_i + 1)
+  global adm_q_start = get_actual_joint_positions()
+  global adm_q_nom = adm_q_start
+  global adm_q_cmd = adm_q_start
+  global adm_q_master = adm_q_start
+  global adm_qd_cmd = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  global adm_delta = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  global adm_velocity = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  global adm_drive = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  global adm_bias = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  global adm_filtered = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  global adm_q_limit = ${JOINT_POSITION_LIMIT_RAD}
+  global adm_nominal_speed = ${NOMINAL_MAX_QD_RAD_S}
+  global adm_max_qd = ${COMMAND_MAX_QD_RAD_S}
+  global adm_max_qdd = ${COMMAND_MAX_QDD_RAD_S2}
+  global adm_tracking_limit = ${COMMAND_MAX_TRACKING_ERROR_RAD}
+  global adm_ik_step = ${CART_MAX_IK_STEP_RAD}
+  global adm_cart_correction = ${TELEOP_CART_MAX_JOINT_CORRECTION_RAD}
+  global adm_t_cmd = get_forward_kin(adm_q_cmd, adm_tcp)
+  global adm_rot_bc = p[0, 0, 0, 0, 0, 0]
+  if ${CART_FRAME_TOOL_START}:
+    adm_rot_bc = p[0, 0, 0, adm_t_cmd[3], adm_t_cmd[4], adm_t_cmd[5]]
+  end
+  global adm_rot_cb = pose_inv(adm_rot_bc)
+
+  if adm_space == 1:
+    global adm_axes = ${JOINT_AXES}
+    global adm_mass = ${JOINT_MASS}
+    global adm_damping = ${JOINT_DAMPING}
+    global adm_stiffness = ${TELEOP_JOINT_STIFFNESS}
+    global adm_target = ${JOINT_TARGET_TORQUE_NM}
+    global adm_deadband = ${JOINT_DEADBAND_NM}
+    global adm_cutoff = ${JOINT_FILTER_CUTOFF_HZ}
+    global adm_offset_max = ${TELEOP_JOINT_MAX_OFFSET_RAD}
+    global adm_speed_max = ${TELEOP_JOINT_MAX_OFFSET_SPEED_RAD_S}
+    if adm_source == 2:
+      adm_speed_max = ${FREE_JOINT_MAX_SPEED_RAD_S}
+    end
+  else:
+    global adm_axes = ${CART_AXES}
+    global adm_mass = ${CART_MASS}
+    global adm_damping = ${CART_DAMPING}
+    global adm_stiffness = ${TELEOP_CART_STIFFNESS}
+    global adm_target = ${CART_TARGET_WRENCH}
+    global adm_deadband = ${CART_DEADBAND}
+    global adm_cutoff = ${CART_FILTER_CUTOFF_HZ}
+    global adm_linear_speed = ${TELEOP_CART_MAX_OFFSET_LINEAR_SPEED_M_S}
+    global adm_angular_speed = ${TELEOP_CART_MAX_OFFSET_ANGULAR_SPEED_RAD_S}
+    if adm_source == 2:
+      adm_linear_speed = ${FREE_CART_MAX_LINEAR_SPEED_M_S}
+      adm_angular_speed = ${FREE_CART_MAX_ANGULAR_SPEED_RAD_S}
+    end
+  end
+  global adm_alpha = adm_dt / (1.0 / (6.283185307179586 * adm_cutoff) + adm_dt)
+
+  def adm_now():
+    local stamp = time(0)
+    return stamp.sec + stamp.nanosec / 1000000000.0
+  end
+
+  def adm_clip(value, lower, upper):
+    if value < lower:
+      return lower
+    elif value > upper:
+      return upper
+    end
+    return value
+  end
+
+  def adm_norm3(values, first):
+    return sqrt(values[first] * values[first] + values[first + 1] * values[first + 1] + values[first + 2] * values[first + 2])
+  end
+
+  def adm_limit_norm(values, first, maximum):
+    local result = values
+    local magnitude = adm_norm3(values, first)
+    if magnitude > maximum:
+      local k = first
+      while k < first + 3:
+        result[k] = values[k] * maximum / magnitude
+        k = k + 1
+      end
+    end
+    return result
+  end
+
+  def adm_remove_outward(velocity, offset, first, maximum):
+    local result = velocity
+    local magnitude = adm_norm3(offset, first)
+    if magnitude >= maximum:
+      local projection = 0.0
+      local k = first
+      while k < first + 3:
+        projection = projection + velocity[k] * offset[k]
+        k = k + 1
+      end
+      if projection > 0.0:
+        k = first
+        while k < first + 3:
+          result[k] = velocity[k] - projection * offset[k] / (magnitude * magnitude)
+          k = k + 1
+        end
+      end
+    end
+    return result
+  end
+
+  def adm_load():
+    if adm_space == 1:
+      # 使用扣除重力、摩擦及自身运动需求的关节力矩，不使用电流换算力矩。
+      return get_joint_torques()
+    end
+    local wrench = get_tcp_force()
+    local actual_tcp = get_actual_tcp_pose()
+    local actual_flange = get_actual_tool_flange_pose()
+    local rx = actual_tcp[0] - actual_flange[0]
+    local ry = actual_tcp[1] - actual_flange[1]
+    local rz = actual_tcp[2] - actual_flange[2]
+    # 先将法兰力矩平移到实际 TCP，再分别旋转力和力矩，不能使用名义位姿测量力臂。
+    local mx = wrench[3] - (ry * wrench[2] - rz * wrench[1])
+    local my = wrench[4] - (rz * wrench[0] - rx * wrench[2])
+    local mz = wrench[5] - (rx * wrench[1] - ry * wrench[0])
+    local force_c = pose_trans(adm_rot_cb, p[wrench[0], wrench[1], wrench[2], 0, 0, 0])
+    local torque_c = pose_trans(adm_rot_cb, p[mx, my, mz, 0, 0, 0])
+    return [force_c[0], force_c[1], force_c[2], torque_c[0], torque_c[1], torque_c[2]]
+  end
+
+  def adm_compose(origin, displacement):
+    local translation_b = pose_trans(adm_rot_bc, p[displacement[0], displacement[1], displacement[2], 0, 0, 0])
+    local rotation_b = pose_trans(adm_rot_bc, p[displacement[3], displacement[4], displacement[5], 0, 0, 0])
+    # 旋转仅左乘参考方向，平移单独相加，避免位置绕基座原点旋转。
+    local orientation = pose_trans(p[0, 0, 0, rotation_b[0], rotation_b[1], rotation_b[2]], p[0, 0, 0, origin[3], origin[4], origin[5]])
+    return p[origin[0] + translation_b[0], origin[1] + translation_b[1], origin[2] + translation_b[2], orientation[3], orientation[4], orientation[5]]
+  end
+
+  def adm_accepted_velocity(before, after):
+    local translation_c = pose_trans(adm_rot_cb, p[(after[0] - before[0]) / adm_dt, (after[1] - before[1]) / adm_dt, (after[2] - before[2]) / adm_dt, 0, 0, 0])
+    local previous_rotation = p[0, 0, 0, before[3], before[4], before[5]]
+    local next_rotation = p[0, 0, 0, after[3], after[4], after[5]]
+    local rotation_b = pose_trans(next_rotation, pose_inv(previous_rotation))
+    local rotation_c = pose_trans(adm_rot_cb, p[rotation_b[3] / adm_dt, rotation_b[4] / adm_dt, rotation_b[5] / adm_dt, 0, 0, 0])
+    return [translation_c[0], translation_c[1], translation_c[2], rotation_c[0], rotation_c[1], rotation_c[2]]
+  end
+
+  def adm_publish():
+    write_output_integer_register(adm_oi, adm_phase)
+    write_output_integer_register(adm_oi + 1, adm_reason)
+    write_output_integer_register(adm_oi + 2, adm_seq)
+    write_output_integer_register(adm_oi + 3, adm_cycle)
+    write_output_integer_register(adm_oi + 4, adm_source)
+    local reference = adm_q_start
+    local state = adm_velocity
+    if adm_source == 1:
+      reference = adm_q_nom
+      state = adm_delta
+    end
+    local k = 0
+    while k < 6:
+      write_output_float_register(adm_of + k, adm_drive[k])
+      write_output_float_register(adm_of + 6 + k, state[k])
+      write_output_float_register(adm_of + 12 + k, adm_q_cmd[k])
+      write_output_float_register(adm_of + 18 + k, reference[k])
+      k = k + 1
+    end
+  end
+
+  global adm_last_heartbeat = adm_now()
+  global adm_last_source = adm_last_heartbeat
+
+  def adm_read_inputs():
+    local now = adm_now()
+    if read_input_integer_register(adm_i) != 1:
+      return 1
+    end
+    if read_input_integer_register(adm_i + 3) != adm_space or read_input_integer_register(adm_i + 4) != adm_source:
+      return 4
+    end
+    local heartbeat = read_input_integer_register(adm_i + 1)
+    if heartbeat != adm_heartbeat:
+      global adm_heartbeat = heartbeat
+      global adm_last_heartbeat = now
+    elif now - adm_last_heartbeat >= ${ADMITTANCE_HEARTBEAT_TIMEOUT_S}:
+      return 2
+    end
+    if adm_source == 1:
+      # 序号与角度来自同一配方包；读取跨越新包时留待下一周期采用。
+      local seq_begin = read_input_integer_register(adm_i + 2)
+      local reference = [read_input_float_register(adm_f), read_input_float_register(adm_f + 1), read_input_float_register(adm_f + 2), read_input_float_register(adm_f + 3), read_input_float_register(adm_f + 4), read_input_float_register(adm_f + 5)]
+      local seq_end = read_input_integer_register(adm_i + 2)
+      if seq_begin == seq_end and seq_begin != adm_seq:
+        global adm_seq = seq_begin
+        global adm_q_master = reference
+        global adm_last_source = now
+      end
+      if now - adm_last_source >= ${MASTER_FRAME_TIMEOUT_S}:
+        return 3
+      end
+    end
+    return 0
+  end
+
+  # 软件心跳超时先申请减速；通信彻底失效时控制器看门狗仍可强制终止程序。
+  rtde_set_watchdog(${WATCHDOG_VARIABLE}, ${ADMITTANCE_WATCHDOG_MIN_HZ}, "stop")
+  local startup_time = adm_now()
+  local bias_start = startup_time
+  local bias_count = 0
+  while adm_phase < 2 and adm_reason == 0:
+    adm_reason = adm_read_inputs()
+    local actual_speed = get_actual_joint_speeds()
+    local k = 0
+    while k < 6 and adm_reason == 0:
+      if abs(actual_speed[k]) > ${STATIONARY_MAX_QD_RAD_S}:
+        adm_reason = 10
+      elif adm_source == 1 and abs(adm_q_master[k] - adm_q_start[k]) > ${TELEOP_SYNC_TOLERANCE_RAD}:
+        adm_reason = 10
+      elif abs(adm_q_start[k]) > adm_q_limit[k]:
+        adm_reason = 8
+      end
+      k = k + 1
+    end
+    if adm_reason == 0:
+      if adm_phase == 0:
+        # 保持初始化阶段，使状态接收能够识别本轮程序，期间仍处理停止请求。
+        if adm_now() - startup_time >= 0.05:
+          adm_phase = 1
+          bias_start = adm_now()
+        end
+      else:
+        local sample = adm_load()
+        k = 0
+        while k < 6:
+          adm_bias[k] = adm_bias[k] + sample[k]
+          k = k + 1
+        end
+        bias_count = bias_count + 1
+        if adm_now() - bias_start >= ${ADMITTANCE_BIAS_DURATION_S}:
+          k = 0
+          while k < 6:
+            adm_bias[k] = adm_bias[k] / bias_count
+            k = k + 1
+          end
+          adm_phase = 2
+        end
+      end
+    end
+    adm_cycle = adm_cycle + 1
+    adm_publish()
+    sync()
+  end
+
+  local lag_started = -1.0
+  while adm_reason == 0:
+    adm_reason = adm_read_inputs()
+    local q_actual = get_actual_joint_positions()
+    local q_des = adm_q_cmd
+    local k = 0
+    if adm_reason == 0:
+      local sample = adm_load()
+      while k < 6:
+        adm_filtered[k] = adm_filtered[k] + adm_alpha * (sample[k] - adm_bias[k] - adm_filtered[k])
+        local error = adm_filtered[k] - adm_target[k]
+        adm_drive[k] = 0.0
+        if adm_axes[k] == 1:
+          # 连续死区去除阈值内残差，阈值处不产生突变。
+          if error > adm_deadband[k]:
+            adm_drive[k] = error - adm_deadband[k]
+          elif error < -adm_deadband[k]:
+            adm_drive[k] = error + adm_deadband[k]
+          end
+          local spring = 0.0
+          if adm_source == 1:
+            spring = adm_stiffness[k] * adm_delta[k]
+          end
+          local acceleration = (adm_drive[k] - adm_damping[k] * adm_velocity[k] - spring) / adm_mass[k]
+          adm_velocity[k] = adm_velocity[k] + acceleration * adm_dt
+        else:
+          adm_delta[k] = 0.0
+          adm_velocity[k] = 0.0
+        end
+        if adm_source == 1:
+          local nominal_step = adm_clip(adm_q_master[k] - adm_q_nom[k], -adm_nominal_speed[k] * adm_dt, adm_nominal_speed[k] * adm_dt)
+          adm_q_nom[k] = adm_q_nom[k] + nominal_step
+          if abs(adm_q_master[k]) > adm_q_limit[k]:
+            adm_reason = 8
+          end
+        end
+        k = k + 1
+      end
+    end
+
+    if adm_reason == 0 and adm_space == 1:
+      k = 0
+      while k < 6:
+        adm_velocity[k] = adm_clip(adm_velocity[k], -adm_speed_max[k], adm_speed_max[k])
+        if adm_source == 1:
+          adm_delta[k] = adm_clip(adm_delta[k] + adm_velocity[k] * adm_dt, -adm_offset_max[k], adm_offset_max[k])
+          if abs(adm_delta[k]) >= adm_offset_max[k] and adm_delta[k] * adm_velocity[k] > 0:
+            adm_velocity[k] = 0.0
+          end
+          q_des[k] = adm_q_nom[k] + adm_delta[k]
+        else:
+          q_des[k] = adm_q_cmd[k] + adm_velocity[k] * adm_dt
+        end
+        k = k + 1
+      end
+    elif adm_reason == 0:
+      adm_velocity = adm_limit_norm(adm_velocity, 0, adm_linear_speed)
+      adm_velocity = adm_limit_norm(adm_velocity, 3, adm_angular_speed)
+      local displacement = adm_delta
+      local origin = adm_t_cmd
+      if adm_source == 1:
+        k = 0
+        while k < 6:
+          adm_delta[k] = adm_delta[k] + adm_velocity[k] * adm_dt
+          k = k + 1
+        end
+        adm_delta = adm_limit_norm(adm_delta, 0, ${TELEOP_CART_MAX_POSITION_OFFSET_M})
+        adm_delta = adm_limit_norm(adm_delta, 3, ${TELEOP_CART_MAX_ROTATION_OFFSET_RAD})
+        adm_velocity = adm_remove_outward(adm_velocity, adm_delta, 0, ${TELEOP_CART_MAX_POSITION_OFFSET_M})
+        adm_velocity = adm_remove_outward(adm_velocity, adm_delta, 3, ${TELEOP_CART_MAX_ROTATION_OFFSET_RAD})
+        displacement = adm_delta
+      else:
+        k = 0
+        while k < 6:
+          displacement[k] = adm_velocity[k] * adm_dt
+          k = k + 1
+        end
+      end
+      if adm_source == 1 and norm(adm_delta) < 0.000000000001:
+        # 零偏移保留主端原始连续圈数，不做无必要的逆解往返。
+        q_des = adm_q_nom
+      elif norm(displacement) < 0.000000000001:
+        q_des = adm_q_cmd
+      else:
+        if adm_source == 1:
+          origin = get_forward_kin(adm_q_nom, adm_tcp)
+        end
+        local target_pose = adm_compose(origin, displacement)
+        if get_inverse_kin_has_solution(target_pose, qnear=adm_q_cmd, tcp=adm_tcp):
+          q_des = get_inverse_kin(target_pose, qnear=adm_q_cmd, tcp=adm_tcp)
+          k = 0
+          while k < 6:
+            if abs(q_des[k] - adm_q_cmd[k]) > adm_ik_step[k]:
+              adm_reason = 9
+            elif adm_source == 1 and abs(q_des[k] - adm_q_nom[k]) > adm_cart_correction[k]:
+              adm_reason = 6
+            end
+            k = k + 1
+          end
+        else:
+          adm_reason = 5
+        end
+      end
+    end
+
+    if adm_reason == 0:
+      local q_next = adm_q_cmd
+      local qd_next = adm_qd_cmd
+      local lagging = False
+      local limited = False
+      k = 0
+      while k < 6:
+        local desired_speed = adm_clip((q_des[k] - adm_q_cmd[k]) / adm_dt, -adm_max_qd[k], adm_max_qd[k])
+        qd_next[k] = adm_clip(desired_speed, adm_qd_cmd[k] - adm_max_qdd[k] * adm_dt, adm_qd_cmd[k] + adm_max_qdd[k] * adm_dt)
+        q_next[k] = adm_q_cmd[k] + qd_next[k] * adm_dt
+        if abs(q_des[k] - q_next[k]) > 0.000000001:
+          limited = True
+        end
+        if abs(q_des[k] - q_next[k]) > adm_tracking_limit[k]:
+          lagging = True
+        end
+        if abs(q_next[k] - q_actual[k]) > adm_tracking_limit[k]:
+          adm_reason = 7
+        elif abs(q_des[k]) > adm_q_limit[k] or abs(q_next[k]) > adm_q_limit[k]:
+          adm_reason = 8
+        end
+        k = k + 1
+      end
+      if lagging:
+        if lag_started < 0.0:
+          lag_started = adm_now()
+        elif adm_now() - lag_started >= ${COMMAND_LAG_TIMEOUT_S}:
+          adm_reason = 7
+        end
+      else:
+        lag_started = -1.0
+      end
+      if adm_reason == 0 and (not is_within_safety_limits(q_des) or not is_within_safety_limits(q_next)):
+        adm_reason = 8
+      end
+      if adm_reason == 0:
+        adm_q_cmd = q_next
+        adm_qd_cmd = qd_next
+        # 主动柔顺仅沿最终接受的目标延续，限速时不积累尚未执行的位置。
+        if adm_source == 2:
+          if adm_space == 1:
+            k = 0
+            while k < 6:
+              if adm_axes[k] == 1:
+                adm_velocity[k] = adm_qd_cmd[k]
+              end
+              k = k + 1
+            end
+          else:
+            local accepted_pose = get_forward_kin(adm_q_cmd, adm_tcp)
+            if limited:
+              # 由实际接受的位姿差回写速度，保留已执行分量而不积累未执行运动。
+              adm_velocity = adm_accepted_velocity(adm_t_cmd, accepted_pose)
+              k = 0
+              while k < 6:
+                if adm_axes[k] == 0:
+                  adm_velocity[k] = 0.0
+                end
+                k = k + 1
+              end
+              adm_velocity = adm_limit_norm(adm_velocity, 0, adm_linear_speed)
+              adm_velocity = adm_limit_norm(adm_velocity, 3, adm_angular_speed)
+            end
+            adm_t_cmd = accepted_pose
+          end
+        end
+        adm_cycle = adm_cycle + 1
+        adm_publish()
+        # 正常路径由 servoj 消耗本周期，不再叠加 sync。
+        servoj(adm_q_cmd, 0, 0, t=adm_dt, lookahead_time=${SERVO_LOOKAHEAD_S}, gain=${SERVO_GAIN})
+      end
+    end
+  end
+
+  # 保留最后命令和积分状态直至减速完成，绝不跳回名义参考。
+  adm_phase = 3
+  adm_publish()
+  stopj(${STOP_JOINT_ACCEL_RAD_S2})
+  # 立即取消启动也保留可观测的本轮停止阶段，防止接收端混淆上轮残留输出。
+  local stopping_time = adm_now()
+  while adm_now() - stopping_time < 0.05:
+    sync()
+  end
+  adm_phase = 4
+  adm_publish()
+  local stopped_time = adm_now()
+  while adm_now() - stopped_time < 0.03:
+    sync()
+  end
+end

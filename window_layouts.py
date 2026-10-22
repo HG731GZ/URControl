@@ -31,7 +31,7 @@ def _is_live_widget(name, widget):
     return (isinstance(widget, (QtWidgets.QAbstractButton, QtWidgets.QLineEdit,
                                QtWidgets.QPlainTextEdit, QtWidgets.QSlider))
             or name in ('label_IP_now', 'label_SpeedSlider', 'label_camera1',
-                        'label_camera2', 'widget_RobotView'))
+                        'label_camera2', 'widget_RobotView', 'label_AdmittanceStatus'))
 
 
 def switch_layout(window, previous, mode):
@@ -60,6 +60,14 @@ def switch_layout(window, previous, mode):
     # 先接入同一个顶层窗口，再移动控件，避免跨顶层窗口重建 OpenGL 上下文。
     central.setParent(window)
     central.hide()
+    # 两套模板都默认选择关节导纳；移动运行控件时暂时解除互斥，
+    # 保持原选择且不向业务层发出布局切换产生的单选信号。
+    radio_states = [(old, old.isChecked(), old.autoExclusive())
+                    for _, old, _, _, _ in replacements
+                    if isinstance(old, QtWidgets.QRadioButton)]
+    radio_blockers = [QtCore.QSignalBlocker(old) for old, _, _ in radio_states]
+    for old, _, _ in radio_states:
+        old.setAutoExclusive(False)
     for name, old, new, properties, geometry in replacements:
         parent = new.parentWidget()
         old.setParent(parent)
@@ -73,7 +81,8 @@ def switch_layout(window, previous, mode):
         for child in old.findChildren(QtWidgets.QWidget):
             child.setFont(properties['font'])
         old.setGeometry(geometry)
-        if isinstance(old, QtWidgets.QAbstractButton) and name != 'pushButton_Collect':
+        if (isinstance(old, QtWidgets.QAbstractButton)
+                and name not in ('pushButton_Collect', 'pushButton_Admittance')):
             old.setText(new.text())
             old.setToolTip(new.toolTip())
         setattr(ui, name, old)
@@ -81,6 +90,10 @@ def switch_layout(window, previous, mode):
         new.hide()
         new.setParent(None)
         new.deleteLater()
+    for old, checked, exclusive in radio_states:
+        old.setChecked(checked)
+        old.setAutoExclusive(exclusive)
+    del radio_blockers
     ui.verticalLayout_RobotViewport = ui.widget_RobotView.layout()
 
     old_central = window.takeCentralWidget()

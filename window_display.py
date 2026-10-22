@@ -1,6 +1,6 @@
 """屏幕适配逻辑；控件、布局、配色和基准字号均由 main_window.ui 定义。"""
 
-import hashlib
+from urllib.parse import quote
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
@@ -96,9 +96,12 @@ class WindowDisplayController(QtCore.QObject):
         self.deleteLater()
 
     def _settings_key(self):
-        identity = '|'.join((self._screen.name(), self._screen.manufacturer(),
-                             self._screen.model(), self._screen.serialNumber()))
-        key = hashlib.sha256(identity.encode('utf-8')).hexdigest()[:16]
+        # 直接保存显示器字段，转义设置路径的分隔符，不计算设备哈希。
+        fields = (('name', self._screen.name()),
+                  ('manufacturer', self._screen.manufacturer()),
+                  ('model', self._screen.model()),
+                  ('serial', self._screen.serialNumber()))
+        key = '|'.join(f'{name}={quote(value, safe="")}' for name, value in fields)
         mode = 'classic' if self.classic else 'modern'
         return f'screens/{key}/{mode}/scaleIndex'
 
