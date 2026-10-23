@@ -1,6 +1,8 @@
 import os
 import sys
 import time
+import threading
+from copy import deepcopy
 
 import numpy as np
 from rtde.rtde import RTDEException
@@ -15,11 +17,13 @@ from GripperController import GripperController, GRIPPER_SPEED_DEFAULT, GRIPPER_
 from RealSenseCamera import Camera, CameraError
 from window_display import WindowDisplayController, configure_high_dpi
 from window_layouts import create_layout, saved_layout, switch_layout
+from admittance_window import AdmittanceWindow
+from admittance_lifecycle import AdmittanceLifecycleWorker
 from UR_Utils.URDashboardClient import URDashboardClient
 from UR_Utils.URRealtimeClient import URRealtimeClient
 from UR_Utils.URRTDEController import URRTDEController
 from UR_Utils import admittance_config
-from UR_Utils.URAdmittanceController import PHASE_NAMES, EXIT_REASONS
+from UR_Utils.URAdmittanceController import PHASE_NAMES, EXIT_REASONS, idle_admittance_status
 from UR_Utils.URRTDETorqueClient import URRTDETorqueClient
 from UR_Utils.URTcpClient import URTcpError
 from UR_Utils.URUdpClient import URUDPClient, UDPControlMode
@@ -68,10 +72,23 @@ class MainWindow(QMainWindow):
         self._admittance_message = '未开启'
         self._admittance_runs = []
         self._admittance_run = None
+        self.admittance_window = None
+        self._admittance_worker = None
+        self._admittance_worker_result = None
+        self._admittance_stop_event = None
+        self._admittance_stop_pending = False
+        self._admittance_after_stop = None
+        self._admittance_handoff_complete = False
+        self._admittance_parameters = None
+        self._last_admittance_status = None
+        self._last_admittance_run_id = None
         self._last_collected_admittance_time = None
+        self._last_collected_submitted_seq = None
+        self._last_collected_master_count = None
         self._control_stop_failed = False
         self._udp_synced = False
         self._udp_sync_pending = False
+        self._udp_sync_parameters = None
         self._move_target = None
         self._jog_velocity = None
         self._jog_mode = None
@@ -142,6 +159,18 @@ class MainWindow(QMainWindow):
             ('ADMITTANCE_Q_CMD', [f'q{i}' for i in range(1, 7)], ['rad'] * 6),
             ('ADMITTANCE_Q_ACTUAL', [f'q{i}' for i in range(1, 7)], ['rad'] * 6),
             ('ADMITTANCE_Q_MASTER', [f'q{i}' for i in range(1, 7)], ['rad'] * 6),
+            ('ADMITTANCE_Q_SUBMITTED', [f'q{i}' for i in range(1, 7)], ['rad'] * 6),
+            ('ADMITTANCE_SUBMISSION', ['run', 'source_seq', 'observed_monotonic'],
+             ['编号', '本机有效接收计数', 's；主机观察时刻']),
+            ('ADMITTANCE_MASTER_RECEIVED', ['run', 'frame_count', 'received_monotonic',
+                                          'mode'] + [f'q{i}' for i in range(1, 7)] +
+                                         ['gripper', 'gripper_raw2', 'gripper_raw3'],
+             ['编号', '本机有效接收计数', 's', '模式编号'] + ['rad；非关节跟踪时NaN'] * 6 +
+             ['协议开度或原始位置', '附加原始量', '附加原始量']),
+            ('ADMITTANCE_HOST_TIMING', ['state_receive_count', 'state_received_monotonic',
+                                       'reference_send_count', 'last_reference_sent_monotonic',
+                                       'heartbeat_send_count', 'last_heartbeat_sent_monotonic'],
+             ['计数', 's', '计数', 's；未发送时NaN', '计数', 's；未发送时NaN']),
             ('ADMITTANCE_Q_NOM', [f'q{i}' for i in range(1, 7)], ['rad'] * 6),
             ('ADMITTANCE_Q_START', [f'q{i}' for i in range(1, 7)], ['rad'] * 6),
             ('ADMITTANCE_JOINT_DRIVE', [f'tau{i}' for i in range(1, 7)], ['Nm'] * 6),
@@ -166,6 +195,7 @@ class MainWindow(QMainWindow):
             ('udp_control_timer', self.update_udp_control),
             ('camera_timer', self.update_cameras),
             ('collection_timer', self.collect_sample),
+            ('admittance_monitor_timer', self.refresh_admittance_window),
         ):
             timer = QtCore.QTimer(self)
             timer.setTimerType(Qt.PreciseTimer)
@@ -208,6 +238,8 @@ class MainWindow(QMainWindow):
             self.append_message('请输入合法的 IP 地址')
             return
         if robot_ip != self.robot_ip:
+            if self.defer_until_admittance_stopped(self.on_set_ip):
+                return
             try:
                 self.disconnect_robot()
             except (RuntimeError, OSError, RTDEException, URTcpError) as exc:
@@ -228,6 +260,8 @@ class MainWindow(QMainWindow):
         self.on_set_ip()
 
     def on_connect_robot(self):
+        if self.defer_until_admittance_stopped(self.on_connect_robot):
+            return
         try:
             self.connect_robot()
         except (URTcpError, OSError, RuntimeError, RTDEException) as exc:
@@ -239,7 +273,8 @@ class MainWindow(QMainWindow):
                     self.append_message(f'连接清理中停止未确认：{stop_exc}')
 
     def connect_robot(self):
-        self.disconnect_robot()
+        if not self.disconnect_robot():
+            return
         self.dashboard_client = URDashboardClient(self.robot_ip)
         self.append_message(self.dashboard_client.connect())
         self.realtime_client = URRealtimeClient(self.robot_ip)
@@ -258,6 +293,8 @@ class MainWindow(QMainWindow):
         self.update_robot_status()
 
     def disconnect_robot(self):
+        if self.defer_until_admittance_stopped(self.disconnect_robot):
+            return False
         self.stop_control()
         # 确认运动退出后才能释放连接；停止失败时保留当前控制后端。
         for name in ('rtde_controller', 'torque_client', 'gripper',
@@ -271,8 +308,12 @@ class MainWindow(QMainWindow):
         self.robot_ready = False
         self.update_connection_label()
         self.update_buttons()
+        return True
 
     def on_stop_control(self):
+        if self.admittance_mode != 'off':
+            self.request_admittance_stop()
+            return False
         try:
             self.stop_control()
             return True
@@ -282,6 +323,9 @@ class MainWindow(QMainWindow):
 
     def stop_control(self, *, stop_script=False):
         """先关闭指令来源，确认执行后端停止后才解除运动互斥。"""
+        if self.admittance_mode != 'off':
+            self.request_admittance_stop()
+            return False
         self.jog_timer.stop()
         self.udp_control_timer.stop()
         self.control_source = 'stopping'
@@ -290,6 +334,7 @@ class MainWindow(QMainWindow):
         self._udp_synced = False
         self._udp_sync_pending = False
         self._move_target = None
+        self._udp_sync_parameters = None
         if self.gripper is not None:
             self.gripper.pause()
         try:
@@ -301,9 +346,6 @@ class MainWindow(QMainWindow):
             self.update_buttons()
             raise
         self._control_stop_failed = False
-        if self.admittance_mode != 'off':
-            status = self.rtde_controller.get_status()['admittance']
-            self.finish_admittance(status['exit_reason_text'] or '导纳已停止')
         self.control_source = 'idle'
         self.set_joint_targets_readonly(False)
         self.update_buttons()
@@ -315,6 +357,8 @@ class MainWindow(QMainWindow):
         self.append_message(self.dashboard_client.brake_release())
 
     def on_power_off(self):
+        if self.defer_until_admittance_stopped(self.on_power_off):
+            return
         try:
             self.stop_control(stop_script=True)
         except (RuntimeError, OSError, RTDEException, URTcpError) as exc:
@@ -342,12 +386,13 @@ class MainWindow(QMainWindow):
     def get_udp_snapshot(self):
         return self.get_udp_snapshot_and_count()[0]
 
-    def get_udp_snapshot_and_count(self):
+    def get_udp_snapshot_and_count(self, timeout_s=UDP_COMMAND_TIMEOUT_S):
         """一次读取指令与来源帧身份，重复提交缓存不产生新帧。"""
-        command, source_seq = self.udp_client.get_latest_and_count()
-        if self.udp_client.get_last_error() is not None:
+        snapshot = self.udp_client.get_monitor_snapshot()
+        command, source_seq = snapshot['command'], snapshot['frame_count']
+        if snapshot['last_error'] is not None:
             return None, source_seq
-        if command is None or time.time() - command.recv_time > UDP_COMMAND_TIMEOUT_S:
+        if command is None or time.monotonic() - snapshot['received_monotonic'] > timeout_s:
             return None, source_seq
         return command, source_seq
 
@@ -357,10 +402,11 @@ class MainWindow(QMainWindow):
         self.robot_ready = (state is not None and state.robot_mode == ROBOT_MODE_RUNNING
                             and state.safety_mode in (1, 2))
         if was_ready and not self.robot_ready:
-            self.on_stop_control()
-            if self.rtde_controller is not None and not self._control_stop_failed:
-                self.rtde_controller.close()
-                self.rtde_controller = None
+            if self.admittance_mode != 'off':
+                self.defer_until_admittance_stopped(self.release_unready_controller, automatic=True)
+            else:
+                self.on_stop_control()
+                self.release_unready_controller()
         # 仅在进入可运行状态时创建，失败后通过显式重连重试。
         if self.robot_ready and not was_ready and self.rtde_controller is None:
             try:
@@ -393,22 +439,25 @@ class MainWindow(QMainWindow):
         joint_command = command is not None and command.mode == UDPControlMode.JOINT_TRACK
         self.pushButton_UDPSync.setEnabled(rtde_ready and idle and joint_command)
         self.pushButton_RTDEUDP.setEnabled(rtde_ready and idle and joint_command)
-        active = self.admittance_mode != 'off'
-        self.pushButton_Admittance.setEnabled(active or (rtde_ready and idle))
-        self.pushButton_Admittance.setText('停止导纳' if active else '开启导纳')
-        self.radioButton_AdmittanceJoint.setEnabled(idle)
-        self.radioButton_AdmittanceCartesian.setEnabled(idle)
-        self.label_AdmittanceStatus.setText(self._admittance_message)
-        self.horizontalSlider_SpeedSlider.setEnabled(rtde_ready)
+        self.pushButton_Admittance.setEnabled(True)
+        self.pushButton_Admittance.setText('导纳调参与监视…')
+        hidden = (self.admittance_mode != 'off' and
+                  (self.admittance_window is None or not self.admittance_window.isVisible()))
+        self.label_AdmittanceStatus.setText(
+            self._admittance_message + ('；监视窗口已隐藏，控制继续' if hidden else ''))
+        self.horizontalSlider_SpeedSlider.setEnabled(rtde_ready and self._admittance_worker is None)
         for button in self.jog_buttons:
             button.setEnabled(rtde_ready and (idle or self.control_source == 'jog'))
+        self.update_admittance_window_context()
 
     def update_motion_status(self, state):
         """点位运动完成后解锁入口，同步结果仅供下一次遥操作导纳使用。"""
         if self.control_source != 'moveJ' or state is None:
             return
         reached = np.max(np.abs(np.asarray(state.q_actual) - self._move_target)) <= 0.01
-        stationary = np.max(np.abs(state.qd_actual)) <= admittance_config.STATIONARY_MAX_QD_RAD_S
+        stationary_limit = (admittance_config.STATIONARY_MAX_QD_RAD_S if self._udp_sync_parameters is None
+                            else self._udp_sync_parameters['STATIONARY_MAX_QD_RAD_S'])
+        stationary = np.max(np.abs(state.qd_actual)) <= stationary_limit
         if reached and stationary:
             was_sync = self._udp_sync_pending
             if not self.on_stop_control():
@@ -417,109 +466,340 @@ class MainWindow(QMainWindow):
             if was_sync:
                 self.append_message('主从同步完成；保持主端静止，可开启遥操作导纳')
 
+    def release_unready_controller(self):
+        """机器人失去就绪状态后，仅在停止确认后释放原控制器。"""
+        if not self.robot_ready and self.rtde_controller is not None and not self._control_stop_failed:
+            self.rtde_controller.close()
+            self.rtde_controller = None
+
     def on_admittance(self):
-        if self.admittance_mode != 'off':
-            self.on_stop_control()
+        """主界面入口只打开同一个非模态监视窗口。"""
+        if self.admittance_window is None:
+            window = AdmittanceWindow(settings=self._layout_settings, parent=self)
+            self.admittance_window = window
+            window.start_requested.connect(self.start_admittance_run)
+            window.stop_requested.connect(self.request_admittance_stop)
+            window.sync_requested.connect(self.sync_admittance_master)
+            window.apply_requested.connect(self.on_admittance_parameters_applied)
+            window.visibility_changed.connect(self.on_admittance_visibility)
+            if self._admittance_parameters is not None:
+                revision = self._admittance_runs[-1]['parameter_revision']
+                window.set_effective(self._admittance_parameters, revision)
+        self.update_admittance_window_context()
+        self.admittance_window.show()
+        self.admittance_window.raise_()
+        self.admittance_window.activateWindow()
+        self.refresh_admittance_window()
+
+    def on_admittance_visibility(self, visible):
+        self.admittance_window.monitor.set_visible(visible)
+        if visible:
+            self.admittance_monitor_timer.start(50)
+        else:
+            self.admittance_monitor_timer.stop()
+        self.update_buttons()
+
+    def on_admittance_parameters_applied(self):
+        self.append_message(f'导纳准备参数已应用，修订号 {self.admittance_window.parameters.revision}')
+        self.update_admittance_window_context()
+
+    def update_admittance_window_context(self):
+        window = self.admittance_window
+        if window is None:
             return
-        if self.control_source != 'idle' or not self.robot_ready or self.rtde_controller is None:
+        parameters = window.parameters.prepared_parameters
+        command, _ = self.get_udp_snapshot_and_count(parameters['MASTER_FRAME_TIMEOUT_S'])
+        state = self.get_robot_snapshot()
+        fresh_master = command is not None and command.mode == UDPControlMode.JOINT_TRACK
+        aligned = (fresh_master and state is not None and
+                   np.max(np.abs(np.asarray(command.q_arm) - state.q_actual)) <=
+                   parameters['TELEOP_SYNC_TOLERANCE_RAD'])
+        occupied = self.admittance_mode != 'off'
+        run = self._admittance_run or (self._admittance_runs[-1] if self._admittance_runs else None)
+        window.update_context({
+            'robot_ready': self.robot_ready and self.rtde_controller is not None,
+            'busy': self.control_source != 'idle', 'occupied': occupied,
+            'stop_pending': self._admittance_stop_pending,
+            'master_fresh': fresh_master, 'synced': self._udp_synced and aligned,
+            'phase': self._admittance_message, 'run_id': self._last_admittance_run_id,
+            'robot_address': self.connected_ip or self.robot_ip,
+            'controller_joint_limits': (None if self.rtde_controller is None else
+                                        self.rtde_controller.get_status()['joint_position_limit']),
+            'parameters_revision': None if run is None else run['parameter_revision'],
+            'run_metadata': deepcopy(run),
+            'speed_slider_percent': self.horizontalSlider_SpeedSlider.value(),
+        })
+
+    def refresh_admittance_window(self):
+        """显示采样独立于控制与采集，只在独立窗口可见时执行。"""
+        window = self.admittance_window
+        if window is None or not window.isVisible():
+            return
+        self.update_admittance_window_context()
+        now = time.monotonic()
+        realtime = None
+        if self.realtime_client is not None:
+            state = self.realtime_client.get_latest_state()
+            received_time = self.realtime_client.get_last_update_time()
+            realtime_error = self.realtime_client.get_last_error()
+            if state is not None and received_time is not None:
+                realtime = {
+                    'timestamp': state.time, 'actual_q': state.q_actual,
+                    'actual_qd': state.qd_actual, 'actual_TCP_pose': state.tcp_pose,
+                    'received_monotonic': now - (time.time() - received_time),
+                    'tcp_force': state.tcp_force,
+                    'speed_scaling': state.fields['speed_scaling'],
+                    'requested_speed_percent': self.horizontalSlider_SpeedSlider.value(),
+                    'last_error': None if realtime_error is None else str(realtime_error),
+                }
+        ft_sensor = None
+        if self.torque_client is not None:
+            torque = self.torque_client.get_latest()
+            if torque is not None:
+                ft_sensor = {'name': '原始关节力矩订阅', 'timestamp': torque[0],
+                             'values': torque[1], 'received_monotonic': None}
+        status = self._last_admittance_status
+        if (self.admittance_mode != 'off' and self._admittance_handoff_complete
+                and self.rtde_controller is not None):
+            status = self.rtde_controller.get_status()['admittance']
+            self._last_admittance_status = status
+        run = self._admittance_run or (self._admittance_runs[-1] if self._admittance_runs else None)
+        snapshot = window.monitor.update(
+            idle_admittance_status() if status is None else status,
+            self.udp_client.get_monitor_snapshot(),
+            run_id=self._last_admittance_run_id, connected=self.connected_ip is not None,
+            realtime=realtime, gripper=None if self.gripper is None else self.gripper.get_monitor_snapshot(),
+            ft_sensor=ft_sensor, now=now,
+            parameters=window.parameters.prepared_parameters,
+            parameter_revision=None if run is None else run['parameter_revision'],
+            reference_source=window.reference_source, space=window.space,
+            realtime_timeout_s=ROBOT_STATE_TIMEOUT_S,
+            context={
+                'feedback_destination': (UDP_REMOTE_IP, UDP_REMOTE_PORT),
+                'udp_synced': self._udp_synced, 'udp_sync_pending': self._udp_sync_pending,
+                'gripper_following': (self.control_source == 'udp' and self.gripper is not None
+                                      and not self.gripper.is_paused),
+                'requested_speed_percent': self.horizontalSlider_SpeedSlider.value(),
+            })
+        window.update_snapshot(snapshot)
+
+    def start_admittance_run(self, reference_source, space, config, revision):
+        """先在界面线程占用本轮控制权，再异步交接现有控制连接。"""
+        window = self.admittance_window
+        if window.parameters.has_unapplied_changes:
+            self.append_message('请先应用尚未提交的参数草稿')
+            return
+        if (self.control_source != 'idle' or self.admittance_mode != 'off' or
+                self._control_stop_failed or not self.robot_ready or self.rtde_controller is None):
             self.append_message('请先停止当前运动，并确认机器人就绪')
             return
-        command, source_seq = self.get_udp_snapshot_and_count()
-        if self.udp_client.get_last_error() is not None:
-            self._admittance_message = 'UDP 接收异常，请先排查通信'
-            self.append_message(self._admittance_message)
-            self.update_buttons()
+        try:
+            parameters = admittance_config.validate_config(config)
+        except ValueError as exc:
+            self.append_message(f'导纳参数无效：{exc}')
             return
-        if command is not None and command.mode != UDPControlMode.JOINT_TRACK:
-            self._admittance_message = '主端未启用关节跟随'
-            self.append_message(self._admittance_message)
-            self.update_buttons()
+        if reference_source not in ('teleop', 'free') or space not in ('joint', 'cartesian'):
+            self.append_message('导纳场景或空间无效')
             return
-        reference_source = 'teleop' if command is not None else 'free'
         state = self.get_robot_snapshot()
-        if state is None or np.max(np.abs(state.qd_actual)) > admittance_config.STATIONARY_MAX_QD_RAD_S:
+        if state is None or np.max(np.abs(state.qd_actual)) > parameters['STATIONARY_MAX_QD_RAD_S']:
             self.append_message('导纳偏置采样前请保持机器人静止、无外部接触')
             return
+        command, source_seq = self.get_udp_snapshot_and_count(parameters['MASTER_FRAME_TIMEOUT_S'])
         if reference_source == 'teleop':
-            aligned = np.max(np.abs(np.asarray(command.q_arm) - state.q_actual)) <= admittance_config.TELEOP_SYNC_TOLERANCE_RAD
-            if not self._udp_synced or not aligned:
-                self.append_message('请保持主端静止，先点击“UDP 同步”并等待完成，再开启遥操作导纳')
+            if command is None or command.mode != UDPControlMode.JOINT_TRACK:
+                self.append_message('遥操作导纳要求新鲜的主端关节跟踪指令')
                 return
-        space = 'joint' if self.radioButton_AdmittanceJoint.isChecked() else 'cartesian'
-        if self.gripper is not None:
-            self.gripper.pause()
-        try:
-            accepted = self.rtde_controller.start_admittance(
-                reference_source, space,
-                q_master=None if command is None else command.q_arm,
-                source_seq=None if command is None else source_seq)
-        except (RuntimeError, OSError, RTDEException, URTcpError, ValueError) as exc:
-            self.append_message(f'导纳启动失败：{exc}')
-            return
-        if not accepted:
-            self.append_message(self.rtde_controller.get_status()['last_error'])
-            return
+            aligned = np.max(np.abs(np.asarray(command.q_arm) - state.q_actual)) <= parameters['TELEOP_SYNC_TOLERANCE_RAD']
+            if not self._udp_synced or not aligned:
+                self.append_message('请保持主端静止，先同步主从并等待完成，再启动遥操作导纳')
+                return
+        self._admittance_stop_event = threading.Event()
+        self._admittance_stop_pending = False
+        self._admittance_handoff_complete = False
+        self._last_admittance_status = None
+        self._admittance_parameters = None
+        window.clear_effective()
         self.admittance_mode = space
         self._admittance_reference_source = reference_source
-        self.control_source = 'udp' if reference_source == 'teleop' else 'admittance_free'
+        self.control_source = 'admittance_starting'
         self._udp_synced = False
         self._last_collected_admittance_time = None
+        self._last_collected_submitted_seq = None
+        self._last_collected_master_count = None
         self._admittance_message = '导纳启动中：静止采样偏置，请勿接触机器人'
+        self._last_admittance_run_id = len(self._admittance_runs) + 1
         self._admittance_run = {
-            'id': len(self._admittance_runs) + 1,
+            'id': self._last_admittance_run_id, 'parameter_revision': revision,
             'started_at': time.time(), 'reference_source': reference_source, 'space': space,
-            'parameters': admittance_config.snapshot(),
-            'units_and_coordinates': admittance_config.units(reference_source, space),
-            'master_applicable': reference_source == 'teleop',
+            'prepared_parameters': deepcopy(parameters), 'parameters': None,
+            'units_and_coordinates': None, 'master_applicable': reference_source == 'teleop',
         }
         self._admittance_runs.append(self._admittance_run)
         self.collector.update_metadata({'admittance_runs': self._admittance_runs})
         self.set_joint_targets_readonly(True)
-        if reference_source == 'teleop':
-            self.udp_control_timer.start(round(1000 / admittance_config.TELEOP_REFERENCE_HZ))
+        if self.gripper is not None:
+            self.gripper.pause()
+        self.update_buttons()
         self.append_message(self._admittance_message)
+        self.dispatch_admittance_worker('start', {
+            'reference_source': reference_source, 'space': space, 'config': deepcopy(parameters),
+            'q_master': command.q_arm if reference_source == 'teleop' else None,
+            'source_seq': source_seq if reference_source == 'teleop' else None,
+        })
+
+    def dispatch_admittance_worker(self, operation, start_kwargs=None):
+        """同一时刻只有一个启停等待任务；完成收尾仍在界面线程。"""
+        worker = AdmittanceLifecycleWorker(
+            self.rtde_controller, operation, start_kwargs=start_kwargs,
+            stop_event=self._admittance_stop_event, parent=self)
+        self._admittance_worker = worker
+        self._admittance_worker_result = None
+        worker.completed.connect(self.on_admittance_worker_result)
+        worker.finished.connect(self.on_admittance_worker_finished)
+        worker.start()
+
+    def on_admittance_worker_result(self, result):
+        self._admittance_worker_result = result
+
+    def on_admittance_worker_finished(self):
+        worker = self._admittance_worker
+        result = self._admittance_worker_result
+        self._admittance_worker = None
+        self._admittance_worker_result = None
+        worker.deleteLater()
+        status = result['status']
+        if result['operation'] == 'start':
+            self._admittance_handoff_complete = result['parameters_accepted']
+            if self._admittance_handoff_complete:
+                self.record_admittance_status(status)
+            if result['error']:
+                self.append_message(f"导纳启动失败：{result['error']}")
+            if self._admittance_stop_pending:
+                self.dispatch_admittance_worker('stop')
+                return
+            if not result['success']:
+                if result['error'] is not None or (status is not None and status['active']):
+                    self._control_stop_failed = True
+                    self.control_source = 'stopping'
+                    self._admittance_message = result['error'] or '导纳启动未完成，需显式停止'
+                else:
+                    self.finish_admittance(result['error'] or '导纳启动已取消', status)
+            else:
+                self.control_source = 'udp' if self._admittance_reference_source == 'teleop' else 'admittance_free'
+                if self._admittance_reference_source == 'teleop':
+                    self.udp_control_timer.start(max(1, round(1000 / self._admittance_parameters['TELEOP_REFERENCE_HZ'])))
+        elif result['success']:
+            if self._admittance_handoff_complete:
+                self.record_admittance_status(status)
+                self.finish_admittance(status['exit_reason_text'] or '导纳已停止', status)
+            else:
+                self.finish_admittance('导纳启动已取消')
+        else:
+            self._admittance_stop_pending = False
+            self._control_stop_failed = True
+            self._admittance_message = f"停止尚未确认：{result['error']}"
+            self.append_message(self._admittance_message)
         self.update_buttons()
 
+    def defer_until_admittance_stopped(self, action, *, automatic=False):
+        """断开、下电和退出均在同一停止确认之后执行。"""
+        if self.admittance_mode == 'off':
+            return False
+        if not automatic or self._admittance_after_stop is None:
+            self._admittance_after_stop = action
+        self.request_admittance_stop()
+        return True
+
+    def request_admittance_stop(self):
+        """停止目标生产并保留跨越启动交接阶段的同一个停止事件。"""
+        if self.admittance_mode == 'off':
+            return
+        first_request = not self._admittance_stop_pending
+        self.udp_control_timer.stop()
+        self.jog_timer.stop()
+        self.control_source = 'stopping'
+        self._udp_synced = False
+        if self.gripper is not None:
+            self.gripper.pause()
+        self._admittance_stop_event.set()
+        self.rtde_controller.request_admittance_stop()
+        self._admittance_stop_pending = True
+        self._admittance_message = '导纳停止中，正在等待机器人确认'
+        if first_request:
+            self.append_message(self._admittance_message)
+        self.update_buttons()
+        if self._admittance_worker is None:
+            self.dispatch_admittance_worker('stop')
+
+    def record_admittance_status(self, status):
+        """后端接受参数后立即保存，不等待机器人 TCP 配置到达。"""
+        self._last_admittance_status = status
+        run = self._admittance_run
+        if run is None:
+            return
+        changed = False
+        if run['parameters'] is None:
+            self._admittance_parameters = deepcopy(status['parameters'])
+            run['parameters'] = deepcopy(status['parameters'])
+            run['units_and_coordinates'] = admittance_config.units(
+                run['reference_source'], run['space'], config=status['parameters'])
+            self.admittance_window.set_effective(status['parameters'], run['parameter_revision'])
+            changed = True
+        if status['robot_configuration'] is not None and 'robot_configuration' not in run:
+            run['robot_configuration'] = deepcopy(status['robot_configuration'])
+            changed = True
+        if changed:
+            self.collector.update_metadata({'admittance_runs': self._admittance_runs})
+
     def update_admittance_status(self):
-        if self.admittance_mode == 'off' or self.rtde_controller is None:
+        if (self.admittance_mode == 'off' or self.rtde_controller is None or
+                not self._admittance_handoff_complete or self._admittance_worker is not None):
             return
         status = self.rtde_controller.get_status()['admittance']
-        if self._admittance_run is not None and status.get('robot_configuration'):
-            if 'robot_configuration' not in self._admittance_run:
-                self._admittance_run['robot_configuration'] = status['robot_configuration']
-                self._admittance_run['parameters'] = status['parameters']
-                self.collector.update_metadata({'admittance_runs': self._admittance_runs})
-        if status['stopped_confirmed'] and not status['active']:
-            self.finish_admittance(status['last_error'] or status['exit_reason_text'] or '导纳已停止')
-            return
-        if status['last_error']:
+        self.record_admittance_status(status)
+        if status['stopped_confirmed'] and not status['active'] and not self._control_stop_failed:
+            self.finish_admittance(status['last_error'] or status['exit_reason_text'] or '导纳已停止', status)
+        elif status['last_error']:
             self._admittance_message = f"导纳异常：{status['last_error']}"
         elif status['running']:
             space = '关节' if self.admittance_mode == 'joint' else '末端'
             source = '遥操作导纳' if self._admittance_reference_source == 'teleop' else '主动柔顺'
-            self._admittance_message = f'{space}{source}'
+            self._admittance_message = f'{space}{source}：运行中'
         else:
             self._admittance_message = f"导纳：{status['phase_name']}"
 
-    def finish_admittance(self, reason):
-        """机器人确认退出后收尾，保留最后遥测用于本轮记录。"""
+    def finish_admittance(self, reason, status=None):
+        """机器人确认退出后收尾；未交接即取消时不借用上一轮样本。"""
         self.udp_control_timer.stop()
         if self.gripper is not None:
             self.gripper.pause()
         if self._admittance_run is not None:
-            status = self.rtde_controller.get_status()['admittance']
-            self.collect_admittance_sample(time.time(), status)
+            if status is not None and self._admittance_handoff_complete:
+                self.record_admittance_status(status)
+                self.collect_admittance_sample(time.time(), status)
             self._admittance_run.update(ended_at=time.time(), exit_reason=reason,
-                                        exit_code=status['exit_reason'])
+                                        exit_code=None if status is None else status['exit_reason'])
             self.collector.update_metadata({'admittance_runs': self._admittance_runs})
             self._admittance_run = None
         self._admittance_message = reason
         self.admittance_mode = 'off'
         self._admittance_reference_source = None
+        self._admittance_stop_pending = False
         self.control_source = 'idle'
         self._control_stop_failed = False
         self.set_joint_targets_readonly(False)
         self.append_message(reason)
+        action = self._admittance_after_stop
+        self._admittance_after_stop = None
+        if action is not None:
+            QtCore.QTimer.singleShot(0, action)
+
+    def sync_admittance_master(self):
+        """窗口同步使用本次准备参数，普通 UDP 跟随保留原有策略。"""
+        if self.admittance_window.reference_source != 'teleop':
+            return
+        self.on_sync_udp(config=self.admittance_window.parameters.prepared_copy())
 
     def on_jog_pressed(self, mode, index, direction):
         if self.admittance_mode != 'off' or self._control_stop_failed:
@@ -598,7 +878,9 @@ class MainWindow(QMainWindow):
     def update_udp_control(self):
         if self.control_source != 'udp':
             return
-        command, source_seq = self.get_udp_snapshot_and_count()
+        timeout_s = (UDP_COMMAND_TIMEOUT_S if self.admittance_mode == 'off' else
+                     self._admittance_parameters['MASTER_FRAME_TIMEOUT_S'])
+        command, source_seq = self.get_udp_snapshot_and_count(timeout_s)
         if command is None or command.mode != UDPControlMode.JOINT_TRACK:
             self.on_stop_control()
             self.append_message('UDP 跟随已停止：关闭、断流或不支持的控制模式')
@@ -616,15 +898,20 @@ class MainWindow(QMainWindow):
             if self.gripper.is_paused:
                 self.gripper.resume()
 
-    def on_sync_udp(self):
-        if self.admittance_mode != 'off' or self._control_stop_failed:
+    def on_sync_udp(self, checked=False, *, config=None):
+        if (self.admittance_mode != 'off' or self._control_stop_failed or
+                self.control_source != 'idle' or not self.robot_ready or self.rtde_controller is None):
             return
-        command = self.get_udp_snapshot()
+        if config is None:
+            config = (admittance_config.snapshot() if self.admittance_window is None else
+                      self.admittance_window.parameters.prepared_copy())
+        command, _ = self.get_udp_snapshot_and_count(config['MASTER_FRAME_TIMEOUT_S'])
         if command is None or command.mode != UDPControlMode.JOINT_TRACK:
             return
         if not self.move_joint(command.q_arm):
             return
         self._udp_sync_pending = True
+        self._udp_sync_parameters = deepcopy(config)
         if self.gripper is not None:
             self.gripper.move(command.q_gripper[0], speed=GRIPPER_SPEED_DEFAULT,
                               force=GRIPPER_FORCE_DEFAULT)
@@ -633,7 +920,7 @@ class MainWindow(QMainWindow):
     def on_speed_changed(self):
         speed_percent = self.horizontalSlider_SpeedSlider.value()
         self.label_SpeedSlider.setText(f'限速: {speed_percent}%')
-        if self.rtde_controller is not None:
+        if self.rtde_controller is not None and self._admittance_worker is None:
             self.rtde_controller.set_speed_slider(speed_percent / 100)
 
     def update_torque_subscription(self):
@@ -746,6 +1033,8 @@ class MainWindow(QMainWindow):
             self._last_collected_udp_time = None
             self._last_collected_robot_time = None
             self._last_collected_admittance_time = None
+            self._last_collected_submitted_seq = None
+            self._last_collected_master_count = None
             self.collector.start_episode()
             self.collection_timer.start(round(1000 / DATA_COLLECT_FREQ))
             self.pushButton_Collect.setText('采集结束')
@@ -768,7 +1057,7 @@ class MainWindow(QMainWindow):
             self._last_collected_robot_time = state.time
         if feedback is not None and not self.gripper.is_paused:
             self.collector.push_numeric('UR_GRIPPER', [feedback.open, feedback.current], timestamp)
-        if self.admittance_mode != 'off':
+        if self.admittance_mode != 'off' and self._admittance_handoff_complete:
             self.collect_admittance_sample(timestamp, self.rtde_controller.get_status()['admittance'])
         for index, frame in enumerate(frames, 1):
             if frame is not None:
@@ -778,7 +1067,25 @@ class MainWindow(QMainWindow):
 
     def collect_admittance_sample(self, timestamp, status):
         """按机器人时间去重保存同一遥测包；不适用的主端字段留空。"""
-        if not self.collector.episode_active or status['timestamp'] is None:
+        if not self.collector.episode_active or self._admittance_run is None:
+            return
+        run_id = self._admittance_run['id']
+        # 主端接收和主机提交按各自计数去重，不伪装成机器人同时采样。
+        udp = self.udp_client.get_monitor_snapshot()
+        command = udp['command']
+        if command is not None and udp['frame_count'] != self._last_collected_master_count:
+            joint_values = command.q_arm if command.mode == UDPControlMode.JOINT_TRACK else [float('nan')] * 6
+            self.collector.push_numeric('ADMITTANCE_MASTER_RECEIVED', [
+                run_id, udp['frame_count'], udp['received_monotonic'], command.mode,
+                *joint_values, *command.q_gripper], timestamp)
+            self._last_collected_master_count = udp['frame_count']
+        if (status['reference_source'] == 'teleop' and status['q_master_submitted'] is not None and
+                status['submitted_source_seq'] != self._last_collected_submitted_seq):
+            self.collector.push_numeric('ADMITTANCE_Q_SUBMITTED', status['q_master_submitted'], timestamp)
+            self.collector.push_numeric('ADMITTANCE_SUBMISSION', [
+                run_id, status['submitted_source_seq'], time.monotonic()], timestamp)
+            self._last_collected_submitted_seq = status['submitted_source_seq']
+        if status['timestamp'] is None:
             return
         sample_key = (status['timestamp'], status['phase'])
         if sample_key == self._last_collected_admittance_time:
@@ -808,6 +1115,11 @@ class MainWindow(QMainWindow):
         for name, values in groups.items():
             if values is not None:
                 self.collector.push_numeric(name, values, timestamp)
+        self.collector.push_numeric('ADMITTANCE_HOST_TIMING', [
+            float('nan') if status[key] is None else status[key]
+            for key in ('state_receive_count', 'state_received_monotonic', 'reference_send_count',
+                        'last_reference_sent_monotonic', 'heartbeat_send_count',
+                        'last_heartbeat_sent_monotonic')], timestamp)
         self._last_collected_admittance_time = sample_key
 
     @staticmethod
@@ -830,6 +1142,8 @@ class MainWindow(QMainWindow):
         if message is not None:
             message = time.strftime("%H:%M:%S", time.localtime()) + ': ' + message
             self.plainTextEdit_DashboardMessage.appendPlainText(message)
+            if self.admittance_window is not None:
+                self.admittance_window.append_log(message)
 
     def bind_jog_buttons(self):
         self.jog_buttons = []
@@ -890,8 +1204,12 @@ class MainWindow(QMainWindow):
             line_edit.setReadOnly(flag)
 
     def closeEvent(self, event):
+        if self.defer_until_admittance_stopped(self.close):
+            event.ignore()
+            return
         for timer in (self.status_timer, self.robot_view_timer, self.jog_timer,
-                      self.udp_control_timer, self.camera_timer, self.collection_timer):
+                      self.udp_control_timer, self.camera_timer, self.collection_timer,
+                      self.admittance_monitor_timer):
             timer.stop()
         try:
             self.disconnect_robot()
@@ -902,6 +1220,8 @@ class MainWindow(QMainWindow):
             self.camera_timer.start(50)
             if self.collector.episode_active:
                 self.collection_timer.start(round(1000 / DATA_COLLECT_FREQ))
+            if self.admittance_window is not None and self.admittance_window.isVisible():
+                self.admittance_monitor_timer.start(50)
             event.ignore()
             return
         self.udp_client.stop()
@@ -910,6 +1230,9 @@ class MainWindow(QMainWindow):
                 camera.close()
         self.collector.close()
         self.robot_visualizer.close()
+        if self.admittance_window is not None:
+            self.admittance_window.close()
+            self.admittance_window.deleteLater()
         event.accept()
 
 

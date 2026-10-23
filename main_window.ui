@@ -3183,7 +3183,7 @@ QPushButton#pushButton_TUp6:disabled, QPushButton#pushButton_TDown6:disabled, QP
     <item>
      <widget class="QGroupBox" name="groupBox_Admittance">
       <property name="title">
-       <string>导纳控制</string>
+       <string>导纳调参与监视</string>
       </property>
       <layout class="QGridLayout" name="gridLayout_Admittance">
        <property name="leftMargin">
@@ -3204,29 +3204,6 @@ QPushButton#pushButton_TUp6:disabled, QPushButton#pushButton_TDown6:disabled, QP
        <property name="verticalSpacing">
         <number>6</number>
        </property>
-       <item row="0" column="0">
-        <widget class="QRadioButton" name="radioButton_AdmittanceJoint">
-         <property name="text">
-          <string>关节导纳</string>
-         </property>
-         <property name="checked">
-          <bool>true</bool>
-         </property>
-         <property name="toolTip">
-          <string>使用补偿关节力矩产生导纳运动；停止后可切换。</string>
-         </property>
-        </widget>
-       </item>
-       <item row="0" column="1">
-        <widget class="QRadioButton" name="radioButton_AdmittanceCartesian">
-         <property name="text">
-          <string>末端导纳</string>
-         </property>
-         <property name="toolTip">
-          <string>使用末端外力与力矩产生导纳运动；停止后可切换。</string>
-         </property>
-        </widget>
-       </item>
        <item row="0" column="2">
         <widget class="QLabel" name="label_AdmittanceStatus">
          <property name="text">
@@ -3252,7 +3229,7 @@ QPushButton#pushButton_TUp6:disabled, QPushButton#pushButton_TDown6:disabled, QP
           <bool>false</bool>
          </property>
          <property name="text">
-          <string>开启导纳</string>
+          <string>导纳调参与监视…</string>
          </property>
          <property name="minimumSize">
           <size>
@@ -3261,7 +3238,7 @@ QPushButton#pushButton_TUp6:disabled, QPushButton#pushButton_TDown6:disabled, QP
           </size>
          </property>
          <property name="toolTip">
-          <string>机器人就绪后可开启；有新鲜关节跟随指令时使用遥操作导纳，无新鲜 UDP 数据时使用主动柔顺。</string>
+          <string>打开独立调参窗口；打开或关闭窗口不改变运动状态</string>
          </property>
         </widget>
        </item>
@@ -3495,8 +3472,6 @@ QPushButton#pushButton_TUp6:disabled, QPushButton#pushButton_TDown6:disabled, QP
   <tabstop>pushButton_UDPSync</tabstop>
   <tabstop>pushButton_RTDEUDP</tabstop>
   <tabstop>pushButton_StopRTDE</tabstop>
-  <tabstop>radioButton_AdmittanceJoint</tabstop>
-  <tabstop>radioButton_AdmittanceCartesian</tabstop>
   <tabstop>pushButton_Admittance</tabstop>
   <tabstop>horizontalSlider_SpeedSlider</tabstop>
   <tabstop>pushButton_Collect</tabstop>

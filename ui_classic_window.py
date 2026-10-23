@@ -1,12 +1,8 @@
 # -*- coding: utf-8 -*-
 
-# 根据界面源文件生成：'classic_window.ui'
-#
-# 生成工具：PyQt5 界面代码生成器 5.15.9
-#
-# 注意：再次运行 pyuic5 会覆盖此文件中的手工修改。
-# 界面结构应先修改对应的 .ui 源文件，再重新生成。
-
+# 本文件由 PyQt5 界面生成器根据 classic_window.ui 自动生成。
+# 修改控件结构和静态文字请编辑对应 .ui，再运行 generate_ui.py。
+# 重新生成将覆盖本文件，业务逻辑请放在独立模块。
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
@@ -70,13 +66,6 @@ class Ui_MainWindow(object):
         self.gridLayout_Admittance.setHorizontalSpacing(16)
         self.gridLayout_Admittance.setVerticalSpacing(6)
         self.gridLayout_Admittance.setObjectName("gridLayout_Admittance")
-        self.radioButton_AdmittanceJoint = QtWidgets.QRadioButton(self.groupBox_Admittance)
-        self.radioButton_AdmittanceJoint.setChecked(True)
-        self.radioButton_AdmittanceJoint.setObjectName("radioButton_AdmittanceJoint")
-        self.gridLayout_Admittance.addWidget(self.radioButton_AdmittanceJoint, 0, 0, 1, 1)
-        self.radioButton_AdmittanceCartesian = QtWidgets.QRadioButton(self.groupBox_Admittance)
-        self.radioButton_AdmittanceCartesian.setObjectName("radioButton_AdmittanceCartesian")
-        self.gridLayout_Admittance.addWidget(self.radioButton_AdmittanceCartesian, 0, 1, 1, 1)
         self.label_AdmittanceStatus = QtWidgets.QLabel(self.groupBox_Admittance)
         self.label_AdmittanceStatus.setWordWrap(True)
         sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
@@ -658,15 +647,11 @@ class Ui_MainWindow(object):
         self.comboBox_UiScale.setItemText(1, _translate("MainWindow", "紧凑 · 90%"))
         self.comboBox_UiScale.setItemText(2, _translate("MainWindow", "放大 · 110%"))
         self.comboBox_UiScale.setItemText(3, _translate("MainWindow", "大字 · 125%"))
-        self.groupBox_Admittance.setTitle(_translate("MainWindow", "导纳控制"))
-        self.radioButton_AdmittanceJoint.setText(_translate("MainWindow", "关节导纳"))
-        self.radioButton_AdmittanceJoint.setToolTip(_translate("MainWindow", "使用补偿关节力矩产生导纳运动；停止后可切换。"))
-        self.radioButton_AdmittanceCartesian.setText(_translate("MainWindow", "末端导纳"))
-        self.radioButton_AdmittanceCartesian.setToolTip(_translate("MainWindow", "使用末端外力与力矩产生导纳运动；停止后可切换。"))
+        self.groupBox_Admittance.setTitle(_translate("MainWindow", "导纳调参与监视"))
         self.label_AdmittanceStatus.setText(_translate("MainWindow", "未开启"))
         self.label_AdmittanceStatus.setToolTip(_translate("MainWindow", "显示本轮导纳场景、运行阶段或退出原因。"))
-        self.pushButton_Admittance.setText(_translate("MainWindow", "开启导纳"))
-        self.pushButton_Admittance.setToolTip(_translate("MainWindow", "机器人就绪后可开启；有新鲜关节跟随指令时使用遥操作导纳，无新鲜 UDP 数据时使用主动柔顺。"))
+        self.pushButton_Admittance.setText(_translate("MainWindow", "导纳调参与监视…"))
+        self.pushButton_Admittance.setToolTip(_translate("MainWindow", "打开独立调参窗口；打开或关闭窗口不改变运动状态"))
         self.pushButton_IP.setText(_translate("MainWindow", "修改IP"))
         self.label_IPset.setText(_translate("MainWindow", "实际连接："))
         self.label_IP_now.setText(_translate("MainWindow", "TextLabel"))

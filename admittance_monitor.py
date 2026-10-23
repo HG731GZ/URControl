@@ -1,0 +1,475 @@
+"""组合已有只读遥测，保留目标层级、采样身份和有限显示缓存。"""
+
+from collections import deque
+from copy import deepcopy
+import math
+import time
+
+import numpy as np
+
+from UR_Utils import admittance_config
+from UR_Utils.ur_pose_math import matrix_to_rotvec, rotvec_to_matrix
+
+
+STATE_TEXT = {
+    "fresh": "新鲜", "stale": "过期", "previous": "上一轮", "waiting": "等待数据",
+    "not_started": "未启动", "inapplicable": "不适用", "unmatched": "待匹配",
+    "waiting_tcp": "等待 TCP 配置", "unknown_age": "未提供接收时间",
+}
+
+
+def _observation(value, state, label, source, unit, timestamp=None, age_s=None):
+    """值、来源与有效性一同传递，缺失值不以零代替。"""
+    return {"value": None if value is None else list(value), "state": state, "label": label,
+            "source": source, "unit": unit, "timestamp": timestamp, "age_s": age_s}
+
+
+def _age(now, received):
+    return None if received is None else max(0.0, now - received)
+
+
+def _freshness(value, age, timeout, connected=True):
+    if value is None:
+        return "waiting"
+    if not connected:
+        return "stale"
+    if age is None:
+        return "unknown_age"
+    return "fresh" if age <= timeout else "stale"
+
+
+def _text(value):
+    if value is None:
+        return "未提供"
+    if isinstance(value, (list, tuple)):
+        return ", ".join(_text(item) for item in value)
+    if isinstance(value, float):
+        return f"{value:.5g}"
+    return str(value)
+
+
+class AdmittanceMonitor:
+    """不持有通信对象；仅由 GUI 线程输入各通道的独立快照。"""
+
+    def __init__(self):
+        self.robot_samples = deque(maxlen=1200)
+        self.udp_samples = deque(maxlen=1200)
+        self.snapshot = None
+        self._visible = True
+        self._segment = {"robot": 0, "udp": 0}
+        self._valid = {"robot": False, "udp": False}
+        self._last_robot_key = None
+        self._last_udp_key = None
+        self._run_id = None
+        self._robot_stream = None
+        self._rate_history = {}
+        self._kinematics = None
+        self._kinematics_run = None
+        self._kinematics_configuration = None
+
+    def set_visible(self, visible):
+        """隐藏和重新显示均建立断点，保留已有曲线与显示草稿。"""
+        visible = bool(visible)
+        if visible != self._visible:
+            self._break("robot")
+            self._break("udp")
+            self._rate_history.clear()
+        self._visible = visible
+
+    def clear(self):
+        """只清显示缓存，不修改任何控制状态或采集记录。"""
+        self.robot_samples.clear()
+        self.udp_samples.clear()
+        self._break("robot")
+        self._break("udp")
+
+    def _break(self, stream):
+        self._segment[stream] += 1
+        self._valid[stream] = False
+
+    def _rate(self, key, count, now):
+        if count is None:
+            return None
+        history = self._rate_history.setdefault(key, deque(maxlen=1200))
+        if history and (count < history[-1][1] or now <= history[-1][0]):
+            history.clear()
+        history.append((now, count))
+        while len(history) > 2 and history[1][0] < now - 1.0:
+            history.popleft()
+        elapsed = now - history[0][0]
+        return None if elapsed < 0.1 else (count - history[0][1]) / elapsed
+
+    def _estimate_tcp(self, item, run_id, configuration):
+        """每轮只使用该轮 TCP 配置，本地正解不参与控制。"""
+        if item["value"] is None:
+            return _observation(None, item["state"], item["label"] + " TCP 模型估算",
+                                "本地 UR5e 模型估算", "pose", item["timestamp"], item["age_s"])
+        if configuration is None:
+            return _observation(None, "waiting_tcp", item["label"] + " TCP 模型估算",
+                                "本地 UR5e 模型估算", "pose", item["timestamp"], item["age_s"])
+        offset = configuration["tcp_offset"]
+        if self._kinematics_run != run_id or self._kinematics_configuration != offset:
+            from UR_Utils.ur5e_kinematics import UR5eKinematics
+            self._kinematics = UR5eKinematics(tcp_offset=offset[:3], tcp_rotation=offset[3:],
+                                             load_geometry=False)
+            self._kinematics_run = run_id
+            self._kinematics_configuration = list(offset)
+        pose = self._kinematics.forward_kinematics(item["value"])[3]
+        return _observation(pose, item["state"], item["label"] + " TCP 模型估算",
+                            "本地 UR5e 模型估算（本轮 TCP）", "pose", item["timestamp"], item["age_s"])
+
+    def update(self, status, udp_snapshot, *, run_id=None, connected=False, realtime=None,
+               gripper=None, ft_sensor=None, now=None, parameters=None, parameter_revision=None,
+               reference_source=None, space=None, context=None, realtime_timeout_s=0.5):
+        """接收同次专用状态及独立主端快照，所有输入与结果保持 SI 单位。"""
+        now = time.monotonic() if now is None else now
+        if status is None:
+            status = {key: None for key in (
+                "parameters", "reference_source", "space", "timestamp", "state_received_monotonic",
+                "q_master", "q_master_submitted", "q_nom", "q_cmd", "q_start", "actual_q", "actual_qd",
+                "actual_TCP_pose", "submitted_source_seq", "adopted_source_seq", "source_seq",
+                "robot_configuration", "drive", "delta_q", "delta_x", "v_free", "cycle_count",
+                "runtime_state", "safety_status_bits", "exit_reason", "exit_reason_text", "last_error",
+                "last_reference_sent_monotonic", "last_heartbeat_sent_monotonic")}
+            status.update(active=False, phase_name="未开启", state_receive_count=0,
+                          reference_send_count=0, heartbeat_send_count=0)
+        cfg = status["parameters"] if status["parameters"] is not None else parameters
+        if cfg is None:
+            cfg = admittance_config.snapshot()
+        active = status["active"]
+        monitoring_cfg = parameters if not active and parameters is not None else cfg
+        source = status["reference_source"] if status["parameters"] is not None else reference_source
+        space = status["space"] if status["parameters"] is not None else space
+        if run_id != self._run_id:
+            self._break("robot")
+            self._break("udp")
+            self._rate_history.clear()
+            self._run_id = run_id
+        robot_age = _age(now, status["state_received_monotonic"])
+        robot_state = _freshness(status["timestamp"], robot_age,
+                                 cfg["ADMITTANCE_STATE_TIMEOUT_S"], connected)
+        target_state = robot_state if active else ("previous" if status["q_cmd"] is not None else "not_started")
+        timestamp = status["timestamp"]
+
+        def target(key, label, applicable=True, unit="rad"):
+            state = "inapplicable" if not applicable else target_state
+            value = status[key] if applicable else None
+            if applicable and value is None and active:
+                state = "unmatched" if key == "q_master" and timestamp is not None else "waiting"
+            return _observation(value, state, label, "专用 RTDE 同次状态", unit, timestamp, robot_age)
+
+        joint = {
+            "q_master_adopted": target("q_master", "机器人已采用主端目标", source != "free"),
+            "q_nom": target("q_nom", "连续限速后的名义参考", source != "free"),
+            "q_cmd": target("q_cmd", "导纳最终关节目标"),
+            "q_start": target("q_start", "主动柔顺启动位置", source == "free"),
+        }
+        live = status if active or realtime is None else realtime
+        live_age = robot_age if live is status else _age(now, realtime["received_monotonic"])
+        live_state = robot_state if live is status else _freshness(
+            realtime["timestamp"], live_age, realtime_timeout_s, connected)
+        if live is realtime and "last_error" in realtime and realtime["last_error"] is not None:
+            live_state = "stale"
+        if not active and realtime is None and status["actual_q"] is not None:
+            live_state = "previous" if connected else "stale"
+        live_source = "专用 RTDE 同次状态" if live is status else "已有实时反馈（独立采样）"
+        joint["actual_q"] = _observation(live["actual_q"], live_state, "实际关节角", live_source,
+                                         "rad", live["timestamp"], live_age)
+        joint["actual_qd"] = _observation(live["actual_qd"], live_state, "实际关节速度", live_source,
+                                          "rad/s", live["timestamp"], live_age)
+        errors = {}
+        for key, label, left, right, applicable in (
+            ("nominal_following", "名义跟随差", "q_master", "q_nom", source != "free"),
+            ("command_correction", "最终命令相对名义参考的修正", "q_cmd", "q_nom", source != "free"),
+            ("tracking", "机器人关节跟踪误差", "q_cmd", "actual_q", True),
+        ):
+            value = None
+            if applicable and status[left] is not None and status[right] is not None:
+                value = np.asarray(status[left]) - np.asarray(status[right])
+            state = target_state if applicable else "inapplicable"
+            if value is None and active and applicable:
+                state = "waiting"
+            errors[key] = _observation(value, state, label, "专用 RTDE 同次状态相减", "rad", timestamp, robot_age)
+
+        command = None if udp_snapshot is None else udp_snapshot["command"]
+        udp_age = None if udp_snapshot is None else _age(now, udp_snapshot["received_monotonic"])
+        udp_state = _freshness(command, udp_age, monitoring_cfg["MASTER_FRAME_TIMEOUT_S"])
+        if udp_snapshot is not None and udp_snapshot["last_error"] is not None:
+            udp_state = "stale"
+        received = _observation(None if command is None or command.mode != 1 else command.q_arm,
+                                "inapplicable" if command is not None and command.mode != 1 else udp_state,
+                                "主端最新接收目标", "UDP 有效接收", "rad",
+                                None if udp_snapshot is None else udp_snapshot["received_time"], udp_age)
+        submitted = _observation(status["q_master_submitted"] if source != "free" else None,
+                                 target_state if source != "free" else "inapplicable",
+                                 "主机已提交目标", "主机 submit_reference 保存值", "rad", None, None)
+        joint.update(q_master_received=received, q_master_submitted=submitted)
+        sync_error = None
+        if received["state"] == "fresh" and joint["actual_q"]["state"] == "fresh":
+            sync_error = np.asarray(received["value"]) - np.asarray(joint["actual_q"]["value"])
+        errors["sync"] = _observation(sync_error, "fresh" if sync_error is not None else "waiting",
+                                      "主从同步误差", "UDP 与实际反馈独立采样", "rad")
+
+        configuration = status["robot_configuration"]
+        tcp = {key: self._estimate_tcp(joint[key], run_id,
+               None if key == "q_master_received" and not active else configuration)
+               for key in ("q_master_adopted", "q_nom", "q_cmd", "q_master_received")}
+        tcp["actual_TCP_pose"] = _observation(live["actual_TCP_pose"], live_state,
+                                               "机器人反馈实际 TCP", live_source, "pose",
+                                               live["timestamp"], live_age)
+        model_difference = None
+        if tcp["q_cmd"]["value"] is not None and status["actual_TCP_pose"] is not None:
+            estimated = np.asarray(tcp["q_cmd"]["value"])
+            actual = np.asarray(status["actual_TCP_pose"])
+            rotation = matrix_to_rotvec(rotvec_to_matrix(estimated[3:]) @ rotvec_to_matrix(actual[3:]).T)
+            model_difference = np.concatenate((estimated[:3] - actual[:3], rotation))
+        errors["tcp_model_difference"] = _observation(model_difference, target_state,
+            "最终 TCP 模型估算与反馈差（含模型差异）", "同次关节正解及实际 TCP；姿态为相对旋转", "pose", timestamp, robot_age)
+        admittance = {
+            "drive": target("drive", "导纳驱动力（经偏置、滤波、死区、轴选择）", unit="joint_load" if space == "joint" else "wrench"),
+            "delta_q": target("delta_q", "遥操作关节导纳偏移", source == "teleop" and space == "joint"),
+            "delta_x": target("delta_x", "遥操作末端导纳偏移", source == "teleop" and space == "cartesian", "pose"),
+            "v_free": target("v_free", "主动柔顺速度", source == "free", "rad/s" if space == "joint" else "twist"),
+        }
+        rates = {
+            "udp_receive_hz": self._rate("udp", None if udp_snapshot is None else udp_snapshot["frame_count"], now),
+            "state_receive_hz": self._rate("state", status["state_receive_count"], now),
+            "reference_send_hz": self._rate("reference", status["reference_send_count"], now),
+            "heartbeat_send_hz": self._rate("heartbeat", status["heartbeat_send_count"], now),
+            "cycle_count_hz": self._rate("cycles", status["cycle_count"], now),
+        }
+        master = {
+            "command": command, "state": udp_state, "age_s": udp_age,
+            "frame_count": None if udp_snapshot is None else udp_snapshot["frame_count"],
+            "received_monotonic": None if udp_snapshot is None else udp_snapshot["received_monotonic"],
+            "received_time": None if udp_snapshot is None else udp_snapshot["received_time"],
+            "sender_address": None if udp_snapshot is None else udp_snapshot["sender_address"],
+            "bind_address": None if udp_snapshot is None else udp_snapshot["bind_address"],
+            "last_error": None if udp_snapshot is None else udp_snapshot["last_error"],
+            "submitted_source_seq": status["submitted_source_seq"] if source != "free" else None,
+            "adopted_source_seq": status["adopted_source_seq"] if source != "free" else None,
+            "source_seq": status["source_seq"] if source != "free" else None,
+            "sync_max_abs_rad": None if sync_error is None else float(np.max(np.abs(sync_error))),
+            "sync_tolerance_rad": monitoring_cfg["TELEOP_SYNC_TOLERANCE_RAD"],
+            "gripper": deepcopy(gripper),
+        }
+        diagnostics = {key: deepcopy(status[key]) for key in (
+            "runtime_state", "safety_status_bits", "cycle_count", "exit_reason", "exit_reason_text", "last_error",
+            "state_receive_count", "state_received_monotonic", "reference_send_count", "heartbeat_send_count",
+            "last_reference_sent_monotonic", "last_heartbeat_sent_monotonic")}
+        diagnostics.update(ft_sensor=deepcopy(ft_sensor), realtime=deepcopy(realtime),
+                           state_age_s=robot_age, state_timeout_s=cfg["ADMITTANCE_STATE_TIMEOUT_S"])
+        snapshot = {
+            "phase": status["phase_name"], "freshness": STATE_TEXT[live_state] +
+                ("" if live_age is None else f" / 年龄 {live_age:.3f} s"),
+            "run_identity": f"本轮 {run_id if run_id is not None else '未启动'} / 参数修订 {parameter_revision if parameter_revision is not None else '未应用'}",
+            "source_time": f"机器人时间 {_text(live['timestamp'])} s；UDP 年龄 {_text(udp_age)} s（独立采样）",
+            "run_id": run_id, "reference_source": source, "space": space, "active": active,
+            "joint": joint, "tcp": tcp, "errors": errors, "admittance": admittance,
+            "master": master, "configuration": deepcopy(configuration), "diagnostics": diagnostics,
+            "rates": rates, "parameters": deepcopy(cfg), "now": now,
+            "context": deepcopy(context),
+        }
+        self.snapshot = snapshot
+        if self._visible:
+            self._append_samples(snapshot, status, udp_snapshot, live, live_state)
+        return snapshot
+
+    def _append_samples(self, snapshot, status, udp_snapshot, live, live_state):
+        stream = "admittance" if snapshot["active"] else "realtime"
+        if stream != self._robot_stream:
+            self._break("robot")
+            self._robot_stream = stream
+        robot_key = (stream, snapshot["run_id"], live["timestamp"])
+        if live_state != "fresh":
+            if self._valid["robot"]:
+                self._break("robot")
+        elif robot_key != self._last_robot_key:
+            sample_time = status["state_received_monotonic"] if snapshot["active"] else snapshot["now"]
+            if not snapshot["active"] and snapshot["diagnostics"]["realtime"] is not None:
+                sample_time = snapshot["diagnostics"]["realtime"]["received_monotonic"]
+            self.robot_samples.append({"time": sample_time, "run_id": snapshot["run_id"],
+                "segment": self._segment["robot"], "valid": True, "space": snapshot["space"],
+                "joint": deepcopy(snapshot["joint"]), "tcp": deepcopy(snapshot["tcp"]),
+                "errors": deepcopy(snapshot["errors"]), "admittance": deepcopy(snapshot["admittance"])})
+            self._last_robot_key = robot_key
+            self._valid["robot"] = True
+        received = snapshot["joint"]["q_master_received"]
+        if received["state"] != "fresh":
+            if self._valid["udp"]:
+                self._break("udp")
+        else:
+            key = (snapshot["run_id"], udp_snapshot["frame_count"], udp_snapshot["received_monotonic"])
+            if key != self._last_udp_key:
+                self.udp_samples.append({"time": udp_snapshot["received_monotonic"], "run_id": snapshot["run_id"],
+                    "segment": self._segment["udp"], "valid": True, "space": snapshot["space"],
+                    "joint": {"q_master_received": deepcopy(received)}})
+                self._last_udp_key = key
+                self._valid["udp"] = True
+
+    @staticmethod
+    def _unit_factor(unit, axis, angle_unit, length_unit):
+        angle = (180.0 / math.pi, "°") if angle_unit == "deg" else (1.0, "rad")
+        length = (1000.0, "mm") if length_unit == "mm" else (1.0, "m")
+        if unit == "rad":
+            return angle
+        if unit == "rad/s":
+            return angle[0], angle[1] + "/s"
+        if unit in ("pose", "twist"):
+            scale, name = length if axis < 3 else angle
+            return scale, name + ("/s" if unit == "twist" else "")
+        if unit == "joint_load":
+            return 1.0, "N·m"
+        if unit == "wrench":
+            return 1.0, "N" if axis < 3 else "N·m"
+        return 1.0, unit
+
+    def display_rows(self, snapshot, angle_unit="deg", length_unit="mm"):
+        """仅在展示边界转换单位；旋转向量和连续关节角不折返。"""
+        def cell(item, axis):
+            if item["value"] is None:
+                return STATE_TEXT[item["state"]]
+            factor, unit = self._unit_factor(item["unit"], axis, angle_unit, length_unit)
+            suffix = "" if item["state"] == "fresh" else f"（{STATE_TEXT[item['state']]}）"
+            return f"{item['value'][axis] * factor:.4f} {unit}{suffix}"
+
+        def vector(item):
+            if item["value"] is None:
+                return STATE_TEXT[item["state"]]
+            return "; ".join(cell(item, axis) for axis in range(len(item["value"])))
+
+        joint = snapshot["joint"]
+        tcp = snapshot["tcp"]
+        master = snapshot["master"]
+        diag = snapshot["diagnostics"]
+        cfg = snapshot["parameters"]
+        command = master["command"]
+        rows = {
+            "joint_rows": [[f"J{i + 1}"] + [cell(joint[key], i) for key in
+                ("q_master_adopted", "q_nom", "q_cmd", "actual_q")] + [cell(snapshot["errors"]["tracking"], i)] for i in range(6)],
+            "tcp_rows": [[name] + [cell(tcp[key], i) for key in
+                ("q_master_adopted", "q_nom", "q_cmd", "actual_TCP_pose")]
+                for i, name in enumerate(("x", "y", "z", "旋转向量 rx", "旋转向量 ry", "旋转向量 rz"))],
+            "master_rows": [
+                ["主端接收状态", STATE_TEXT[master["state"]], f"接收年龄 {_text(master['age_s'])} s"],
+                ["发送方 / 本地绑定", f"{_text(master['sender_address'])} / {_text(master['bind_address'])}", "有效 UDP 数据包"],
+                ["协议模式", "未提供" if command is None else {0: "关闭", 1: "关节跟踪", 2: "关节增量", 3: "末端增量", 4: "末端速度"}[command.mode], "UDP 模式字段"],
+                ["协议原始机械臂载荷", "未提供" if command is None else _text(command.q_arm), "仅关节跟踪模式表示关节目标；其他模式按协议解释"],
+                ["最新接收关节目标", vector(joint["q_master_received"]), "UDP；非关节跟踪时不适用"],
+                ["最新接收 TCP 模型估算", vector(tcp["q_master_received"]), "仅运行中采用本轮 TCP；不是机器人回传目标"],
+                ["主机已提交目标", vector(joint["q_master_submitted"]), "提交不表示机器人已采用"],
+                ["有效接收计数", _text(master["frame_count"]), "本机计数；不是主端发送序号"],
+                ["已提交完整序号", _text(master["submitted_source_seq"]), "主机保存值"],
+                ["已采用线上序号 / 完整序号", "不适用" if snapshot["reference_source"] == "free" else f"{_text(master['adopted_source_seq'])} / {_text(master['source_seq'])}", "线上取模序号 / 匹配的本机接收计数"],
+                ["接收至采用计数进度", "未匹配" if master["source_seq"] is None or master["frame_count"] is None else _text(master["frame_count"] - master["source_seq"]), "相同本机计数域；不是真实丢包率"],
+                ["同步每轴误差", vector(snapshot["errors"]["sync"]), "UDP 与实际状态独立采样"],
+                ["最大同步误差 / 容差", f"{_text(master['sync_max_abs_rad'])} / {_text(master['sync_tolerance_rad'])} rad", snapshot["source_time"]],
+                ["主端夹爪三通道", "未提供" if command is None else _text(command.q_gripper), "UDP 原始夹爪通道"],
+                ["夹爪开度输入 / 附加原始量", "未提供" if command is None else f"{_text(command.q_gripper[0])} / {_text(command.q_gripper[1:])}", "第一通道用于已有跟随；后两通道未用于接收方向控制"],
+                ["主端接收墙时 / 单调时刻", f"{_text(master['received_time'])} / {_text(master['received_monotonic'])}", "主机时间；不代表单向网络延迟"],
+                ["主端机械参数 / 编码器零偏 / 控制增益", "主端未提供", "从端映射后的 q_arm 不是原始编码器值"],
+                ["UDP 错误", _text(master["last_error"]), "接收客户端"],
+            ],
+            "admittance_rows": [], "robot_configuration_rows": [], "diagnostic_rows": [],
+        }
+        for item in list(snapshot["errors"].values()) + list(snapshot["admittance"].values()) + [joint["actual_qd"], joint["q_start"]]:
+            rows["admittance_rows"].append([item["label"], vector(item), item["source"]])
+        rows["admittance_rows"].extend([
+            ["柔顺坐标", cfg["CART_FRAME"], "tool_start 为启动时固定工具方向，中心在当前 TCP"],
+            ["控制模型", "质量—阻尼；本轮恢复刚度为 0" if snapshot["reference_source"] == "free" else "质量—阻尼—刚度", "主动柔顺不以启动位置作为吸引目标"],
+            ["目标载荷", _text(cfg["JOINT_TARGET_TORQUE_NM"] if snapshot["space"] == "joint" else cfg["CART_TARGET_WRENCH"]), "关节 N·m；末端平移 N、转动 N·m"],
+            ["连续死区", _text(cfg["JOINT_DEADBAND_NM"] if snapshot["space"] == "joint" else cfg["CART_DEADBAND"]), "原始载荷与导纳驱动力含义不同"],
+        ])
+        configuration = snapshot["configuration"]
+        for key, label, unit in (("tcp_offset", "本轮 TCP 偏置", "m、旋转向量 rad"),
+                                 ("payload", "负载质量", "kg"), ("payload_cog", "负载质心", "m"),
+                                 ("payload_inertia", "负载惯量", "kg·m²"), ("timestamp", "配置机器人时间", "s")):
+            rows["robot_configuration_rows"].append([label, "等待本轮配置" if configuration is None else _text(configuration[key]), unit])
+        rows["robot_configuration_rows"].append(["目标 TCP 来源", "本地 UR5e 模型估算（含本轮 TCP）", "模型与机器人校准可能存在差异"])
+        if master["gripper"] is not None:
+            gripper_names = {"requested_target": "夹爪当前设置", "sent_target": "夹爪最近已发送目标",
+                             "target_sent_monotonic": "夹爪发送单调时刻", "feedback": "夹爪反馈",
+                             "feedback_received_monotonic": "夹爪反馈接收时刻", "feedback_count": "夹爪反馈计数",
+                             "following_thread_active": "夹爪控制线程运行", "last_error": "夹爪通信错误",
+                             "settings": "夹爪默认设置及范围", "paused": "夹爪暂停状态"}
+            for key, value in master["gripper"].items():
+                rows["master_rows"].append([gripper_names[key], _text(value),
+                    "电流为原始寄存器值，未换算安培" if key == "feedback" else "夹爪已有线程只读快照"])
+            feedback_time = master["gripper"]["feedback_received_monotonic"]
+            rows["master_rows"].append(["夹爪反馈年龄", _text(_age(snapshot["now"], feedback_time)), "s；未取得反馈时不显示默认零值"])
+        context = snapshot["context"]
+        if context is not None:
+            rows["master_rows"].extend([
+                ["UDP 反馈目的地址", _text(context["feedback_destination"]), "主程序已有反馈路径"],
+                ["主从同步状态", "同步运动中" if context["udp_sync_pending"] else ("已同步" if context["udp_synced"] else "未同步"), "主程序同步状态"],
+                ["UDP 夹爪跟随", "正在跟随" if context["gripper_following"] else "未跟随", "主动柔顺期间主端不驱动夹爪"],
+            ])
+            rows["diagnostic_rows"].append(["主界面速度请求", _text(context["requested_speed_percent"]), "%；请求值不代表实测速度"])
+        names = {"runtime_state": "机器人运行状态", "safety_status_bits": "安全状态位", "cycle_count": "机器人周期计数",
+                 "exit_reason": "退出码", "exit_reason_text": "退出原因", "last_error": "后端错误",
+                 "state_receive_count": "状态实际接收计数", "state_received_monotonic": "状态主机接收时刻",
+                 "reference_send_count": "参考实际发送计数", "heartbeat_send_count": "心跳实际发送计数",
+                 "last_reference_sent_monotonic": "参考最近主机发送时刻", "last_heartbeat_sent_monotonic": "心跳最近主机发送时刻",
+                 "state_age_s": "状态年龄", "state_timeout_s": "状态过期阈值"}
+        for key, label in names.items():
+            rows["diagnostic_rows"].append([label, _text(diag[key]), "主机发送成功不代表机器人收到" if "sent" in key or "send_count" in key else "专用状态快照"])
+        rate_names = {"udp_receive_hz": "UDP 实测有效接收速率", "state_receive_hz": "状态实测接收速率",
+                      "reference_send_hz": "参考实测发送速率", "heartbeat_send_hz": "心跳实测发送速率", "cycle_count_hz": "机器人周期计数速率"}
+        for key, label in rate_names.items():
+            rows["diagnostic_rows"].append([label, _text(snapshot["rates"][key]), "Hz；计数差 / 主机时间差，不证明闭环性能"])
+        for key, label in (("TELEOP_REFERENCE_HZ", "参考配置频率"), ("ADMITTANCE_STATE_HZ", "状态订阅配置频率"), ("ADMITTANCE_HEARTBEAT_HZ", "心跳配置频率")):
+            rows["diagnostic_rows"].append([label, _text(cfg[key]), "Hz；配置值"])
+        rows["diagnostic_rows"].extend([
+            ["显示 / 绘图 / 采集目标频率", "20 / 10 / 20 Hz", "独立定时器；非闭环频率"],
+            ["q_des / 末端候选位姿", "机器人未上报", "不由不同时间样本反推"],
+            ["内部偏置 / 滤波后载荷 / 偏移速度", "机器人未上报", "现有遥测协议边界"],
+        ])
+        if diag["realtime"] is not None:
+            real = diag["realtime"]
+            for key, label in (("tcp_force", "实时 TCP 载荷（独立通道）"), ("speed_scaling", "速度缩放"),
+                               ("requested_speed_percent", "主界面速度请求百分比"), ("last_error", "实时通道错误")):
+                if key in real:
+                    rows["diagnostic_rows"].append([label, _text(real[key]), f"实时机器人时间 {_text(real['timestamp'])}；不替代导纳驱动力"])
+        if diag["ft_sensor"] is not None:
+            sensor = diag["ft_sensor"]
+            rows["diagnostic_rows"].append([sensor["name"], _text(sensor["values"]), f"独立订阅时间 {_text(sensor['timestamp'])}；主机接收时刻 {_text(sensor['received_monotonic'])}"])
+        return rows
+
+    def plot_series(self, signal, axis, angle_unit="deg", length_unit="mm"):
+        """每次只输出同一物理单位的选轴曲线，跨轮及失效样本保留断点。"""
+        definitions = {
+            "joint_targets": ("关节目标对照", "joint", ("q_master_adopted", "q_nom", "q_cmd", "actual_q")),
+            "joint_errors": ("关节误差", "errors", ("nominal_following", "command_correction", "tracking")),
+            "tcp_targets": ("TCP 位姿对照（目标为模型估算）", "tcp", ("q_master_adopted", "q_nom", "q_cmd", "actual_TCP_pose")),
+            "delta_q": ("关节导纳偏移", "admittance", ("delta_q",)),
+            "delta_x": ("末端导纳偏移", "admittance", ("delta_x",)),
+            "v_free": ("主动柔顺速度", "admittance", ("v_free",)),
+            "drive": ("导纳驱动力", "admittance", ("drive",)),
+            "actual_qd": ("实际关节速度", "joint", ("actual_qd",)),
+            "master_received": ("主端最新接收关节目标", "joint", ("q_master_received",)),
+        }
+        title, group, keys = definitions[signal]
+        colors = ("#2377c6", "#a97a14", "#cf4a51", "#229774")
+        styles = ("dash", "dot", "solid", "solid")
+        samples = self.udp_samples if signal == "master_received" else self.robot_samples
+        series = []
+        unit = ""
+        for index, key in enumerate(keys):
+            points = []
+            label = key
+            for sample in samples:
+                if self.snapshot is not None and signal in ("drive", "v_free") and sample["space"] != self.snapshot["space"]:
+                    continue
+                item = sample[group][key]
+                factor, unit = self._unit_factor(item["unit"], axis, angle_unit, length_unit)
+                label = item["label"]
+                value = None if item["value"] is None else item["value"][axis] * factor
+                points.append({"time": sample["time"], "value": value, "run_id": sample["run_id"],
+                               "segment": sample["segment"], "valid": item["state"] == "fresh" and value is not None})
+            if self.snapshot is not None:
+                item = self.snapshot[group][key]
+                label = item["label"]
+                _, unit = self._unit_factor(item["unit"], axis, angle_unit, length_unit)
+            series.append({"name": label, "color": colors[index], "style": styles[index], "points": points})
+        return {"title": title, "unit": unit, "series": series,
+                "now": time.monotonic() if self.snapshot is None else self.snapshot["now"]}

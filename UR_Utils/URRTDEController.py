@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import wraps
+from copy import deepcopy
 import time
 import threading
 from typing import Optional, Sequence, Literal
@@ -11,7 +12,7 @@ import rtde_control
 import rtde_io
 import rtde_receive
 from UR_Utils.URRTDETorqueClient import URRTDETorqueClient
-from UR_Utils.URAdmittanceController import URAdmittanceController
+from UR_Utils.URAdmittanceController import URAdmittanceController, idle_admittance_status
 from UR_Utils import admittance_config
 from UR_Utils.ur_pose_math import (
     apply_pose_delta,
@@ -185,6 +186,7 @@ class URRTDEController:
         self._last_speed_command_kind: Optional[str] = None
         self._direct_motion_kind: Optional[str] = None
         self._admittance: Optional[URAdmittanceController] = None
+        self._last_admittance_start_accepted = False
         self._ordinary_connected = True
 
     # ------------------------------------------------------------------
@@ -311,22 +313,37 @@ class URRTDEController:
     def start_admittance(
         self, reference_source: str, space: str, *,
         q_master: Optional[Sequence[float]] = None, source_seq: Optional[int] = None,
+        config: Optional[dict] = None, stop_event: Optional[threading.Event] = None,
     ) -> bool:
-        """选择本轮参考来源与导纳空间，完成接管后由后台线程异步启动。"""
+        """使用本轮配置副本接管控制；共享停止事件贯穿排队、交接和偏置采样。"""
+        self._last_admittance_start_accepted = False
+        if stop_event is not None and stop_event.is_set():
+            return False
         with self._lifecycle_lock:
+            if stop_event is not None and stop_event.is_set():
+                return False
             if self._is_shutdown:
                 raise RuntimeError("控制器已经关闭")
             self._require_ordinary_motion()
-            cfg = admittance_config.snapshot()
+            cfg = admittance_config.snapshot() if config is None else deepcopy(config)
+            if config is not None:
+                admittance_config.validate_config(cfg)
             cfg["JOINT_POSITION_LIMIT_RAD"] = self._joint_position_limit.tolist()
             backend = URAdmittanceController(
                 self.robot_ip, reference_source, space,
-                q_master=q_master, source_seq=source_seq, config=cfg,
+                q_master=q_master, source_seq=source_seq, config=cfg, stop_event=stop_event,
             )
             # 先发布本轮后端，使其他线程在等待生命周期锁时也能保留停止请求。
             self._admittance = backend
+            self._last_admittance_start_accepted = True
             try:
+                if stop_event is not None and stop_event.is_set():
+                    backend.cancel_before_start()
+                    return False
                 self._stop_ordinary(stop_script=True)
+                if stop_event is not None and stop_event.is_set():
+                    backend.cancel_before_start()
+                    return False
                 with self._rtde_c_lock:
                     if self._ordinary_connected:
                         # 本项目 ur-rtde 1.6.3 默认 flags=1 使用下半区；交接时仍释放完整控制连接。
@@ -335,6 +352,9 @@ class URRTDEController:
                         self._ordinary_connected = False
                 with self._lock:
                     self._last_error = None
+                if stop_event is not None and stop_event.is_set():
+                    backend.cancel_before_start()
+                    return False
                 backend.start()
                 return True
             except Exception as exc:
@@ -342,6 +362,17 @@ class URRTDEController:
                 with self._lock:
                     self._last_error = f"导纳接管失败：{exc}"
                 return False
+
+    @property
+    def last_admittance_start_accepted(self) -> bool:
+        """最近一次串行启动是否已发布本轮后端，供生命周期结果区分上一轮快照。"""
+        return self._last_admittance_start_accepted
+
+    def request_admittance_stop(self) -> None:
+        """不等待生命周期锁，立即唤醒已经建立的专用后端。"""
+        backend = self._admittance
+        if backend is not None and backend.active:
+            backend.request_stop()
 
     def stop(self, stop_script: bool = False) -> None:
         """停止当前执行后端；自定义程序只通过专用配方请求停止。"""
@@ -1056,13 +1087,7 @@ class URRTDEController:
     def get_status(self) -> dict:
         """读取控制器内部状态。"""
         backend = self._admittance
-        admittance = backend.get_status() if backend is not None else {
-            "active": False, "running": False, "starting": False, "stopping": False,
-            "stopped_confirmed": True, "phase": 4, "phase_name": "未开启",
-            "reference_source": None, "space": None, "last_error": None,
-            "exit_reason": 0, "exit_reason_text": "正常", "parameters": None,
-            "robot_configuration": None,
-        }
+        admittance = backend.get_status() if backend is not None else idle_admittance_status()
         running = self.is_running()
         with self._lock:
             status = {
@@ -1083,6 +1108,7 @@ class URRTDEController:
                 "is_running": running,
                 "running": running,
                 "admittance": admittance,
+                "joint_position_limit": self._joint_position_limit.tolist(),
                 "use_safety_check": self.use_safety_check,
                 "use_rtde_safety_check": self.use_rtde_safety_check,
                 "speed_watchdog_timeout": self.speed_watchdog_timeout,

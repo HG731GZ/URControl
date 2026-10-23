@@ -60,8 +60,7 @@ def switch_layout(window, previous, mode):
     # 先接入同一个顶层窗口，再移动控件，避免跨顶层窗口重建 OpenGL 上下文。
     central.setParent(window)
     central.hide()
-    # 两套模板都默认选择关节导纳；移动运行控件时暂时解除互斥，
-    # 保持原选择且不向业务层发出布局切换产生的单选信号。
+    # 移动运行控件时暂时解除单选互斥，保留原选择并抑制布局信号。
     radio_states = [(old, old.isChecked(), old.autoExclusive())
                     for _, old, _, _, _ in replacements
                     if isinstance(old, QtWidgets.QRadioButton)]
@@ -82,7 +81,7 @@ def switch_layout(window, previous, mode):
             child.setFont(properties['font'])
         old.setGeometry(geometry)
         if (isinstance(old, QtWidgets.QAbstractButton)
-                and name not in ('pushButton_Collect', 'pushButton_Admittance')):
+                and name != 'pushButton_Collect'):
             old.setText(new.text())
             old.setToolTip(new.toolTip())
         setattr(ui, name, old)

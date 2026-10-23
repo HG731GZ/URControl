@@ -22,13 +22,33 @@ EXIT_REASONS = {
 }
 
 
+def idle_admittance_status() -> dict:
+    """返回完整的未开启快照；未产生的运行样本明确保留为空值。"""
+    return {
+        "active": False, "running": False, "starting": False, "stopping": False,
+        "stopped_confirmed": True, "phase": 4, "phase_name": "未开启",
+        "exit_reason": 0, "exit_reason_text": EXIT_REASONS[0], "last_error": None,
+        "reference_source": None, "space": None,
+        "timestamp": None, "runtime_state": None, "actual_q": None,
+        "actual_qd": None, "actual_TCP_pose": None, "safety_status_bits": None,
+        "drive": None, "delta_q": None, "delta_x": None, "v_free": None,
+        "q_cmd": None, "q_nom": None, "q_start": None, "q_master": None,
+        "q_master_submitted": None, "source_seq": None,
+        "submitted_source_seq": None, "adopted_source_seq": None,
+        "cycle_count": None, "parameters": None, "robot_configuration": None,
+        "state_received_monotonic": None, "state_receive_count": 0,
+        "last_reference_sent_monotonic": None, "reference_send_count": 0,
+        "last_heartbeat_sent_monotonic": None, "heartbeat_send_count": 0,
+    }
+
+
 class URAdmittanceController:
     """机器人端导纳的专用连接；一名线程拥有全部 RTDE 收发及脚本上传。"""
 
     def __init__(
         self, robot_ip: str, reference_source: str, space: str, *,
         q_master: Optional[Sequence[float]] = None, source_seq: Optional[int] = None,
-        config: Optional[dict] = None,
+        config: Optional[dict] = None, stop_event: Optional[threading.Event] = None,
     ):
         if reference_source not in ("teleop", "free"):
             raise ValueError("参考来源必须为 teleop 或 free")
@@ -41,7 +61,7 @@ class URAdmittanceController:
         admittance_config.validate_config(self.parameters)
         self._script = admittance_config.render_script(reference_source, space, config=self.parameters)
         self._lock = threading.Lock()
-        self._stop_requested = threading.Event()
+        self._stop_requested = threading.Event() if stop_event is None else stop_event
         self._finished = threading.Event()
         self._wake = threading.Event()
         self._thread = None
@@ -56,21 +76,18 @@ class URAdmittanceController:
         self._sent_references = OrderedDict()
         self._heartbeat = 0
         self._last_sample_monotonic = None
-        self._status = {
-            "active": True, "running": False, "starting": True, "stopping": False,
-            "stopped_confirmed": False, "phase": 0, "phase_name": PHASE_NAMES[0],
-            "exit_reason": 0, "exit_reason_text": EXIT_REASONS[0], "last_error": None,
-            "reference_source": reference_source, "space": space,
-            "timestamp": None, "runtime_state": None, "actual_q": None,
-            "actual_qd": None, "actual_TCP_pose": None, "safety_status_bits": None,
-            "drive": None, "delta_q": None, "delta_x": None, "v_free": None,
-            "q_cmd": None, "q_nom": None, "q_start": None, "q_master": None,
-            "source_seq": None, "submitted_source_seq": None, "adopted_source_seq": None,
-            "cycle_count": 0, "parameters": deepcopy(self.parameters),
-            "robot_configuration": None,
-        }
+        self._status = idle_admittance_status()
+        self._status.update(
+            active=True, starting=not self._stop_requested.is_set(),
+            stopping=self._stop_requested.is_set(), stopped_confirmed=False,
+            phase=0, phase_name=PHASE_NAMES[0], reference_source=reference_source,
+            space=space, parameters=deepcopy(self.parameters),
+        )
         if reference_source == "teleop":
-            self.submit_reference(q_master, source_seq=source_seq)
+            # 构造时保存启动参考；此时到达的停止标志仍由启动线程直接执行取消。
+            self._q_master, self._source_seq = self._validated_reference(q_master, source_seq)
+            self._status["q_master_submitted"] = self._q_master.tolist()
+            self._status["submitted_source_seq"] = self._source_seq
         elif q_master is not None or source_seq is not None:
             raise ValueError("主动柔顺不接收主端参考或源序号")
 
@@ -85,21 +102,30 @@ class URAdmittanceController:
         self._thread = threading.Thread(target=self._run, name="URAdmittanceRTDE", daemon=True)
         self._thread.start()
 
-    def cancel_before_start(self, error: str) -> None:
+    def cancel_before_start(self, error: Optional[str] = None) -> None:
         """原控制通道尚未完成交接时终止本次启动，不上传脚本。"""
-        self._set_error(error)
+        if error is not None:
+            self._set_error(error)
+        elif self._stop_requested.is_set():
+            with self._lock:
+                self._status.update(exit_reason=1, exit_reason_text=EXIT_REASONS[1])
         self._complete()
 
-    def submit_reference(self, q: Sequence[float], *, source_seq: int) -> None:
-        """保存名义主端参考；相同帧身份不产生新的主端采样。"""
-        if self.reference_source != "teleop":
-            raise RuntimeError("主动柔顺期间不能提交主端关节目标")
+    @staticmethod
+    def _validated_reference(q: Sequence[float], source_seq: int):
+        """校验主端参考与本机有效接收序号，并返回独立目标副本。"""
         q_arr = np.asarray(q, dtype=float)
         if q_arr.shape != (6,) or not np.all(np.isfinite(q_arr)):
             raise ValueError("主端参考必须为六个有限关节角")
         if not isinstance(source_seq, (int, np.integer)) or isinstance(source_seq, bool) or source_seq < 0:
             raise ValueError("遥操作导纳必须提供非负整数源帧序号")
-        seq = int(source_seq)
+        return q_arr.copy(), int(source_seq)
+
+    def submit_reference(self, q: Sequence[float], *, source_seq: int) -> None:
+        """保存名义主端参考；相同帧身份不产生新的主端采样。"""
+        if self.reference_source != "teleop":
+            raise RuntimeError("主动柔顺期间不能提交主端关节目标")
+        q_arr, seq = self._validated_reference(q, source_seq)
         with self._lock:
             if not self._active or self._stop_requested.is_set():
                 raise RuntimeError("本轮导纳正在停止或已经结束")
@@ -110,6 +136,7 @@ class URAdmittanceController:
             self._q_master = q_arr.copy()
             self._source_seq = seq
             self._status["submitted_source_seq"] = seq
+            self._status["q_master_submitted"] = q_arr.tolist()
 
     def request_stop(self) -> None:
         """停止标志独立于启动锁，偏置采样和上传期间也不会丢失。"""
@@ -204,6 +231,15 @@ class URAdmittanceController:
                     0.0 if q is None else float(q[i]))
         if not self._connection.send(packet):
             raise RuntimeError("导纳参考与心跳发送失败")
+        sent_monotonic = time.monotonic()
+        with self._lock:
+            # 参考计数统计成功携带关节参考的发送包；心跳计数统计心跳递增包。
+            if q is not None:
+                self._status["last_reference_sent_monotonic"] = sent_monotonic
+                self._status["reference_send_count"] += 1
+            if heartbeat:
+                self._status["last_heartbeat_sent_monotonic"] = sent_monotonic
+                self._status["heartbeat_send_count"] += 1
         if q is not None:
             self._sent_references[wire_seq] = (seq, q)
             self._sent_references.move_to_end(wire_seq)
@@ -245,11 +281,14 @@ class URAdmittanceController:
                 timestamp=float(state.timestamp), runtime_state=runtime,
                 actual_q=list(state.actual_q), actual_qd=list(state.actual_qd),
                 actual_TCP_pose=list(state.actual_TCP_pose), safety_status_bits=int(state.safety_status_bits),
+                state_received_monotonic=self._last_sample_monotonic,
             )
+            self._status["state_receive_count"] += 1
             if self._status["robot_configuration"] is None:
                 self._status["robot_configuration"] = {
                     "tcp_offset": list(state.tcp_offset), "payload": float(state.payload),
                     "payload_cog": list(state.payload_cog), "payload_inertia": list(state.payload_inertia),
+                    "timestamp": float(state.timestamp), "received_monotonic": self._last_sample_monotonic,
                 }
             if not self._seen_program:
                 return
@@ -275,11 +314,11 @@ class URAdmittanceController:
         cfg = self.parameters
         try:
             if self._stop_requested.is_set():
-                self._complete()
+                self.cancel_before_start()
                 return
             packet = self._setup_connection()
             if self._stop_requested.is_set():
-                self._complete()
+                self.cancel_before_start()
                 return
             # 上传前读取实际状态，确认静止、同步以及本轮 TCP 和负载配置。
             baseline = self._connection.receive()
@@ -297,7 +336,7 @@ class URAdmittanceController:
                     raise RuntimeError("主从关节尚未同步，不能开启遥操作导纳")
             self._send_inputs(packet, heartbeat=True)
             if self._stop_requested.is_set():
-                self._complete()
+                self.cancel_before_start()
                 return
             with URScriptClient(self.robot_ip) as script_client:
                 # 从开始上传起，任何发送错误都按程序可能已经执行处理。

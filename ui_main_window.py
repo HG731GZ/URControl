@@ -1,12 +1,8 @@
 # -*- coding: utf-8 -*-
 
-# 根据界面源文件生成：'main_window.ui'
-#
-# 生成工具：PyQt5 界面代码生成器 5.15.9
-#
-# 注意：再次运行 pyuic5 会覆盖此文件中的手工修改。
-# 界面结构应先修改对应的 .ui 源文件，再重新生成。
-
+# 本文件由 PyQt5 界面生成器根据 main_window.ui 自动生成。
+# 修改控件结构和静态文字请编辑对应 .ui，再运行 generate_ui.py。
+# 重新生成将覆盖本文件，业务逻辑请放在独立模块。
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
@@ -1139,13 +1135,6 @@ class Ui_MainWindow(object):
         self.gridLayout_Admittance.setHorizontalSpacing(16)
         self.gridLayout_Admittance.setVerticalSpacing(6)
         self.gridLayout_Admittance.setObjectName("gridLayout_Admittance")
-        self.radioButton_AdmittanceJoint = QtWidgets.QRadioButton(self.groupBox_Admittance)
-        self.radioButton_AdmittanceJoint.setChecked(True)
-        self.radioButton_AdmittanceJoint.setObjectName("radioButton_AdmittanceJoint")
-        self.gridLayout_Admittance.addWidget(self.radioButton_AdmittanceJoint, 0, 0, 1, 1)
-        self.radioButton_AdmittanceCartesian = QtWidgets.QRadioButton(self.groupBox_Admittance)
-        self.radioButton_AdmittanceCartesian.setObjectName("radioButton_AdmittanceCartesian")
-        self.gridLayout_Admittance.addWidget(self.radioButton_AdmittanceCartesian, 0, 1, 1, 1)
         self.label_AdmittanceStatus = QtWidgets.QLabel(self.groupBox_Admittance)
         self.label_AdmittanceStatus.setWordWrap(True)
         sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
@@ -1262,9 +1251,7 @@ class Ui_MainWindow(object):
         MainWindow.setTabOrder(self.checkBox_UDPVisual, self.pushButton_UDPSync)
         MainWindow.setTabOrder(self.pushButton_UDPSync, self.pushButton_RTDEUDP)
         MainWindow.setTabOrder(self.pushButton_RTDEUDP, self.pushButton_StopRTDE)
-        MainWindow.setTabOrder(self.pushButton_StopRTDE, self.radioButton_AdmittanceJoint)
-        MainWindow.setTabOrder(self.radioButton_AdmittanceJoint, self.radioButton_AdmittanceCartesian)
-        MainWindow.setTabOrder(self.radioButton_AdmittanceCartesian, self.pushButton_Admittance)
+        MainWindow.setTabOrder(self.pushButton_StopRTDE, self.pushButton_Admittance)
         MainWindow.setTabOrder(self.pushButton_Admittance, self.horizontalSlider_SpeedSlider)
         MainWindow.setTabOrder(self.horizontalSlider_SpeedSlider, self.pushButton_Collect)
         MainWindow.setTabOrder(self.pushButton_Collect, self.pushButton_Stop)
@@ -1565,15 +1552,11 @@ class Ui_MainWindow(object):
         self.label_camera1.setText(_translate("MainWindow", "相机 1 未连接"))
         self.groupBox_Camera2.setTitle(_translate("MainWindow", "相机 2 · D435i"))
         self.label_camera2.setText(_translate("MainWindow", "相机 2 未连接"))
-        self.groupBox_Admittance.setTitle(_translate("MainWindow", "导纳控制"))
-        self.radioButton_AdmittanceJoint.setText(_translate("MainWindow", "关节导纳"))
-        self.radioButton_AdmittanceJoint.setToolTip(_translate("MainWindow", "使用补偿关节力矩产生导纳运动；停止后可切换。"))
-        self.radioButton_AdmittanceCartesian.setText(_translate("MainWindow", "末端导纳"))
-        self.radioButton_AdmittanceCartesian.setToolTip(_translate("MainWindow", "使用末端外力与力矩产生导纳运动；停止后可切换。"))
+        self.groupBox_Admittance.setTitle(_translate("MainWindow", "导纳调参与监视"))
         self.label_AdmittanceStatus.setText(_translate("MainWindow", "未开启"))
         self.label_AdmittanceStatus.setToolTip(_translate("MainWindow", "显示本轮导纳场景、运行阶段或退出原因。"))
-        self.pushButton_Admittance.setText(_translate("MainWindow", "开启导纳"))
-        self.pushButton_Admittance.setToolTip(_translate("MainWindow", "机器人就绪后可开启；有新鲜关节跟随指令时使用遥操作导纳，无新鲜 UDP 数据时使用主动柔顺。"))
+        self.pushButton_Admittance.setText(_translate("MainWindow", "导纳调参与监视…"))
+        self.pushButton_Admittance.setToolTip(_translate("MainWindow", "打开独立调参窗口；打开或关闭窗口不改变运动状态"))
         self.label_SpeedSlider.setText(_translate("MainWindow", "限速: 100%"))
         self.horizontalSlider_SpeedSlider.setToolTip(_translate("MainWindow", "机器人速度比例，范围 1%–100%"))
         self.pushButton_Collect.setText(_translate("MainWindow", "开始采集"))

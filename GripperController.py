@@ -177,6 +177,11 @@ class GripperController:
 
         # ---- 最新反馈 ----
         self.feedback = GripperFeedback()
+        self._feedback_received_monotonic = None
+        self._feedback_count = 0
+        self._last_sent_target = None
+        self._last_target_sent_monotonic = None
+        self._last_monitor_error = None
 
         # ---- 回调 ----
         self._on_feedback = None
@@ -215,6 +220,30 @@ class GripperController:
         0 表示完全闭合，
         1 表示最大开口"""
         return self.feedback.open
+
+    def get_monitor_snapshot(self):
+        """原子读取已有线程的目标、发送记录及反馈，不执行串口查询。"""
+        with self._lock:
+            feedback = None
+            if self._feedback_received_monotonic is not None:
+                feedback = {name: getattr(self.feedback, name) for name in GripperFeedback.__slots__}
+            return {
+                "requested_target": {
+                    "position": self._target_position, "open": _position_to_open(self._target_position),
+                    "speed": self._target_speed, "force": self._target_force,
+                    "accel": self._target_accel, "decel": self._target_decel,
+                },
+                "sent_target": None if self._last_sent_target is None else dict(self._last_sent_target),
+                "target_sent_monotonic": self._last_target_sent_monotonic,
+                "feedback": feedback, "feedback_received_monotonic": self._feedback_received_monotonic,
+                "feedback_count": self._feedback_count,
+                "following_thread_active": self._thread is not None and self._thread.is_alive() and self._pause.is_set(),
+                "paused": not self._pause.is_set(),
+                "settings": {"default_speed": GRIPPER_SPEED_DEFAULT, "default_force": GRIPPER_FORCE_DEFAULT,
+                             "position_range": [GRIPPER_POSITION_MIN, GRIPPER_POSITION_MAX],
+                             "open_range": [GRIPPER_OPEN_MIN, GRIPPER_OPEN_MAX]},
+                "last_error": self._last_monitor_error,
+            }
 
     # ========================
     # 参数设置 (线程安全)
@@ -346,6 +375,12 @@ class GripperController:
                     REG_TARGET_POS_HI,
                     [pos_hi, pos_lo, speed, force, accel, decel, trigger],
                 )
+                with self._lock:
+                    self._last_sent_target = {
+                        "position": pos, "open": _position_to_open(pos), "speed": speed,
+                        "force": force, "accel": accel, "decel": decel, "trigger": trigger,
+                    }
+                    self._last_target_sent_monotonic = time.monotonic()
 
                 # ---- 2. 读运行状态 (0x0401) ----
                 status = self.instrument.read_register(REG_STATUS)
@@ -360,7 +395,10 @@ class GripperController:
 
                 # ---- 更新反馈 ----
                 fb = GripperFeedback(status, real_pos, real_speed, real_current)
-                self.feedback = fb
+                with self._lock:
+                    self.feedback = fb
+                    self._feedback_received_monotonic = time.monotonic()
+                    self._feedback_count += 1
 
                 if self.debug:
                     self._debug_print(pos, speed, force, accel, decel, trigger,
@@ -373,6 +411,8 @@ class GripperController:
                         pass
 
             except Exception as e:
+                with self._lock:
+                    self._last_monitor_error = str(e)
                 logger.error("控制周期异常: %s", e)
 
             time.sleep(self._interval)

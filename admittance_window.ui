@@ -1,0 +1,3250 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<ui version="4.0">
+ <class>AdmittanceWindow</class>
+ <widget class="QMainWindow" name="AdmittanceWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1440</width>
+    <height>900</height>
+   </rect>
+  </property>
+  <property name="minimumSize">
+   <size>
+    <width>1000</width>
+    <height>760</height>
+   </size>
+  </property>
+  <property name="windowTitle">
+   <string>导纳调参与监视 · 关闭仅隐藏，运行继续</string>
+  </property>
+  <property name="styleSheet">
+   <string>QMainWindow { background: #f2f5fa; } QGroupBox { font-weight: 600; border: 1px solid #ccd6e3; border-radius: 5px; margin-top: 12px; padding-top: 8px; } QGroupBox::title { subcontrol-origin: margin; left: 8px; } QTableWidget { background: white; alternate-background-color: #f2f6fa; gridline-color: #dbe2ec; } QPushButton { min-height: 27px; padding: 2px 10px; } QPushButton#pushButton_StartAdmittance:enabled { background: #1f6da8; color: white; } QPushButton#pushButton_StopAdmittance:enabled { color: #a4212d; } QLabel#label_ParameterHint { color: #9b5200; } QPushButton:disabled { background: #e2e6eb; color: #8b939f; border: 1px solid #c9d0d8; }</string>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <layout class="QVBoxLayout" name="verticalLayout_Main">
+    <item>
+     <layout class="QHBoxLayout" name="horizontalLayout_Header">
+      <item>
+       <widget class="QLabel" name="label_RobotConnection">
+        <property name="text">
+         <string>机器人未连接 · 可离线编辑</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLabel" name="label_RunIdentity">
+        <property name="text">
+         <string>本轮：未启动 · 准备修订号：0</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLabel" name="label_StateFreshness">
+        <property name="text">
+         <string>等待数据</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <layout class="QHBoxLayout" name="horizontalLayout_Mode">
+      <item>
+       <widget class="QLabel" name="label_ReferenceSource">
+        <property name="text">
+         <string>场景</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QComboBox" name="comboBox_ReferenceSource">
+        <item>
+         <property name="text">
+          <string>遥操作导纳</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>主动柔顺</string>
+         </property>
+        </item>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLabel" name="label_AdmittanceSpace">
+        <property name="text">
+         <string>空间</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QComboBox" name="comboBox_AdmittanceSpace">
+        <item>
+         <property name="text">
+          <string>关节空间</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>末端空间</string>
+         </property>
+        </item>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLabel" name="label_RunPhase">
+        <property name="text">
+         <string>阶段：未开启</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLabel" name="label_AngleUnit">
+        <property name="text">
+         <string>关节 / 旋转向量</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QComboBox" name="comboBox_AngleUnit">
+        <item>
+         <property name="text">
+          <string>°</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>rad</string>
+         </property>
+        </item>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLabel" name="label_LengthUnit">
+        <property name="text">
+         <string>位置</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QComboBox" name="comboBox_LengthUnit">
+        <item>
+         <property name="text">
+          <string>mm</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>m</string>
+         </property>
+        </item>
+       </widget>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <widget class="QSplitter" name="splitter_Main">
+      <property name="orientation">
+       <enum>Qt::Horizontal</enum>
+      </property>
+      <widget class="QWidget" name="widget_ParameterPane">
+       <layout class="QVBoxLayout" name="verticalLayout_Parameters">
+        <item>
+         <widget class="QLabel" name="label_ParameterSummary">
+          <property name="text">
+           <string>常用导纳参数 · 按轴调节 · SI 单位</string>
+          </property>
+          <property name="wordWrap">
+           <bool>true</bool>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QTabWidget" name="tabWidget_Parameters">
+          <widget class="QWidget" name="tab_Parameters_joint">
+           <attribute name="title">
+            <string>关节调参</string>
+           </attribute>
+           <layout class="QVBoxLayout" name="verticalLayout_joint">
+            <item>
+             <widget class="QScrollArea" name="scrollArea_joint">
+              <property name="widgetResizable">
+               <bool>true</bool>
+              </property>
+              <property name="frameShape">
+               <enum>QFrame::NoFrame</enum>
+              </property>
+              <widget class="QWidget" name="scrollContents_joint">
+               <layout class="QVBoxLayout" name="verticalLayout_Core_joint">
+                <property name="spacing">
+                 <number>6</number>
+                </property>
+                <item>
+                 <widget class="QLabel" name="label_Model_joint">
+                  <property name="text">
+                   <string>M：惯性响应 · D：运动阻尼 · K：恢复刚度</string>
+                  </property>
+                  <property name="wordWrap">
+                   <bool>true</bool>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <layout class="QGridLayout" name="gridLayout_Core_joint">
+                  <property name="horizontalSpacing">
+                   <number>6</number>
+                  </property>
+                  <property name="verticalSpacing">
+                   <number>4</number>
+                  </property>
+                  <item row="0" column="0">
+                   <widget class="QLabel" name="label_Header_JointAxis">
+                    <property name="text">
+                     <string>启用</string>
+                    </property>
+                    <property name="wordWrap">
+                     <bool>true</bool>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignCenter</set>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="0" column="1">
+                   <widget class="QLabel" name="label_Header_JointMass">
+                    <property name="text">
+                     <string>惯量 M
+kg·m²</string>
+                    </property>
+                    <property name="wordWrap">
+                     <bool>true</bool>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignCenter</set>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="0" column="2">
+                   <widget class="QLabel" name="label_Header_JointDamping">
+                    <property name="text">
+                     <string>阻尼 D
+N·m·s/rad</string>
+                    </property>
+                    <property name="wordWrap">
+                     <bool>true</bool>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignCenter</set>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="0" column="3">
+                   <widget class="QLabel" name="label_Header_JointStiffness">
+                    <property name="text">
+                     <string>刚度 K
+N·m/rad</string>
+                    </property>
+                    <property name="wordWrap">
+                     <bool>true</bool>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignCenter</set>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="0" column="4">
+                   <widget class="QLabel" name="label_Header_JointTargetTorque">
+                    <property name="text">
+                     <string>目标力矩
+N·m</string>
+                    </property>
+                    <property name="wordWrap">
+                     <bool>true</bool>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignCenter</set>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="0" column="5">
+                   <widget class="QLabel" name="label_Header_JointDeadband">
+                    <property name="text">
+                     <string>死区
+N·m</string>
+                    </property>
+                    <property name="wordWrap">
+                     <bool>true</bool>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignCenter</set>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="1" column="0">
+                   <widget class="QCheckBox" name="checkBox_JointAxis1">
+                    <property name="text">
+                     <string>J1</string>
+                    </property>
+                    <property name="toolTip">
+                     <string>启用该轴的柔顺响应</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="1" column="1">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_JointMass1">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>惯量 M · kg·m²</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="1" column="2">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_JointDamping1">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>阻尼 D · N·m·s/rad</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="1" column="3">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_JointStiffness1">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>刚度 K · N·m/rad</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="1" column="4">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_JointTargetTorque1">
+                    <property name="minimum">
+                     <double>-1000000</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>目标力矩 · N·m</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="1" column="5">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_JointDeadband1">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>死区 · N·m</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="2" column="0">
+                   <widget class="QCheckBox" name="checkBox_JointAxis2">
+                    <property name="text">
+                     <string>J2</string>
+                    </property>
+                    <property name="toolTip">
+                     <string>启用该轴的柔顺响应</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="2" column="1">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_JointMass2">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>惯量 M · kg·m²</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="2" column="2">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_JointDamping2">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>阻尼 D · N·m·s/rad</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="2" column="3">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_JointStiffness2">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>刚度 K · N·m/rad</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="2" column="4">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_JointTargetTorque2">
+                    <property name="minimum">
+                     <double>-1000000</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>目标力矩 · N·m</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="2" column="5">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_JointDeadband2">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>死区 · N·m</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="3" column="0">
+                   <widget class="QCheckBox" name="checkBox_JointAxis3">
+                    <property name="text">
+                     <string>J3</string>
+                    </property>
+                    <property name="toolTip">
+                     <string>启用该轴的柔顺响应</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="3" column="1">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_JointMass3">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>惯量 M · kg·m²</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="3" column="2">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_JointDamping3">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>阻尼 D · N·m·s/rad</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="3" column="3">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_JointStiffness3">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>刚度 K · N·m/rad</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="3" column="4">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_JointTargetTorque3">
+                    <property name="minimum">
+                     <double>-1000000</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>目标力矩 · N·m</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="3" column="5">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_JointDeadband3">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>死区 · N·m</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="4" column="0">
+                   <widget class="QCheckBox" name="checkBox_JointAxis4">
+                    <property name="text">
+                     <string>J4</string>
+                    </property>
+                    <property name="toolTip">
+                     <string>启用该轴的柔顺响应</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="4" column="1">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_JointMass4">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>惯量 M · kg·m²</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="4" column="2">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_JointDamping4">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>阻尼 D · N·m·s/rad</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="4" column="3">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_JointStiffness4">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>刚度 K · N·m/rad</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="4" column="4">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_JointTargetTorque4">
+                    <property name="minimum">
+                     <double>-1000000</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>目标力矩 · N·m</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="4" column="5">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_JointDeadband4">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>死区 · N·m</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="5" column="0">
+                   <widget class="QCheckBox" name="checkBox_JointAxis5">
+                    <property name="text">
+                     <string>J5</string>
+                    </property>
+                    <property name="toolTip">
+                     <string>启用该轴的柔顺响应</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="5" column="1">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_JointMass5">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>惯量 M · kg·m²</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="5" column="2">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_JointDamping5">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>阻尼 D · N·m·s/rad</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="5" column="3">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_JointStiffness5">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>刚度 K · N·m/rad</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="5" column="4">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_JointTargetTorque5">
+                    <property name="minimum">
+                     <double>-1000000</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>目标力矩 · N·m</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="5" column="5">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_JointDeadband5">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>死区 · N·m</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="6" column="0">
+                   <widget class="QCheckBox" name="checkBox_JointAxis6">
+                    <property name="text">
+                     <string>J6</string>
+                    </property>
+                    <property name="toolTip">
+                     <string>启用该轴的柔顺响应</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="6" column="1">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_JointMass6">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>惯量 M · kg·m²</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="6" column="2">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_JointDamping6">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>阻尼 D · N·m·s/rad</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="6" column="3">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_JointStiffness6">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>刚度 K · N·m/rad</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="6" column="4">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_JointTargetTorque6">
+                    <property name="minimum">
+                     <double>-1000000</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>目标力矩 · N·m</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="6" column="5">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_JointDeadband6">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>死区 · N·m</string>
+                    </property>
+                   </widget>
+                  </item>
+                 </layout>
+                </item>
+                <item>
+                 <widget class="QLabel" name="label_FreeModel_joint">
+                  <property name="text">
+                   <string>主动柔顺使用质量—阻尼模型，恢复刚度固定为 0。</string>
+                  </property>
+                  <property name="wordWrap">
+                   <bool>true</bool>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <spacer name="verticalSpacer_Core_joint">
+                  <property name="orientation">
+                   <enum>Qt::Vertical</enum>
+                  </property>
+                  <property name="sizeHint">
+                   <size>
+                    <width>20</width>
+                    <height>20</height>
+                   </size>
+                  </property>
+                 </spacer>
+                </item>
+               </layout>
+              </widget>
+             </widget>
+            </item>
+           </layout>
+          </widget>
+          <widget class="QWidget" name="tab_Parameters_cart">
+           <attribute name="title">
+            <string>末端调参</string>
+           </attribute>
+           <layout class="QVBoxLayout" name="verticalLayout_cart">
+            <item>
+             <widget class="QScrollArea" name="scrollArea_cart">
+              <property name="widgetResizable">
+               <bool>true</bool>
+              </property>
+              <property name="frameShape">
+               <enum>QFrame::NoFrame</enum>
+              </property>
+              <widget class="QWidget" name="scrollContents_cart">
+               <layout class="QVBoxLayout" name="verticalLayout_Core_cart">
+                <property name="spacing">
+                 <number>6</number>
+                </property>
+                <item>
+                 <widget class="QLabel" name="label_Model_cart">
+                  <property name="text">
+                   <string>M：惯性响应 · D：运动阻尼 · K：恢复刚度</string>
+                  </property>
+                  <property name="wordWrap">
+                   <bool>true</bool>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <layout class="QHBoxLayout" name="horizontalLayout_CartFrame">
+                  <item>
+                   <widget class="QLabel" name="label_CartFrame">
+                    <property name="text">
+                     <string>柔顺方向</string>
+                    </property>
+                    <property name="wordWrap">
+                     <bool>true</bool>
+                    </property>
+                   </widget>
+                  </item>
+                  <item>
+                   <widget class="QComboBox" name="comboBox_CartFrame">
+                    <item>
+                     <property name="text">
+                      <string>基座方向 base</string>
+                     </property>
+                    </item>
+                    <item>
+                     <property name="text">
+                      <string>启动时工具方向 tool_start</string>
+                     </property>
+                    </item>
+                   </widget>
+                  </item>
+                 </layout>
+                </item>
+                <item>
+                 <layout class="QGridLayout" name="gridLayout_Core_cart">
+                  <property name="horizontalSpacing">
+                   <number>6</number>
+                  </property>
+                  <property name="verticalSpacing">
+                   <number>4</number>
+                  </property>
+                  <item row="0" column="0">
+                   <widget class="QLabel" name="label_Header_CartAxis">
+                    <property name="text">
+                     <string>启用</string>
+                    </property>
+                    <property name="wordWrap">
+                     <bool>true</bool>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignCenter</set>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="0" column="1">
+                   <widget class="QLabel" name="label_Header_CartMass">
+                    <property name="text">
+                     <string>质量 / 惯量
+M</string>
+                    </property>
+                    <property name="wordWrap">
+                     <bool>true</bool>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignCenter</set>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="0" column="2">
+                   <widget class="QLabel" name="label_Header_CartDamping">
+                    <property name="text">
+                     <string>阻尼
+D</string>
+                    </property>
+                    <property name="wordWrap">
+                     <bool>true</bool>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignCenter</set>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="0" column="3">
+                   <widget class="QLabel" name="label_Header_CartStiffness">
+                    <property name="text">
+                     <string>刚度
+K</string>
+                    </property>
+                    <property name="wordWrap">
+                     <bool>true</bool>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignCenter</set>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="0" column="4">
+                   <widget class="QLabel" name="label_Header_CartTargetWrench">
+                    <property name="text">
+                     <string>目标载荷</string>
+                    </property>
+                    <property name="wordWrap">
+                     <bool>true</bool>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignCenter</set>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="0" column="5">
+                   <widget class="QLabel" name="label_Header_CartDeadband">
+                    <property name="text">
+                     <string>死区</string>
+                    </property>
+                    <property name="wordWrap">
+                     <bool>true</bool>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignCenter</set>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="1" column="0">
+                   <widget class="QCheckBox" name="checkBox_CartAxis1">
+                    <property name="text">
+                     <string>x</string>
+                    </property>
+                    <property name="toolTip">
+                     <string>启用该轴的柔顺响应</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="1" column="1">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_CartMass1">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>x · kg</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="1" column="2">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_CartDamping1">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>x · N·s/m</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="1" column="3">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_CartStiffness1">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>x · N/m</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="1" column="4">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_CartTargetWrench1">
+                    <property name="minimum">
+                     <double>-1000000</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>x · N</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="1" column="5">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_CartDeadband1">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>x · N</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="2" column="0">
+                   <widget class="QCheckBox" name="checkBox_CartAxis2">
+                    <property name="text">
+                     <string>y</string>
+                    </property>
+                    <property name="toolTip">
+                     <string>启用该轴的柔顺响应</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="2" column="1">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_CartMass2">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>y · kg</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="2" column="2">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_CartDamping2">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>y · N·s/m</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="2" column="3">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_CartStiffness2">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>y · N/m</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="2" column="4">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_CartTargetWrench2">
+                    <property name="minimum">
+                     <double>-1000000</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>y · N</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="2" column="5">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_CartDeadband2">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>y · N</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="3" column="0">
+                   <widget class="QCheckBox" name="checkBox_CartAxis3">
+                    <property name="text">
+                     <string>z</string>
+                    </property>
+                    <property name="toolTip">
+                     <string>启用该轴的柔顺响应</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="3" column="1">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_CartMass3">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>z · kg</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="3" column="2">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_CartDamping3">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>z · N·s/m</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="3" column="3">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_CartStiffness3">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>z · N/m</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="3" column="4">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_CartTargetWrench3">
+                    <property name="minimum">
+                     <double>-1000000</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>z · N</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="3" column="5">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_CartDeadband3">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>z · N</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="4" column="0">
+                   <widget class="QCheckBox" name="checkBox_CartAxis4">
+                    <property name="text">
+                     <string>rx</string>
+                    </property>
+                    <property name="toolTip">
+                     <string>启用该轴的柔顺响应</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="4" column="1">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_CartMass4">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>rx · kg·m²</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="4" column="2">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_CartDamping4">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>rx · N·m·s/rad</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="4" column="3">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_CartStiffness4">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>rx · N·m/rad</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="4" column="4">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_CartTargetWrench4">
+                    <property name="minimum">
+                     <double>-1000000</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>rx · N·m</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="4" column="5">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_CartDeadband4">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>rx · N·m</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="5" column="0">
+                   <widget class="QCheckBox" name="checkBox_CartAxis5">
+                    <property name="text">
+                     <string>ry</string>
+                    </property>
+                    <property name="toolTip">
+                     <string>启用该轴的柔顺响应</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="5" column="1">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_CartMass5">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>ry · kg·m²</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="5" column="2">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_CartDamping5">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>ry · N·m·s/rad</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="5" column="3">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_CartStiffness5">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>ry · N·m/rad</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="5" column="4">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_CartTargetWrench5">
+                    <property name="minimum">
+                     <double>-1000000</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>ry · N·m</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="5" column="5">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_CartDeadband5">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>ry · N·m</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="6" column="0">
+                   <widget class="QCheckBox" name="checkBox_CartAxis6">
+                    <property name="text">
+                     <string>rz</string>
+                    </property>
+                    <property name="toolTip">
+                     <string>启用该轴的柔顺响应</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="6" column="1">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_CartMass6">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>rz · kg·m²</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="6" column="2">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_CartDamping6">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>rz · N·m·s/rad</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="6" column="3">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_CartStiffness6">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>rz · N·m/rad</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="6" column="4">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_CartTargetWrench6">
+                    <property name="minimum">
+                     <double>-1000000</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>rz · N·m</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="6" column="5">
+                   <widget class="QDoubleSpinBox" name="doubleSpinBox_CartDeadband6">
+                    <property name="minimum">
+                     <double>0</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000000</double>
+                    </property>
+                    <property name="singleStep">
+                     <double>0.01</double>
+                    </property>
+                    <property name="keyboardTracking">
+                     <bool>false</bool>
+                    </property>
+                    <property name="decimals">
+                     <number>4</number>
+                    </property>
+                    <property name="minimumSize">
+                     <size>
+                      <width>84</width>
+                      <height>25</height>
+                     </size>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignRight</set>
+                    </property>
+                    <property name="toolTip">
+                     <string>rz · N·m</string>
+                    </property>
+                   </widget>
+                  </item>
+                 </layout>
+                </item>
+                <item>
+                 <widget class="QLabel" name="label_CartUnits">
+                  <property name="text">
+                   <string>x / y / z：M 为 kg，D 为 N·s/m，K 为 N/m，载荷与死区为 N。
+rx / ry / rz：M 为 kg·m²，D 为 N·m·s/rad，K 为 N·m/rad，载荷与死区为 N·m。</string>
+                  </property>
+                  <property name="wordWrap">
+                   <bool>true</bool>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QLabel" name="label_CartFrameHint">
+                  <property name="text">
+                   <string>tool_start 为启动时固定的工具方向，柔顺中心仍在当前 TCP。</string>
+                  </property>
+                  <property name="wordWrap">
+                   <bool>true</bool>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QLabel" name="label_FreeModel_cart">
+                  <property name="text">
+                   <string>主动柔顺使用质量—阻尼模型，恢复刚度固定为 0。</string>
+                  </property>
+                  <property name="wordWrap">
+                   <bool>true</bool>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <spacer name="verticalSpacer_Core_cart">
+                  <property name="orientation">
+                   <enum>Qt::Vertical</enum>
+                  </property>
+                  <property name="sizeHint">
+                   <size>
+                    <width>20</width>
+                    <height>20</height>
+                   </size>
+                  </property>
+                 </spacer>
+                </item>
+               </layout>
+              </widget>
+             </widget>
+            </item>
+           </layout>
+          </widget>
+          <widget class="QWidget" name="tab_ParameterDiff">
+           <attribute name="title">
+            <string>参数对照</string>
+           </attribute>
+           <layout class="QVBoxLayout" name="verticalLayout_Diff">
+            <item>
+             <widget class="QLabel" name="label_DiffExplanation">
+              <property name="text">
+               <string>查看当前空间常用参数的草稿、准备值和本轮生效值。完整配置可导出本轮记录。</string>
+              </property>
+              <property name="wordWrap">
+               <bool>true</bool>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QTableWidget" name="tableWidget_ParameterDiff">
+              <property name="editTriggers">
+               <set>QAbstractItemView::NoEditTriggers</set>
+              </property>
+              <property name="alternatingRowColors">
+               <bool>true</bool>
+              </property>
+              <property name="selectionBehavior">
+               <enum>QAbstractItemView::SelectRows</enum>
+              </property>
+              <property name="wordWrap">
+               <bool>false</bool>
+              </property>
+              <property name="rowCount">
+               <number>0</number>
+              </property>
+              <column>
+               <property name="text">
+                <string>参数 / 单位</string>
+               </property>
+              </column>
+              <column>
+               <property name="text">
+                <string>草稿</string>
+               </property>
+              </column>
+              <column>
+               <property name="text">
+                <string>准备值</string>
+               </property>
+              </column>
+              <column>
+               <property name="text">
+                <string>本轮生效值</string>
+               </property>
+              </column>
+              <column>
+               <property name="text">
+                <string>差异 / 适用性</string>
+               </property>
+              </column>
+              <attribute name="verticalHeaderDefaultSectionSize">
+               <number>26</number>
+              </attribute>
+              <attribute name="verticalHeaderMinimumSectionSize">
+               <number>24</number>
+              </attribute>
+             </widget>
+            </item>
+           </layout>
+          </widget>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="label_ParameterHint">
+          <property name="text">
+           <string>准备值可用于下一轮；修改后需点击“应用参数”。</string>
+          </property>
+          <property name="wordWrap">
+           <bool>true</bool>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="label_CodeParameters">
+          <property name="text">
+           <string>其余参数在 UR_Utils/admittance_config.py 中调整，修改后重启程序。</string>
+          </property>
+          <property name="wordWrap">
+           <bool>true</bool>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+      <widget class="QScrollArea" name="scrollArea_Monitor">
+       <property name="widgetResizable">
+        <bool>true</bool>
+       </property>
+       <property name="frameShape">
+        <enum>QFrame::NoFrame</enum>
+       </property>
+       <widget class="QWidget" name="widget_MonitorPane">
+        <layout class="QVBoxLayout" name="verticalLayout_Monitor">
+         <item>
+          <widget class="QLabel" name="label_TargetTitle">
+           <property name="text">
+            <string>关节目标对照：主端已采用 → 名义参考 → 导纳最终目标 → 实际反馈</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QTableWidget" name="tableWidget_JointTargets">
+           <property name="editTriggers">
+            <set>QAbstractItemView::NoEditTriggers</set>
+           </property>
+           <property name="alternatingRowColors">
+            <bool>true</bool>
+           </property>
+           <property name="selectionBehavior">
+            <enum>QAbstractItemView::SelectRows</enum>
+           </property>
+           <property name="wordWrap">
+            <bool>false</bool>
+           </property>
+           <property name="rowCount">
+            <number>0</number>
+           </property>
+           <column>
+            <property name="text">
+             <string>轴</string>
+            </property>
+           </column>
+           <column>
+            <property name="text">
+             <string>主端已采用</string>
+            </property>
+           </column>
+           <column>
+            <property name="text">
+             <string>名义参考</string>
+            </property>
+           </column>
+           <column>
+            <property name="text">
+             <string>导纳最终目标</string>
+            </property>
+           </column>
+           <column>
+            <property name="text">
+             <string>实际关节角</string>
+            </property>
+           </column>
+           <column>
+            <property name="text">
+             <string>跟踪误差</string>
+            </property>
+           </column>
+           <property name="minimumSize">
+            <size>
+             <width>0</width>
+             <height>205</height>
+            </size>
+           </property>
+           <attribute name="verticalHeaderDefaultSectionSize">
+            <number>26</number>
+           </attribute>
+           <attribute name="verticalHeaderMinimumSectionSize">
+            <number>24</number>
+           </attribute>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLabel" name="label_SourceTime">
+           <property name="text">
+            <string>来源与时间：等待数据；跟踪误差为最终目标减实际关节角。</string>
+           </property>
+           <property name="wordWrap">
+            <bool>true</bool>
+           </property>
+           <property name="minimumSize">
+            <size>
+             <width>0</width>
+             <height>30</height>
+            </size>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QTabWidget" name="tabWidget_Monitor">
+           <widget class="QWidget" name="tab_TcpTargets">
+            <attribute name="title">
+             <string>TCP 位姿</string>
+            </attribute>
+            <layout class="QVBoxLayout" name="verticalLayout_TcpTargets">
+             <item>
+              <widget class="QLabel" name="label_TcpExplanation">
+               <property name="text">
+                <string>位置按基座坐标；姿态为旋转向量 rx、ry、rz。模型估算包含模型差异，不是精确 TCP 控制误差。</string>
+               </property>
+               <property name="wordWrap">
+                <bool>true</bool>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QTableWidget" name="tableWidget_TcpTargets">
+               <property name="editTriggers">
+                <set>QAbstractItemView::NoEditTriggers</set>
+               </property>
+               <property name="alternatingRowColors">
+                <bool>true</bool>
+               </property>
+               <property name="selectionBehavior">
+                <enum>QAbstractItemView::SelectRows</enum>
+               </property>
+               <property name="wordWrap">
+                <bool>false</bool>
+               </property>
+               <property name="rowCount">
+                <number>0</number>
+               </property>
+               <column>
+                <property name="text">
+                 <string>轴 / 单位</string>
+                </property>
+               </column>
+               <column>
+                <property name="text">
+                 <string>已采用 · 模型估算</string>
+                </property>
+               </column>
+               <column>
+                <property name="text">
+                 <string>名义 · 模型估算</string>
+                </property>
+               </column>
+               <column>
+                <property name="text">
+                 <string>最终 · 模型估算</string>
+                </property>
+               </column>
+               <column>
+                <property name="text">
+                 <string>实际反馈</string>
+                </property>
+               </column>
+               <attribute name="verticalHeaderDefaultSectionSize">
+                <number>26</number>
+               </attribute>
+               <attribute name="verticalHeaderMinimumSectionSize">
+                <number>24</number>
+               </attribute>
+              </widget>
+             </item>
+            </layout>
+           </widget>
+           <widget class="QWidget" name="tab_AdmittanceState">
+            <attribute name="title">
+             <string>误差与导纳</string>
+            </attribute>
+            <layout class="QVBoxLayout" name="verticalLayout_AdmittanceState">
+             <item>
+              <widget class="QTableWidget" name="tableWidget_AdmittanceState">
+               <property name="editTriggers">
+                <set>QAbstractItemView::NoEditTriggers</set>
+               </property>
+               <property name="alternatingRowColors">
+                <bool>true</bool>
+               </property>
+               <property name="selectionBehavior">
+                <enum>QAbstractItemView::SelectRows</enum>
+               </property>
+               <property name="wordWrap">
+                <bool>false</bool>
+               </property>
+               <property name="rowCount">
+                <number>0</number>
+               </property>
+               <column>
+                <property name="text">
+                 <string>量</string>
+                </property>
+               </column>
+               <column>
+                <property name="text">
+                 <string>每轴值</string>
+                </property>
+               </column>
+               <column>
+                <property name="text">
+                 <string>单位 / 来源</string>
+                </property>
+               </column>
+               <attribute name="verticalHeaderDefaultSectionSize">
+                <number>26</number>
+               </attribute>
+               <attribute name="verticalHeaderMinimumSectionSize">
+                <number>24</number>
+               </attribute>
+              </widget>
+             </item>
+            </layout>
+           </widget>
+           <widget class="QWidget" name="tab_MasterState">
+            <attribute name="title">
+             <string>主端与同步</string>
+            </attribute>
+            <layout class="QVBoxLayout" name="verticalLayout_MasterState">
+             <item>
+              <widget class="QLabel" name="label_MasterExplanation">
+               <property name="text">
+                <string>接收序号是本机有效接收计数；主端编码器零偏、机械参数及控制增益：主端未提供。</string>
+               </property>
+               <property name="wordWrap">
+                <bool>true</bool>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QTableWidget" name="tableWidget_MasterState">
+               <property name="editTriggers">
+                <set>QAbstractItemView::NoEditTriggers</set>
+               </property>
+               <property name="alternatingRowColors">
+                <bool>true</bool>
+               </property>
+               <property name="selectionBehavior">
+                <enum>QAbstractItemView::SelectRows</enum>
+               </property>
+               <property name="wordWrap">
+                <bool>false</bool>
+               </property>
+               <property name="rowCount">
+                <number>0</number>
+               </property>
+               <column>
+                <property name="text">
+                 <string>项目</string>
+                </property>
+               </column>
+               <column>
+                <property name="text">
+                 <string>值</string>
+                </property>
+               </column>
+               <column>
+                <property name="text">
+                 <string>来源 / 状态</string>
+                </property>
+               </column>
+               <attribute name="verticalHeaderDefaultSectionSize">
+                <number>26</number>
+               </attribute>
+               <attribute name="verticalHeaderMinimumSectionSize">
+                <number>24</number>
+               </attribute>
+              </widget>
+             </item>
+            </layout>
+           </widget>
+           <widget class="QWidget" name="tab_RobotConfiguration">
+            <attribute name="title">
+             <string>机器人配置</string>
+            </attribute>
+            <layout class="QVBoxLayout" name="verticalLayout_RobotConfiguration">
+             <item>
+              <widget class="QTableWidget" name="tableWidget_RobotConfiguration">
+               <property name="editTriggers">
+                <set>QAbstractItemView::NoEditTriggers</set>
+               </property>
+               <property name="alternatingRowColors">
+                <bool>true</bool>
+               </property>
+               <property name="selectionBehavior">
+                <enum>QAbstractItemView::SelectRows</enum>
+               </property>
+               <property name="wordWrap">
+                <bool>false</bool>
+               </property>
+               <property name="rowCount">
+                <number>0</number>
+               </property>
+               <column>
+                <property name="text">
+                 <string>项目</string>
+                </property>
+               </column>
+               <column>
+                <property name="text">
+                 <string>值</string>
+                </property>
+               </column>
+               <column>
+                <property name="text">
+                 <string>来源 / 时刻</string>
+                </property>
+               </column>
+               <attribute name="verticalHeaderDefaultSectionSize">
+                <number>26</number>
+               </attribute>
+               <attribute name="verticalHeaderMinimumSectionSize">
+                <number>24</number>
+               </attribute>
+              </widget>
+             </item>
+            </layout>
+           </widget>
+           <widget class="QWidget" name="tab_Diagnostics">
+            <attribute name="title">
+             <string>诊断</string>
+            </attribute>
+            <layout class="QVBoxLayout" name="verticalLayout_Diagnostics">
+             <item>
+              <widget class="QLabel" name="label_DiagnosticExplanation">
+               <property name="text">
+                <string>未上报量明确显示缺失；主机发送成功不代表机器人已经接收。</string>
+               </property>
+               <property name="wordWrap">
+                <bool>true</bool>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QTableWidget" name="tableWidget_Diagnostics">
+               <property name="editTriggers">
+                <set>QAbstractItemView::NoEditTriggers</set>
+               </property>
+               <property name="alternatingRowColors">
+                <bool>true</bool>
+               </property>
+               <property name="selectionBehavior">
+                <enum>QAbstractItemView::SelectRows</enum>
+               </property>
+               <property name="wordWrap">
+                <bool>false</bool>
+               </property>
+               <property name="rowCount">
+                <number>0</number>
+               </property>
+               <column>
+                <property name="text">
+                 <string>项目</string>
+                </property>
+               </column>
+               <column>
+                <property name="text">
+                 <string>值</string>
+                </property>
+               </column>
+               <column>
+                <property name="text">
+                 <string>来源 / 状态</string>
+                </property>
+               </column>
+               <attribute name="verticalHeaderDefaultSectionSize">
+                <number>26</number>
+               </attribute>
+               <attribute name="verticalHeaderMinimumSectionSize">
+                <number>24</number>
+               </attribute>
+              </widget>
+             </item>
+            </layout>
+           </widget>
+           <property name="minimumSize">
+            <size>
+             <width>0</width>
+             <height>90</height>
+            </size>
+           </property>
+          </widget>
+         </item>
+        </layout>
+        <property name="minimumSize">
+         <size>
+          <width>0</width>
+          <height>430</height>
+         </size>
+        </property>
+       </widget>
+      </widget>
+     </widget>
+    </item>
+    <item>
+     <widget class="QGroupBox" name="groupBox_Plot">
+      <property name="title">
+       <string>显示曲线 · 隐藏窗口暂停采样，控制及采集继续</string>
+      </property>
+      <layout class="QVBoxLayout" name="verticalLayout_Plot">
+       <item>
+        <layout class="QHBoxLayout" name="horizontalLayout_Plot">
+         <item>
+          <widget class="QComboBox" name="comboBox_PlotSignal">
+           <item>
+            <property name="text">
+             <string>关节目标对照</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>关节误差</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>TCP 目标对照</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>关节导纳偏移</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>末端导纳偏移</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>主动柔顺速度</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>导纳驱动力</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>实际关节速度</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>主端最新接收</string>
+            </property>
+           </item>
+          </widget>
+         </item>
+         <item>
+          <widget class="QComboBox" name="comboBox_PlotAxis">
+           <item>
+            <property name="text">
+             <string>J1 / x</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>J2 / y</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>J3 / z</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>J4 / rx</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>J5 / ry</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>J6 / rz</string>
+            </property>
+           </item>
+          </widget>
+         </item>
+         <item>
+          <widget class="QComboBox" name="comboBox_PlotWindow">
+           <item>
+            <property name="text">
+             <string>5 秒</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>15 秒</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>30 秒</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>60 秒</string>
+            </property>
+           </item>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="pushButton_PausePlot">
+           <property name="text">
+            <string>暂停显示</string>
+           </property>
+           <property name="checkable">
+            <bool>true</bool>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="pushButton_ClearPlot">
+           <property name="text">
+            <string>清空显示</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLabel" name="label_PlotCursor">
+           <property name="text">
+            <string>光标：移动鼠标查看</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <widget class="AdmittanceTrendWidget" name="widget_TrendPlot">
+         <property name="minimumSize">
+          <size>
+           <width>0</width>
+           <height>185</height>
+          </size>
+         </property>
+        </widget>
+       </item>
+      </layout>
+      <property name="maximumSize">
+       <size>
+        <width>16777215</width>
+        <height>300</height>
+       </size>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <widget class="QPlainTextEdit" name="plainTextEdit_AdmittanceLog">
+      <property name="readOnly">
+       <bool>true</bool>
+      </property>
+      <property name="placeholderText">
+       <string>场景、参数应用、启停和异常事件</string>
+      </property>
+      <property name="maximumBlockCount">
+       <number>500</number>
+      </property>
+      <property name="maximumSize">
+       <size>
+        <width>16777215</width>
+        <height>40</height>
+       </size>
+      </property>
+      <property name="minimumSize">
+       <size>
+        <width>0</width>
+        <height>35</height>
+       </size>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <layout class="QHBoxLayout" name="horizontalLayout_Actions">
+      <item>
+       <widget class="QPushButton" name="pushButton_RestoreDefaults">
+        <property name="text">
+         <string>恢复默认</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="pushButton_ImportParameters">
+        <property name="text">
+         <string>导入预设</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="pushButton_ExportParameters">
+        <property name="text">
+         <string>导出参数</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="pushButton_ApplyParameters">
+        <property name="text">
+         <string>应用参数</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="pushButton_SyncMaster">
+        <property name="text">
+         <string>同步主从</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="pushButton_StartAdmittance">
+        <property name="text">
+         <string>启动导纳</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="pushButton_StopAdmittance">
+        <property name="text">
+         <string>停止导纳</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <widget class="QLabel" name="label_OperationHint">
+      <property name="text">
+       <string>关闭窗口仅隐藏，不停止运动。停止与全局停止使用同一控制入口。</string>
+      </property>
+      <property name="wordWrap">
+       <bool>true</bool>
+      </property>
+     </widget>
+    </item>
+   </layout>
+  </widget>
+  <action name="actionExportDraft">
+   <property name="text">
+    <string>导出常用参数预设</string>
+   </property>
+  </action>
+  <action name="actionExportEffective">
+   <property name="text">
+    <string>导出本轮生效记录（51 项完整参数）</string>
+   </property>
+  </action>
+  <widget class="QMenu" name="menu_ExportParameters">
+   <property name="title">
+    <string>导出参数</string>
+   </property>
+   <addaction name="actionExportDraft" />
+   <addaction name="actionExportEffective" />
+  </widget>
+ </widget>
+ <customwidgets>
+  <customwidget>
+   <class>AdmittanceTrendWidget</class>
+   <extends>QWidget</extends>
+   <header>admittance_plot</header>
+  </customwidget>
+ </customwidgets>
+ <resources />
+ <connections />
+</ui>

@@ -19,6 +19,7 @@ URUdpClient.py — UDP通信客户端，用于接收/发送外部控制信号。
 from __future__ import annotations
 
 import binascii
+from copy import deepcopy
 import socket
 import struct
 import threading
@@ -154,6 +155,8 @@ class URUDPClient:
         self._latest_command: Optional[UDPCommand] = None
         self._frame_count: int = 0
         self._last_update_time: Optional[float] = None
+        self._last_received_monotonic: Optional[float] = None
+        self._sender_address: Optional[Tuple[str, int]] = None
         self._last_error: Optional[BaseException] = None
 
         self._send_lock = threading.Lock()
@@ -211,6 +214,8 @@ class URUDPClient:
             self._last_error = None
             self._frame_count = 0
             self._last_update_time = None
+            self._last_received_monotonic = None
+            self._sender_address = None
 
         self.start()
 
@@ -229,6 +234,7 @@ class URUDPClient:
                     break
 
                 nbytes, addr = sock.recvfrom_into(buf, self.PACKET_SIZE)
+                received_monotonic = time.monotonic()
 
                 if nbytes != self.PACKET_SIZE:
                     with self._cond:
@@ -281,7 +287,9 @@ class URUDPClient:
                     self._latest_command = cmd
                     self._last_error = None
                     self._frame_count += 1
-                    self._last_update_time = time.time()
+                    self._last_update_time = cmd.recv_time
+                    self._last_received_monotonic = received_monotonic
+                    self._sender_address = addr
                     self._cond.notify_all()
 
             except socket.timeout:
@@ -325,6 +333,19 @@ class URUDPClient:
         """获取最新指令及帧计数。"""
         with self._cond:
             return self._latest_command, self._frame_count
+
+    def get_monitor_snapshot(self) -> dict:
+        """在同一锁内读取最新有效指令、来源和时刻；显示层取得独立指令副本。"""
+        with self._cond:
+            return {
+                "command": deepcopy(self._latest_command),
+                "frame_count": self._frame_count,
+                "received_time": self._last_update_time,
+                "received_monotonic": self._last_received_monotonic,
+                "sender_address": self._sender_address,
+                "last_error": None if self._last_error is None else str(self._last_error),
+                "bind_address": (self.bind_host, self.bind_port),
+            }
 
     def wait_next(
         self,

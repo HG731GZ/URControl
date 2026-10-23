@@ -1,4 +1,4 @@
-"""导纳参数、寄存器约定及机器人脚本渲染；修改参数后重启程序生效。"""
+"""导纳默认参数、寄存器约定及脚本渲染；每轮使用外部传入的独立配置副本。"""
 
 from copy import deepcopy
 from math import isfinite, pi
@@ -7,6 +7,10 @@ from string import Template
 
 
 # 以下值仅为低速联调起点，尚未针对具体工具和接触环境整定。
+# 界面仅编辑柔顺轴、M/D/K、目标载荷、连续死区和末端柔顺方向，共 13 项配置。
+# 其余滤波、限幅、伺服、通信和启动停止参数在本文件修改；修改后重启程序生效。
+# 界面恢复默认仅重置上述 13 项，不会覆盖本文件；每轮仍传递并记录完整配置。
+# 通信频率、心跳、超时和启动条件仅在本文件调整。
 TELEOP_REFERENCE_HZ = 100.0
 ADMITTANCE_STATE_HZ = 100.0
 ADMITTANCE_HEARTBEAT_HZ = 50.0
@@ -20,6 +24,7 @@ ADMITTANCE_STATE_TIMEOUT_S = 1.0
 STATIONARY_MAX_QD_RAD_S = 0.01
 TELEOP_SYNC_TOLERANCE_RAD = 0.05
 
+# 伺服及最终命令限幅仅在本文件调整。
 SERVO_LOOKAHEAD_S = 0.08
 SERVO_GAIN = 300.0
 NOMINAL_MAX_QD_RAD_S = [0.7] * 6
@@ -39,6 +44,7 @@ JOINT_MASS = [6.0, 6.0, 4.0, 1.0, 1.0, 0.5]
 JOINT_DAMPING = [30.0, 30.0, 20.0, 5.0, 5.0, 3.0]
 JOINT_TARGET_TORQUE_NM = [0.0] * 6
 JOINT_DEADBAND_NM = [1.5, 1.5, 1.0, 0.3, 0.3, 0.2]
+# 滤波和偏移、速度上限留在本文件；恢复刚度 K 仅用于遥操作。
 JOINT_FILTER_CUTOFF_HZ = 10.0
 TELEOP_JOINT_STIFFNESS = [30.0, 30.0, 20.0, 5.0, 5.0, 3.0]
 TELEOP_JOINT_MAX_OFFSET_RAD = [0.10] * 6
@@ -53,6 +59,7 @@ CART_MASS = [10.0, 10.0, 10.0, 0.5, 0.5, 0.5]
 CART_DAMPING = [100.0, 100.0, 100.0, 5.0, 5.0, 5.0]
 CART_TARGET_WRENCH = [0.0] * 6
 CART_DEADBAND = [3.0, 3.0, 3.0, 0.2, 0.2, 0.2]
+# 滤波和偏移、速度上限留在本文件；恢复刚度 K 仅用于遥操作。
 CART_FILTER_CUTOFF_HZ = 10.0
 TELEOP_CART_STIFFNESS = [200.0, 200.0, 200.0, 10.0, 10.0, 10.0]
 TELEOP_CART_MAX_POSITION_OFFSET_M = 0.03
