@@ -20,11 +20,16 @@ from __future__ import annotations
 
 import binascii
 from copy import deepcopy
+import errno
+import logging
 import socket
 import struct
 import threading
 import time
 from typing import Optional, Tuple, List
+
+
+logger = logging.getLogger(__name__)
 
 
 class UDPControlMode:
@@ -90,8 +95,8 @@ class URUDPClient:
     """
     UDP 控制指令收发客户端。
 
-    内部维护一个后台线程持续接收 UDP 数据包，按协议解析后存储最新一帧。
-    对外暴露非阻塞的读取接口和频率可控的发送接口。
+    后台接收线程解析并存储最新指令；后台发送线程发送最新反馈。
+    界面使用 queue_send_to() 提交反馈，不等待网络，也不积压旧帧。
 
     Parameters
     ----------
@@ -100,7 +105,7 @@ class URUDPClient:
     bind_port:
         本机绑定端口。
     recv_timeout:
-        socket 接收超时（秒），影响线程响应 stop 事件的延迟。
+        共用 socket 的收发超时（秒），网络等待在后台线程完成。
     send_interval:
         连续发送的最小间隔（秒），用于限速。设为 0 不限速。
 
@@ -134,6 +139,8 @@ class URUDPClient:
     CRC_OFFSET = DATA_OFFSET + DATA_SIZE      # 77
     FOOTER_OFFSET = CRC_OFFSET + CRC_SIZE     # 81
     PACKET_SIZE = FOOTER_OFFSET + FOOTER_SIZE # 85
+    SEND_RETRY_INTERVAL = 1.0
+    ERROR_LOG_INTERVAL = 5.0
 
     def __init__(
         self,
@@ -149,6 +156,7 @@ class URUDPClient:
 
         self._sock: Optional[socket.socket] = None
         self._reader_thread: Optional[threading.Thread] = None
+        self._writer_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
 
         self._cond = threading.Condition()
@@ -161,6 +169,12 @@ class URUDPClient:
 
         self._send_lock = threading.Lock()
         self._last_send_time: float = 0.0
+        self._send_cond = threading.Condition()
+        self._pending_send = None
+        self._last_send_error: Optional[OSError] = None
+        self._send_count = 0
+        self._send_error_count = 0
+        self._last_send_error_logged = float('-inf')
 
     # ------------------------------------------------------------------
     # 生命周期
@@ -168,16 +182,23 @@ class URUDPClient:
 
     def start(self) -> None:
         """
-        创建 UDP socket、绑定端口并启动后台接收线程。
+        创建 UDP socket、绑定端口并启动后台收发线程。
         重复调用安全：如果已启动则直接返回。
         """
-        if self._reader_thread is not None and self._reader_thread.is_alive():
+        if (self.is_alive() and self._writer_thread is not None
+                and self._writer_thread.is_alive()):
             return
+        self.stop()
 
-        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._sock.settimeout(self.recv_timeout)
-        self._sock.bind((self.bind_host, self.bind_port))
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.settimeout(self.recv_timeout)
+            sock.bind((self.bind_host, self.bind_port))
+        except OSError:
+            sock.close()
+            raise
+        self._sock = sock
 
         self._stop_event.clear()
         self._reader_thread = threading.Thread(
@@ -185,11 +206,20 @@ class URUDPClient:
             name=f"URUDPReader-{self.bind_host}:{self.bind_port}",
             daemon=True,
         )
+        self._writer_thread = threading.Thread(
+            target=self._writer_loop,
+            name=f"URUDPWriter-{self.bind_host}:{self.bind_port}",
+            daemon=True,
+        )
         self._reader_thread.start()
+        self._writer_thread.start()
 
     def stop(self) -> None:
         """停止后台线程并关闭 socket。"""
         self._stop_event.set()
+        with self._send_cond:
+            self._pending_send = None
+            self._send_cond.notify_all()
 
         sock = self._sock
         if sock is not None:
@@ -199,11 +229,12 @@ class URUDPClient:
                 pass
             self._sock = None
 
-        thread = self._reader_thread
-        if thread is not None and thread.is_alive():
-            if threading.current_thread() is not thread:
+        for thread in (self._reader_thread, self._writer_thread):
+            if (thread is not None and thread.is_alive()
+                    and threading.current_thread() is not thread):
                 thread.join(timeout=1.0)
         self._reader_thread = None
+        self._writer_thread = None
 
     def restart(self) -> None:
         """重新启动：先 stop 再 start。"""
@@ -216,6 +247,11 @@ class URUDPClient:
             self._last_update_time = None
             self._last_received_monotonic = None
             self._sender_address = None
+            self._last_send_error = None
+            self._send_count = 0
+            self._send_error_count = 0
+        self._last_send_time = 0.0
+        self._last_send_error_logged = float('-inf')
 
         self.start()
 
@@ -296,12 +332,16 @@ class URUDPClient:
                 # 仅在超时时检查 stop 事件，正常情况
                 continue
 
-            except OSError:
-                if not self._stop_event.is_set():
-                    with self._cond:
-                        self._last_error = RuntimeError("UDP socket 异常关闭")
-                        self._cond.notify_all()
-                break
+            except OSError as exc:
+                if self._stop_event.is_set():
+                    break
+                with self._cond:
+                    self._last_error = exc
+                    self._cond.notify_all()
+                if exc.errno in (errno.EBADF, errno.ENOTSOCK):
+                    break
+                # 网络不可达等错误不代表 socket 已关闭；保留接收线程等待恢复。
+                self._stop_event.wait(0.1)
 
             except Exception as e:
                 with self._cond:
@@ -345,6 +385,9 @@ class URUDPClient:
                 "sender_address": self._sender_address,
                 "last_error": None if self._last_error is None else str(self._last_error),
                 "bind_address": (self.bind_host, self.bind_port),
+                "send_last_error": None if self._last_send_error is None else str(self._last_send_error),
+                "send_count": self._send_count,
+                "send_error_count": self._send_error_count,
             }
 
     def wait_next(
@@ -435,9 +478,9 @@ class URUDPClient:
         q_arm: List[float],
         mode: int,
         q_gripper: List[float],
-    ) -> None:
+    ) -> bool:
         """
-        向指定地址发送控制指令。
+        同步发送，网络失败返回 False 并记录发送错误；界面应使用 queue_send_to()。
 
         Parameters
         ----------
@@ -446,16 +489,65 @@ class URUDPClient:
         q_arm, mode, q_gripper:
             控制数据，见 pack()。
         """
-        if self._sock is None:
-            raise RuntimeError("UDP socket 未创建，请先调用 start()")
-
-        # 发送限速
-        if self.send_interval > 0:
-            with self._send_lock:
-                elapsed = time.time() - self._last_send_time
-                if elapsed < self.send_interval:
-                    time.sleep(self.send_interval - elapsed)
-                self._last_send_time = time.time()
-
         packet = self.pack(q_arm, mode, q_gripper)
-        self._sock.sendto(packet, target)
+        return self._send_packet(packet, target)
+
+    def _send_packet(self, packet: bytes, target: Tuple[str, int]) -> bool:
+        with self._send_lock:
+            delay = self.send_interval - (time.monotonic() - self._last_send_time)
+            if self._stop_event.wait(max(0.0, delay)):
+                return False
+            sock = self._sock
+            if sock is None:
+                return False
+            try:
+                sock.sendto(packet, target)
+            except OSError as exc:
+                if not self._stop_event.is_set():
+                    now = time.monotonic()
+                    with self._cond:
+                        self._last_send_error = exc
+                        self._send_error_count += 1
+                    if now - self._last_send_error_logged >= self.ERROR_LOG_INTERVAL:
+                        logger.warning("UDP 反馈发送失败，等待后续反馈重试 (%s): %s", target, exc)
+                        self._last_send_error_logged = now
+                return False
+            self._last_send_time = time.monotonic()
+            with self._cond:
+                self._last_send_error = None
+                self._send_count += 1
+            return True
+
+    def queue_send_to(
+        self, target: Tuple[str, int], q_arm: List[float], mode: int,
+        q_gripper: List[float], *, max_age: float = 0.5,
+    ) -> bool:
+        """提交最新反馈；等待超过 max_age 秒则丢弃。True 不代表远端已收到。"""
+        packet = self.pack(q_arm, mode, q_gripper)
+        with self._send_cond:
+            if self._sock is None or self._stop_event.is_set():
+                return False
+            self._pending_send = (packet, target, time.monotonic() + max_age)
+            self._send_cond.notify()
+        return True
+
+    def _writer_loop(self) -> None:
+        next_attempt = 0.0
+        while not self._stop_event.is_set():
+            with self._send_cond:
+                self._send_cond.wait_for(
+                    lambda: self._pending_send is not None or self._stop_event.is_set())
+            if self._stop_event.wait(max(0.0, next_attempt - time.monotonic())):
+                break
+            # 等待退避结束后再取最新帧，期间的旧反馈已被覆盖。
+            with self._send_cond:
+                if self._stop_event.is_set():
+                    break
+                pending, self._pending_send = self._pending_send, None
+            if pending is None:
+                continue
+            packet, target, deadline = pending
+            if time.monotonic() > deadline:
+                continue
+            sent = self._send_packet(packet, target)
+            next_attempt = time.monotonic() + (self.send_interval if sent else self.SEND_RETRY_INTERVAL)

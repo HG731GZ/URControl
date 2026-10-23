@@ -288,7 +288,7 @@ class MainWindow(QMainWindow):
                     connection_type='tcp', debug=False)
                 self.gripper.start(interval=0.05)
             except OSError as exc:
-                self.append_message(f'夹爪连接失败：{exc}')
+                self.append_message(f'夹爪未连接，继续使用机械臂：{exc}')
         self.update_connection_label()
         self.update_robot_status()
 
@@ -373,6 +373,9 @@ class MainWindow(QMainWindow):
         self.append_message(self.dashboard_client.power_off())
         self.update_buttons()
 
+    def get_gripper_feedback(self):
+        return None if self.gripper is None else self.gripper.get_feedback()
+
     def get_robot_snapshot(self):
         if self.realtime_client is None:
             return None
@@ -422,9 +425,12 @@ class MainWindow(QMainWindow):
         self.update_buttons()
         mode = f'机器人模式 {state.robot_mode}' if state else '无实时状态'
         ready = 'RTDE 就绪' if self.rtde_controller is not None else 'RTDE 未就绪'
+        gripper_status = '夹爪在线' if self.get_gripper_feedback() is not None else '夹爪未连接/无反馈'
+        feedback_error = self.udp_client.get_monitor_snapshot()['send_last_error']
+        feedback_status = ' | 主端反馈发送失败，正在重试' if feedback_error is not None else ''
         self.statusbar.showMessage(
             f'UDP {LOCAL_IP}:{self.udp_client.bind_port} | {self.label_IP_now.toolTip()} | '
-            f'{mode} | {ready} | 控制来源 {self.control_source}')
+            f'{mode} | {ready} | {gripper_status} | 控制来源 {self.control_source}{feedback_status}')
 
     def update_buttons(self):
         connected = self.connected_ip is not None
@@ -578,7 +584,7 @@ class MainWindow(QMainWindow):
                 'feedback_destination': (UDP_REMOTE_IP, UDP_REMOTE_PORT),
                 'udp_synced': self._udp_synced, 'udp_sync_pending': self._udp_sync_pending,
                 'gripper_following': (self.control_source == 'udp' and self.gripper is not None
-                                      and not self.gripper.is_paused),
+                                      and self.get_gripper_feedback() is not None and not self.gripper.is_paused),
                 'requested_speed_percent': self.horizontalSlider_SpeedSlider.value(),
             })
         window.update_snapshot(snapshot)
@@ -893,7 +899,7 @@ class MainWindow(QMainWindow):
             return
         admittance_running = (self.admittance_mode == 'off' or
                               self.rtde_controller.get_status()['admittance']['running'])
-        if self.gripper is not None and admittance_running:
+        if self.get_gripper_feedback() is not None and admittance_running:
             self.gripper.set_target_position(command.q_gripper[0])
             if self.gripper.is_paused:
                 self.gripper.resume()
@@ -912,7 +918,7 @@ class MainWindow(QMainWindow):
             return
         self._udp_sync_pending = True
         self._udp_sync_parameters = deepcopy(config)
-        if self.gripper is not None:
+        if self.get_gripper_feedback() is not None:
             self.gripper.move(command.q_gripper[0], speed=GRIPPER_SPEED_DEFAULT,
                               force=GRIPPER_FORCE_DEFAULT)
             self.gripper.resume()
@@ -981,15 +987,20 @@ class MainWindow(QMainWindow):
                     self.robot_visualizer.update_virtual(q_target_7)
 
         # 夹钳实时反馈
-        if self.gripper is not None:
-            fb = self.gripper.feedback
+        fb = self.get_gripper_feedback()
+        if fb is not None:
             self.lineEdit_Clamp1.setText(f"{fb.position}")
             self.lineEdit_Clamp2.setText(f"{fb.current}")
-            # 打包发送当前数据到主端
-        if (self.gripper is not None) and (self.robot_state is not None):
-            fb = self.gripper.feedback
-            self.udp_client.send_to((UDP_REMOTE_IP, UDP_REMOTE_PORT), self.robot_state.q_actual, UDPControlMode.OFF,
-                                       [fb.open, fb.current, fb.position])
+        else:
+            text = '未连接' if self.gripper is None else '无反馈'
+            self.lineEdit_Clamp1.setText(text)
+            self.lineEdit_Clamp2.setText(text)
+        # 机械臂反馈不依赖夹爪；不可用的夹爪量用 NaN 标记，不伪装为真实零值。
+        if self.robot_state is not None:
+            gripper_values = [float('nan')] * 3 if fb is None else [fb.open, fb.current, fb.position]
+            self.udp_client.queue_send_to(
+                (UDP_REMOTE_IP, UDP_REMOTE_PORT), self.robot_state.q_actual,
+                UDPControlMode.OFF, gripper_values, max_age=ROBOT_STATE_TIMEOUT_S)
 
         if self.torque_client is not None:
             sample = self.torque_client.get_latest()
@@ -1043,7 +1054,7 @@ class MainWindow(QMainWindow):
         timestamp = time.time()
         command = self.get_udp_snapshot()
         state = self.get_robot_snapshot()
-        feedback = self.gripper.feedback if self.gripper is not None else None
+        feedback = self.get_gripper_feedback()
         frames = self.get_camera_frames()
         # 每个采样周期使用同一数值时间戳，未更新的数据源不重复入库。
         if (self._admittance_reference_source != 'free' and command is not None
