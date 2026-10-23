@@ -72,6 +72,14 @@ def ur_admittance_control():
     return stamp.sec + stamp.nanosec / 1000000000.0
   end
 
+  # URScript 没有 Python 的 abs 内置函数，标量绝对值在此显式计算。
+  def adm_abs(value):
+    if value < 0:
+      return -value
+    end
+    return value
+  end
+
   def adm_clip(value, lower, upper):
     if value < lower:
       return lower
@@ -223,11 +231,11 @@ def ur_admittance_control():
     local actual_speed = get_actual_joint_speeds()
     local k = 0
     while k < 6 and adm_reason == 0:
-      if abs(actual_speed[k]) > ${STATIONARY_MAX_QD_RAD_S}:
+      if adm_abs(actual_speed[k]) > ${STATIONARY_MAX_QD_RAD_S}:
         adm_reason = 10
-      elif adm_source == 1 and abs(adm_q_master[k] - adm_q_start[k]) > ${TELEOP_SYNC_TOLERANCE_RAD}:
+      elif adm_source == 1 and adm_abs(adm_q_master[k] - adm_q_start[k]) > ${TELEOP_SYNC_TOLERANCE_RAD}:
         adm_reason = 10
-      elif abs(adm_q_start[k]) > adm_q_limit[k]:
+      elif adm_abs(adm_q_start[k]) > adm_q_limit[k]:
         adm_reason = 8
       end
       k = k + 1
@@ -294,7 +302,7 @@ def ur_admittance_control():
         if adm_source == 1:
           local nominal_step = adm_clip(adm_q_master[k] - adm_q_nom[k], -adm_nominal_speed[k] * adm_dt, adm_nominal_speed[k] * adm_dt)
           adm_q_nom[k] = adm_q_nom[k] + nominal_step
-          if abs(adm_q_master[k]) > adm_q_limit[k]:
+          if adm_abs(adm_q_master[k]) > adm_q_limit[k]:
             adm_reason = 8
           end
         end
@@ -308,7 +316,7 @@ def ur_admittance_control():
         adm_velocity[k] = adm_clip(adm_velocity[k], -adm_speed_max[k], adm_speed_max[k])
         if adm_source == 1:
           adm_delta[k] = adm_clip(adm_delta[k] + adm_velocity[k] * adm_dt, -adm_offset_max[k], adm_offset_max[k])
-          if abs(adm_delta[k]) >= adm_offset_max[k] and adm_delta[k] * adm_velocity[k] > 0:
+          if adm_abs(adm_delta[k]) >= adm_offset_max[k] and adm_delta[k] * adm_velocity[k] > 0:
             adm_velocity[k] = 0.0
           end
           q_des[k] = adm_q_nom[k] + adm_delta[k]
@@ -354,9 +362,9 @@ def ur_admittance_control():
           q_des = get_inverse_kin(target_pose, qnear=adm_q_cmd, tcp=adm_tcp)
           k = 0
           while k < 6:
-            if abs(q_des[k] - adm_q_cmd[k]) > adm_ik_step[k]:
+            if adm_abs(q_des[k] - adm_q_cmd[k]) > adm_ik_step[k]:
               adm_reason = 9
-            elif adm_source == 1 and abs(q_des[k] - adm_q_nom[k]) > adm_cart_correction[k]:
+            elif adm_source == 1 and adm_abs(q_des[k] - adm_q_nom[k]) > adm_cart_correction[k]:
               adm_reason = 6
             end
             k = k + 1
@@ -377,15 +385,15 @@ def ur_admittance_control():
         local desired_speed = adm_clip((q_des[k] - adm_q_cmd[k]) / adm_dt, -adm_max_qd[k], adm_max_qd[k])
         qd_next[k] = adm_clip(desired_speed, adm_qd_cmd[k] - adm_max_qdd[k] * adm_dt, adm_qd_cmd[k] + adm_max_qdd[k] * adm_dt)
         q_next[k] = adm_q_cmd[k] + qd_next[k] * adm_dt
-        if abs(q_des[k] - q_next[k]) > 0.000000001:
+        if adm_abs(q_des[k] - q_next[k]) > 0.000000001:
           limited = True
         end
-        if abs(q_des[k] - q_next[k]) > adm_tracking_limit[k]:
+        if adm_abs(q_des[k] - q_next[k]) > adm_tracking_limit[k]:
           lagging = True
         end
-        if abs(q_next[k] - q_actual[k]) > adm_tracking_limit[k]:
+        if adm_abs(q_next[k] - q_actual[k]) > adm_tracking_limit[k]:
           adm_reason = 7
-        elif abs(q_des[k]) > adm_q_limit[k] or abs(q_next[k]) > adm_q_limit[k]:
+        elif adm_abs(q_des[k]) > adm_q_limit[k] or adm_abs(q_next[k]) > adm_q_limit[k]:
           adm_reason = 8
         end
         k = k + 1

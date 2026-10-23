@@ -66,10 +66,13 @@ class URAdmittanceController:
         self._wake = threading.Event()
         self._thread = None
         self._connection = None
+        self._script_client = None
+        self._script_error_received = False
         self._uploaded = False
         self._worker_failed = False
         self._seen_program = False
         self._baseline_registers = None
+        self._last_registers = None
         self._active = True
         self._q_master = None
         self._source_seq = None
@@ -181,6 +184,9 @@ class URAdmittanceController:
 
     def _complete(self) -> None:
         """仅在上传前取消，或确认机器人程序退出后释放本轮资源。"""
+        if self._script_client is not None:
+            self._script_client.close()
+            self._script_client = None
         if self._connection is not None:
             self._connection.disconnect()
             self._connection = None
@@ -263,6 +269,7 @@ class URAdmittanceController:
         ints = [int(getattr(state, f"output_int_register_{cfg['ADMITTANCE_OUTPUT_INT_BASE'] + i}")) for i in range(5)]
         values = [float(getattr(state, f"output_double_register_{cfg['ADMITTANCE_OUTPUT_FLOAT_BASE'] + i}")) for i in range(24)]
         phase, reason, adopted, cycles, source = ints
+        self._last_registers = tuple(ints)
         runtime = int(state.runtime_state)
         self._last_sample_monotonic = time.monotonic()
         if not self._uploaded:
@@ -338,10 +345,13 @@ class URAdmittanceController:
             if self._stop_requested.is_set():
                 self.cancel_before_start()
                 return
-            with URScriptClient(self.robot_ip) as script_client:
-                # 从开始上传起，任何发送错误都按程序可能已经执行处理。
-                self._uploaded = True
-                script_client.send_script(self._script)
+            # Primary 会向上传客户端返回编译/运行错误；保留连接并持续读取，
+            # 直到停止确认，避免发完即关以及漏掉脚本被控制器拒绝的具体原因。
+            self._script_client = URScriptClient(self.robot_ip, port=30001)
+            self._script_client.connect()
+            # 从开始上传起，任何发送错误都按程序可能已经执行处理。
+            self._uploaded = True
+            self._script_client.send_script(self._script)
             upload_time = time.monotonic()
             next_reference = upload_time
             next_heartbeat = upload_time
@@ -361,10 +371,16 @@ class URAdmittanceController:
                         next_heartbeat = now + 1.0 / cfg["ADMITTANCE_HEARTBEAT_HZ"]
                     if reference_due:
                         next_reference = now + 1.0 / cfg["TELEOP_REFERENCE_HZ"]
+                script_error = self._script_client.poll_script_error()
+                if script_error is not None:
+                    self._script_error_received = True
+                    self._set_error(script_error)
+                    self.request_stop()
                 state = self._receive_latest()
                 startup_cancelled = (
                     stop_sent and stopped_after_timestamp is not None
-                    and now - upload_time >= cfg["ADMITTANCE_START_TIMEOUT_S"]
+                    and (self._script_error_received
+                         or now - upload_time >= cfg["ADMITTANCE_START_TIMEOUT_S"])
                     and state is not None and state.timestamp > stopped_after_timestamp
                 )
                 if state is not None and (self._seen_program or startup_cancelled) and state.runtime_state == 1:
@@ -375,7 +391,11 @@ class URAdmittanceController:
                         return
                 if not self._stop_requested.is_set():
                     if not self._seen_program and now - upload_time > cfg["ADMITTANCE_START_TIMEOUT_S"]:
-                        self._set_error("导纳启动未得到机器人确认，正在请求停止")
+                        self._set_error(
+                            "导纳启动未得到机器人确认，正在请求停止"
+                            f"（runtime_state={self.get_status()['runtime_state']}，"
+                            f"阶段/原因/源序号/周期/场景={self._last_registers}）"
+                        )
                         self.request_stop()
                     elif now - self._last_sample_monotonic > cfg["ADMITTANCE_STATE_TIMEOUT_S"]:
                         self._set_error("导纳状态接收超时，正在请求停止")

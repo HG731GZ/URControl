@@ -111,6 +111,26 @@ python preview_ui.py
 
 导纳控制的设计、文件改动和人工联调步骤见 [URControl 导纳控制规划](URControl_导纳控制规划.md)。
 
+### 导纳启动诊断与 URSim 回归
+
+导纳仍在机器人端执行，通过 RTDE 交换参考和状态。曾出现的“导纳启动未得到机器人确认”已在本机 URSim 5.24 复现：脚本调用了 URScript 不支持的 `abs()`，控制器返回 `compile_error_name_not_found:abs:`，程序未开始执行。脚本现使用显式的 `adm_abs()` 计算标量绝对值。
+
+导纳程序通过 Primary 端口 `30001` 上传，连接保持到停止确认，并由同一后台线程非阻塞读取编译／运行异常。界面会显示控制器给出的行号、列号和原始原因；错误后仍需取得新的程序停止及关节静止状态，才释放本轮控制权。无具体脚本异常的启动超时会附带最近的运行状态和阶段寄存器。源文件保留中文注释，上传时去掉整行注释并保留行号，生成 ASCII 脚本。协议依据见 [UR Primary 消息格式](https://docs.universal-robots.com/tutorials/communication-protocol-tutorials/primary-secondary-guide.html)及 [URScript 连接要求](https://www.universal-robots.com/manuals/EN/HTML/SW5_25/Content/prod-scriptmanual/all_scripts/Connecting_to_URControl.htm)。
+
+在配置好的项目环境中运行离线回归，不连接机器人：
+
+```bash
+python -m unittest discover -s tests -p 'test_*.py' -v
+```
+
+启动本机 URSim，使模拟器上电、刹车释放且没有运行中的程序，然后显式运行集成检查：
+
+```bash
+python tests/ursim_admittance_smoke.py
+```
+
+该脚本固定连接 `127.0.0.1`，会产生小幅模拟运动，只用于本机 URSim，不用于真机或转发到真机的端口。它检查四种导纳组合、偏置采样时取消、主端数据超时、编译错误、运行错误，以及普通控制与导纳的交接；各独立场景间留出 0.2 秒供模拟器异步释放旧输入配方。末端／关节运动使用小目标载荷触发导纳分支，不能据此判断真实接触响应。2026-10-23 在 URSim `5.24.0.1219432` 验证通过，真机 PolyScope 5.25 尚未执行验证。
+
 ### 导纳调参与监视
 
 新版和经典主界面的“导纳调参与监视…”打开同一个独立非模态窗口，首次打开不启动运动。窗口可独立移动、最大化和放在另一块屏幕。关闭该窗口只隐藏监视并暂停显示采样，机器人控制、主端提交和原有采集继续运行；重新打开保留草稿和曲线缓存，隐藏期间用断点表示。切换主界面布局、暂停或清空曲线也不改变运动。

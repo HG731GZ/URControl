@@ -180,4 +180,9 @@ def render_script(reference_source, space, *, config=None):
     rendered["CART_FRAME_TOOL_START"] = "True" if values["CART_FRAME"] == "tool_start" else "False"
     rendered["WATCHDOG_VARIABLE"] = f'"input_int_register_{values["ADMITTANCE_INPUT_INT_BASE"] + 1}"'
     template = Path(__file__).with_name("scripts").joinpath("admittance_control.script").read_text(encoding="utf-8")
-    return Template(template).substitute(rendered)
+    script = Template(template).substitute(rendered)
+    # 源文件保留中文说明；上传只使用 ASCII，并保留空行以对应控制器错误行号。
+    script = "\n".join("" if line.lstrip().startswith("#") else line
+                       for line in script.splitlines()) + "\n"
+    script.encode("ascii")
+    return script

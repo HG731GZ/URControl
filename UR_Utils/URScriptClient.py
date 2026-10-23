@@ -1,9 +1,11 @@
 import math
+import select
+import struct
 from typing import Literal, Optional, Sequence
 
 import numpy as np
 
-from UR_Utils.URTcpClient import URTcpClient
+from UR_Utils.URTcpClient import URTcpClient, URTcpError
 from UR_Utils.ur_pose_math import pose_trans, twist_tool_to_base
 
 class URScriptClient(URTcpClient):
@@ -35,6 +37,7 @@ class URScriptClient(URTcpClient):
             terminator=b"\n",
             auto_connect=auto_connect,
         )
+        self._script_response_buffer = bytearray()
 
     def send_script(self, script: str) -> None:
         """
@@ -44,6 +47,42 @@ class URScriptClient(URTcpClient):
             script += "\n"
         if self.is_connected:
             self.send_text(script, append_terminator=False)
+
+    def poll_script_error(self) -> Optional[str]:
+        """非阻塞读取 Primary 上传连接的脚本异常，同时排空机器人状态消息。
+
+        导纳使用 30001 上传并保留此连接。编译错误会回到上传客户端，
+        不能靠另开的 RTDE 或 Secondary 连接取得。TCP 拆包留待下一次读取。
+        """
+        with self._lock:
+            sock = self._ensure_connected()
+            # 限制单次读取量，避免诊断流占用参考和心跳的发送周期。
+            for _ in range(32):
+                if not select.select([sock], [], [], 0)[0]:
+                    break
+                self._script_response_buffer.extend(self.recv_once())
+            return self._consume_script_messages()
+
+    def _consume_script_messages(self) -> Optional[str]:
+        """按 Primary 长度前缀解包，只提取本次最早的脚本异常。"""
+        error = None
+        buffer = self._script_response_buffer
+        while len(buffer) >= 5:
+            size, message_type = struct.unpack_from(">IB", buffer)
+            if not 5 <= size <= 1024 * 1024:
+                raise URTcpError(f"Primary 消息长度无效：{size}")
+            if len(buffer) < size:
+                break
+            packet = bytes(buffer[:size])
+            del buffer[:size]
+            # RobotMessage(20): timestamp(8)、source(1)、子类型(1)。
+            # RuntimeException(10): 行号(4)、列号(4)、剩余文本。
+            if message_type == 20 and size >= 23 and packet[14] == 10:
+                line, column = struct.unpack_from(">II", packet, 15)
+                message = packet[23:].rstrip(b"\x00").decode("utf-8", errors="replace")
+                if error is None:
+                    error = f"URScript 错误（第 {line} 行，第 {column} 列）：{message}"
+        return error
 
 
     def movej(
