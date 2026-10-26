@@ -314,6 +314,7 @@ class URRTDEController:
         self, reference_source: str, space: str, *,
         q_master: Optional[Sequence[float]] = None, source_seq: Optional[int] = None,
         config: Optional[dict] = None, stop_event: Optional[threading.Event] = None,
+        log_sink=None,
     ) -> bool:
         """使用本轮配置副本接管控制；共享停止事件贯穿排队、交接和偏置采样。"""
         self._last_admittance_start_accepted = False
@@ -325,13 +326,12 @@ class URRTDEController:
             if self._is_shutdown:
                 raise RuntimeError("控制器已经关闭")
             self._require_ordinary_motion()
-            cfg = admittance_config.snapshot() if config is None else deepcopy(config)
-            if config is not None:
-                admittance_config.validate_config(cfg)
+            cfg = admittance_config.validate_run_config(reference_source, space, config=config)
             cfg["JOINT_POSITION_LIMIT_RAD"] = self._joint_position_limit.tolist()
             backend = URAdmittanceController(
                 self.robot_ip, reference_source, space,
                 q_master=q_master, source_seq=source_seq, config=cfg, stop_event=stop_event,
+                log_sink=log_sink,
             )
             # 先发布本轮后端，使其他线程在等待生命周期锁时也能保留停止请求。
             self._admittance = backend
@@ -1123,8 +1123,8 @@ class URRTDEController:
                                  ("last_actual_tcp_pose", "actual_TCP_pose")):
                 if admittance[source] is not None:
                     status[name] = np.asarray(admittance[source], dtype=float)
-            status["last_target_q"] = (None if admittance["q_master"] is None else
-                                       np.asarray(admittance["q_master"], dtype=float))
+            target = admittance["q_master"] if backend.reference_source == "teleop" else admittance["q_nom"]
+            status["last_target_q"] = None if target is None else np.asarray(target, dtype=float)
             status["loop_count"] = admittance["cycle_count"]
         return status
 

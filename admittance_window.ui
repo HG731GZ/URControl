@@ -67,7 +67,7 @@
         </item>
         <item>
          <property name="text">
-          <string>主动柔顺</string>
+          <string>定点柔顺（无主端，撤力回位）</string>
          </property>
         </item>
        </widget>
@@ -184,7 +184,17 @@
                 <item>
                  <widget class="QLabel" name="label_Model_joint">
                   <property name="text">
-                   <string>M：惯性响应 · D：运动阻尼 · K：恢复刚度</string>
+                   <string>M：惯性响应 · D：运动阻尼 · K：相对名义参考的恢复刚度</string>
+                  </property>
+                  <property name="wordWrap">
+                   <bool>true</bool>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QLabel" name="label_FixedModel_joint">
+                  <property name="text">
+                   <string>定点柔顺：启用轴 M、D、K &gt; 0；目标载荷 = 0。撤力后回到本轮启动位置。</string>
                   </property>
                   <property name="wordWrap">
                    <bool>true</bool>
@@ -1275,16 +1285,6 @@ N·m</string>
                  </layout>
                 </item>
                 <item>
-                 <widget class="QLabel" name="label_FreeModel_joint">
-                  <property name="text">
-                   <string>主动柔顺使用质量—阻尼模型，恢复刚度固定为 0。</string>
-                  </property>
-                  <property name="wordWrap">
-                   <bool>true</bool>
-                  </property>
-                 </widget>
-                </item>
-                <item>
                  <spacer name="verticalSpacer_Core_joint">
                   <property name="orientation">
                    <enum>Qt::Vertical</enum>
@@ -1324,7 +1324,17 @@ N·m</string>
                 <item>
                  <widget class="QLabel" name="label_Model_cart">
                   <property name="text">
-                   <string>M：惯性响应 · D：运动阻尼 · K：恢复刚度</string>
+                   <string>M：惯性响应 · D：运动阻尼 · K：相对名义参考的恢复刚度</string>
+                  </property>
+                  <property name="wordWrap">
+                   <bool>true</bool>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QLabel" name="label_FixedModel_cart">
+                  <property name="text">
+                   <string>定点柔顺：启用轴 M、D、K &gt; 0；目标载荷 = 0。撤力后回到本轮启动位置。</string>
                   </property>
                   <property name="wordWrap">
                    <bool>true</bool>
@@ -2462,16 +2472,6 @@ rx / ry / rz：M 为 kg·m²，D 为 N·m·s/rad，K 为 N·m/rad，载荷与死
                  </widget>
                 </item>
                 <item>
-                 <widget class="QLabel" name="label_FreeModel_cart">
-                  <property name="text">
-                   <string>主动柔顺使用质量—阻尼模型，恢复刚度固定为 0。</string>
-                  </property>
-                  <property name="wordWrap">
-                   <bool>true</bool>
-                  </property>
-                 </widget>
-                </item>
-                <item>
                  <spacer name="verticalSpacer_Core_cart">
                   <property name="orientation">
                    <enum>Qt::Vertical</enum>
@@ -2572,7 +2572,7 @@ rx / ry / rz：M 为 kg·m²，D 为 N·m·s/rad，K 为 N·m/rad，载荷与死
         <item>
          <widget class="QLabel" name="label_CodeParameters">
           <property name="text">
-           <string>其余参数在 UR_Utils/admittance_config.py 中调整，修改后重启程序。</string>
+           <string>滤波、偏移限幅及通信参数在 UR_Utils/admittance_config.py 中调整。模型偏移上限与机械臂工作空间约束分别生效。</string>
           </property>
           <property name="wordWrap">
            <bool>true</bool>
@@ -2902,7 +2902,7 @@ rx / ry / rz：M 为 kg·m²，D 为 N·m·s/rad，K 为 N·m/rad，载荷与死
              <item>
               <widget class="QLabel" name="label_DiagnosticExplanation">
                <property name="text">
-                <string>未上报量明确显示缺失；主机发送成功不代表机器人已经接收。</string>
+                <string>心跳诊断分别显示主机发送间隔和机器人回显、年龄、最大观察间隔；回显不代表单向网络延迟。</string>
                </property>
                <property name="wordWrap">
                 <bool>true</bool>
@@ -3003,11 +3003,6 @@ rx / ry / rz：M 为 kg·m²，D 为 N·m·s/rad，K 为 N·m/rad，载荷与死
            <item>
             <property name="text">
              <string>末端导纳偏移</string>
-            </property>
-           </item>
-           <item>
-            <property name="text">
-             <string>主动柔顺速度</string>
             </property>
            </item>
            <item>
@@ -3131,6 +3126,36 @@ rx / ry / rz：M 为 kg·m²，D 为 N·m·s/rad，K 为 N·m/rad，载荷与死
      </widget>
     </item>
     <item>
+     <layout class="QHBoxLayout" name="horizontalLayout_DebugLogging" stretch="0,1">
+      <item>
+       <widget class="QCheckBox" name="checkBox_DebugLogging">
+        <property name="text">
+         <string>记录调试日志</string>
+        </property>
+        <property name="toolTip">
+         <string>每次启动应用默认开启，运行中可切换。独立于主窗口采集按钮，隐藏窗口后继续记录。按实际接收的原始 RTDE 帧记录，接收配置为 100 Hz，不保证覆盖每个 500 Hz 控制周期。</string>
+        </property>
+        <property name="checked">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLabel" name="label_DebugLogStatus">
+        <property name="text">
+         <string>已开启，等待启动导纳 · 已写入 0 条 · 丢弃 0 条</string>
+        </property>
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+        <property name="textInteractionFlags">
+         <set>Qt::TextSelectableByMouse</set>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </item>
+    <item>
      <widget class="QPlainTextEdit" name="plainTextEdit_AdmittanceLog">
       <property name="readOnly">
        <bool>true</bool>
@@ -3211,7 +3236,7 @@ rx / ry / rz：M 为 kg·m²，D 为 N·m·s/rad，K 为 N·m/rad，载荷与死
     <item>
      <widget class="QLabel" name="label_OperationHint">
       <property name="text">
-       <string>关闭窗口仅隐藏，不停止运动。停止与全局停止使用同一控制入口。</string>
+       <string>关闭窗口仅隐藏，运动与已开启的日志继续。日志记录实际 RTDE 接收帧（配置 100 Hz），独立于主窗口采集按钮。停止与全局停止使用同一控制入口。</string>
       </property>
       <property name="wordWrap">
        <bool>true</bool>
@@ -3227,7 +3252,7 @@ rx / ry / rz：M 为 kg·m²，D 为 N·m·s/rad，K 为 N·m/rad，载荷与死
   </action>
   <action name="actionExportEffective">
    <property name="text">
-    <string>导出本轮生效记录（51 项完整参数）</string>
+    <string>导出本轮生效记录（完整配置）</string>
    </property>
   </action>
   <widget class="QMenu" name="menu_ExportParameters">

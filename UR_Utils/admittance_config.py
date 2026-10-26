@@ -5,6 +5,8 @@ from math import isfinite, pi
 from pathlib import Path
 from string import Template
 
+from UR_Utils import admittance_telemetry
+
 
 # 以下值仅为低速联调起点，尚未针对具体工具和接触环境整定。
 # 界面仅编辑柔顺轴、M/D/K、目标载荷、连续死区和末端柔顺方向，共 13 项配置。
@@ -14,8 +16,16 @@ from string import Template
 TELEOP_REFERENCE_HZ = 100.0
 ADMITTANCE_STATE_HZ = 100.0
 ADMITTANCE_HEARTBEAT_HZ = 50.0
+# 暂保留原通信阈值，等待双端实际间隔和停止距离联调后协调。
+# 80 毫秒软件超时到 10 赫兹硬看门狗仅有名义 20 毫秒间隙，不能保证 stopj 完成减速。
 ADMITTANCE_WATCHDOG_MIN_HZ = 10.0
 ADMITTANCE_HEARTBEAT_TIMEOUT_S = 0.08
+# 收发循环每轮只处理限定时间和字节量，避免状态或诊断积压阻塞下一次心跳。
+ADMITTANCE_RTDE_READ_BUDGET_S = 0.002
+ADMITTANCE_RTDE_BUFFER_LIMIT_BYTES = 4096
+ADMITTANCE_PRIMARY_READ_BUDGET_S = 0.001
+ADMITTANCE_PRIMARY_READ_MAX_BYTES = 16384
+ADMITTANCE_PRIMARY_BUFFER_LIMIT_BYTES = 1048576
 MASTER_FRAME_TIMEOUT_S = 0.5
 ADMITTANCE_BIAS_DURATION_S = 0.5
 ADMITTANCE_START_TIMEOUT_S = 5.0
@@ -43,13 +53,13 @@ JOINT_AXES = [1, 1, 1, 1, 1, 1]
 JOINT_MASS = [6.0, 6.0, 4.0, 1.0, 1.0, 0.5]
 JOINT_DAMPING = [30.0, 30.0, 20.0, 5.0, 5.0, 3.0]
 JOINT_TARGET_TORQUE_NM = [0.0] * 6
-JOINT_DEADBAND_NM = [1.5, 1.5, 1.0, 0.3, 0.3, 0.2]
-# 滤波和偏移、速度上限留在本文件；恢复刚度 K 仅用于遥操作。
+# 按已观察到的拖动改善选择首轮死区，仍须实机核对噪声与回位精度后整定。
+JOINT_DEADBAND_NM = [3.0, 3.0, 3.0, 1.0, 1.0, 1.0]
+# 滤波和偏移、速度上限留在本文件；两种来源共用恢复刚度和偏移模型。
 JOINT_FILTER_CUTOFF_HZ = 10.0
-TELEOP_JOINT_STIFFNESS = [30.0, 30.0, 20.0, 5.0, 5.0, 3.0]
-TELEOP_JOINT_MAX_OFFSET_RAD = [0.10] * 6
-TELEOP_JOINT_MAX_OFFSET_SPEED_RAD_S = [0.10] * 6
-FREE_JOINT_MAX_SPEED_RAD_S = [0.10] * 6
+JOINT_STIFFNESS = [30.0, 30.0, 20.0, 5.0, 5.0, 3.0]
+JOINT_MAX_OFFSET_RAD = [0.10] * 6
+JOINT_MAX_OFFSET_SPEED_RAD_S = [0.10] * 6
 
 # 柔顺方向在本轮启动时固定为基座方向或启动时工具方向；中心始终在当前 TCP。
 CART_FRAME = "base"
@@ -59,16 +69,14 @@ CART_MASS = [10.0, 10.0, 10.0, 0.5, 0.5, 0.5]
 CART_DAMPING = [100.0, 100.0, 100.0, 5.0, 5.0, 5.0]
 CART_TARGET_WRENCH = [0.0] * 6
 CART_DEADBAND = [3.0, 3.0, 3.0, 0.2, 0.2, 0.2]
-# 滤波和偏移、速度上限留在本文件；恢复刚度 K 仅用于遥操作。
+# 滤波和偏移、速度上限留在本文件；两种来源共用恢复刚度和偏移模型。
 CART_FILTER_CUTOFF_HZ = 10.0
-TELEOP_CART_STIFFNESS = [200.0, 200.0, 200.0, 10.0, 10.0, 10.0]
-TELEOP_CART_MAX_POSITION_OFFSET_M = 0.03
-TELEOP_CART_MAX_ROTATION_OFFSET_RAD = 0.15
-TELEOP_CART_MAX_OFFSET_LINEAR_SPEED_M_S = 0.03
-TELEOP_CART_MAX_OFFSET_ANGULAR_SPEED_RAD_S = 0.15
-TELEOP_CART_MAX_JOINT_CORRECTION_RAD = [0.15] * 6
-FREE_CART_MAX_LINEAR_SPEED_M_S = 0.03
-FREE_CART_MAX_ANGULAR_SPEED_RAD_S = 0.15
+CART_STIFFNESS = [200.0, 200.0, 200.0, 10.0, 10.0, 10.0]
+CART_MAX_POSITION_OFFSET_M = 0.03
+CART_MAX_ROTATION_OFFSET_RAD = 0.15
+CART_MAX_OFFSET_LINEAR_SPEED_M_S = 0.03
+CART_MAX_OFFSET_ANGULAR_SPEED_RAD_S = 0.15
+CART_MAX_JOINT_CORRECTION_RAD = [0.15] * 6
 STOP_JOINT_ACCEL_RAD_S2 = 1.0
 
 # 输入和输出具有独立地址空间；整段上半区仅由专用导纳连接写入。
@@ -88,8 +96,8 @@ def snapshot():
 
 
 def units(reference_source, space, *, config=None):
-    """说明遥操作偏移和主动柔顺速度的不同含义，以及载荷测量坐标。"""
-    if reference_source not in ("teleop", "free") or space not in ("joint", "cartesian"):
+    """说明两种来源共用的偏移状态、参考量以及载荷测量坐标。"""
+    if reference_source not in ("teleop", "fixed") or space not in ("joint", "cartesian"):
         raise ValueError("导纳场景或空间无效")
     joint = space == "joint"
     teleop = reference_source == "teleop"
@@ -99,14 +107,16 @@ def units(reference_source, space, *, config=None):
         "q_actual": "rad",
         "q_cmd": "rad",
         "q_master": "rad" if teleop else None,
-        "q_nom": "rad" if teleop else None,
+        "q_nom": "rad",
         "q_start": None if teleop else "rad",
         "source_seq": "接收帧计数" if teleop else None,
         "robot_timestamp": "s",
+        "heartbeat_echo": "计数",
+        "heartbeat_age_us": "us",
+        "heartbeat_max_interval_us": "us",
         "drive": ["N*m"] * 6 if joint else ["N"] * 3 + ["N*m"] * 3,
-        "state_name": ("delta_q" if joint else "delta_x") if teleop else "v_free",
-        "state": (["rad"] * 6 if joint else ["m"] * 3 + ["rad"] * 3)
-        if teleop else (["rad/s"] * 6 if joint else ["m/s"] * 3 + ["rad/s"] * 3),
+        "state_name": "delta_q" if joint else "delta_x",
+        "state": ["rad"] * 6 if joint else ["m"] * 3 + ["rad"] * 3,
         "cartesian_frame": CART_FRAME if config is None else config["CART_FRAME"],
         "cartesian_frame_definition": "基座方向或启动时工具方向固定，柔顺中心为当前TCP",
         "force_point": "先将法兰测量力矩平移到当前实际TCP，再旋转到柔顺方向",
@@ -142,9 +152,11 @@ def validate_config(config=None):
             values[name] = list(value)
         elif isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(value) or value <= 0:
             raise ValueError(f"{name} 必须为正有限数值")
+        elif name.endswith("_BYTES") and not isinstance(value, int):
+            raise ValueError(f"{name} 必须为整数字节数")
 
     for name, width in (("ADMITTANCE_INPUT_INT_BASE", 5), ("ADMITTANCE_INPUT_FLOAT_BASE", 6),
-                        ("ADMITTANCE_OUTPUT_INT_BASE", 5), ("ADMITTANCE_OUTPUT_FLOAT_BASE", 24)):
+                        ("ADMITTANCE_OUTPUT_INT_BASE", 8), ("ADMITTANCE_OUTPUT_FLOAT_BASE", 24)):
         base = values[name]
         if not isinstance(base, int) or base < 24 or base + width > 48:
             raise ValueError(f"{name} 的配方必须完全位于 24 至 47 上半区寄存器")
@@ -153,13 +165,17 @@ def validate_config(config=None):
     if any(a >= b for a, b in zip(values["NOMINAL_MAX_QD_RAD_S"], values["COMMAND_MAX_QD_RAD_S"])):
         raise ValueError("名义跟踪速度必须小于最终速度上限，为导纳运动预留余量")
     if any(a + b > c for a, b, c in zip(values["NOMINAL_MAX_QD_RAD_S"],
-                                       values["TELEOP_JOINT_MAX_OFFSET_SPEED_RAD_S"],
+                                       values["JOINT_MAX_OFFSET_SPEED_RAD_S"],
                                        values["COMMAND_MAX_QD_RAD_S"])):
         raise ValueError("名义跟踪和关节导纳速度之和不能超过最终速度上限")
-    if any(a > b for a, b in zip(values["FREE_JOINT_MAX_SPEED_RAD_S"], values["COMMAND_MAX_QD_RAD_S"])):
-        raise ValueError("主动柔顺关节速度不能超过最终速度上限")
     if not 2 / values["ADMITTANCE_HEARTBEAT_HZ"] < values["ADMITTANCE_HEARTBEAT_TIMEOUT_S"] < 1 / values["ADMITTANCE_WATCHDOG_MIN_HZ"]:
         raise ValueError("软件心跳超时必须覆盖两个心跳周期，并早于机器人 RTDE 看门狗")
+    if values["ADMITTANCE_RTDE_READ_BUDGET_S"] + values["ADMITTANCE_PRIMARY_READ_BUDGET_S"] >= 1 / values["ADMITTANCE_HEARTBEAT_HZ"]:
+        raise ValueError("每轮 RTDE 与 Primary 读取预算之和必须小于心跳周期")
+    # 状态配方增加字段后，缓冲下限随完整数据包长度同步变化。
+    packet_bytes = admittance_telemetry.output_packet_size(values)
+    if values["ADMITTANCE_RTDE_BUFFER_LIMIT_BYTES"] < packet_bytes:
+        raise ValueError(f"RTDE 缓冲上限必须至少为当前输出配方的完整帧长度 {packet_bytes} 字节")
     if values["ADMITTANCE_START_TIMEOUT_S"] <= values["ADMITTANCE_BIAS_DURATION_S"]:
         raise ValueError("启动超时必须大于偏置采样时长")
     if values["ADMITTANCE_STOP_TIMEOUT_S"] <= max(values["COMMAND_MAX_QD_RAD_S"]) / values["STOP_JOINT_ACCEL_RAD_S2"]:
@@ -169,13 +185,31 @@ def validate_config(config=None):
     return values
 
 
+def validate_run_config(reference_source, space, *, config=None):
+    """在启动边界核对来源和空间，并检查定点回位所需的物理参数。"""
+    if reference_source not in ("teleop", "fixed") or space not in ("joint", "cartesian"):
+        raise ValueError("导纳场景或空间无效；新运行仅支持 teleop 或 fixed 来源")
+    values = validate_config(config)
+    if reference_source == "fixed":
+        prefix = "JOINT" if space == "joint" else "CART"
+        for suffix in ("MASS", "DAMPING", "STIFFNESS"):
+            name = f"{prefix}_{suffix}"
+            invalid_axes = [str(index + 1) for index, (enabled, value)
+                            in enumerate(zip(values[f"{prefix}_AXES"], values[name]))
+                            if enabled and value <= 0]
+            if invalid_axes:
+                raise ValueError(f"定点柔顺要求启用轴的 {name} 大于零，请修改第 {', '.join(invalid_axes)} 轴")
+        target_name = "JOINT_TARGET_TORQUE_NM" if space == "joint" else "CART_TARGET_WRENCH"
+        if any(value != 0 for value in values[target_name]):
+            raise ValueError(f"定点柔顺要求 {target_name} 全部为零，请显式修改目标载荷后启动")
+    return values
+
+
 def render_script(reference_source, space, *, config=None):
     """将已验证的固定类型参数写入完整主程序，不执行或连接机器人。"""
-    if reference_source not in ("teleop", "free") or space not in ("joint", "cartesian"):
-        raise ValueError("导纳场景或空间无效")
-    values = validate_config(config)
+    values = validate_run_config(reference_source, space, config=config)
     rendered = {name: repr(value) for name, value in values.items()}
-    rendered["REFERENCE_SOURCE"] = "1" if reference_source == "teleop" else "2"
+    rendered["REFERENCE_SOURCE"] = "1" if reference_source == "teleop" else "3"
     rendered["ADMITTANCE_SPACE"] = "1" if space == "joint" else "2"
     rendered["CART_FRAME_TOOL_START"] = "True" if values["CART_FRAME"] == "tool_start" else "False"
     rendered["WATCHDOG_VARIABLE"] = f'"input_int_register_{values["ADMITTANCE_INPUT_INT_BASE"] + 1}"'

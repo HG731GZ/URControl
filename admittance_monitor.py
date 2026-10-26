@@ -17,6 +17,21 @@ STATE_TEXT = {
     "waiting_tcp": "等待 TCP 配置", "unknown_age": "未提供接收时间",
 }
 
+TIMING_FIELDS = (
+    ("heartbeat_echo", "机器人心跳回显", "序号；机器人实际观察值"),
+    ("heartbeat_age_us", "机器人当前心跳年龄", "μs；机器人周期累计"),
+    ("heartbeat_max_interval_us", "机器人最大心跳观察间隔", "μs；本轮已观察更新间隔"),
+    ("heartbeat_send_interval_s", "主机最近心跳发送间隔", "s；实际发送点单调时钟"),
+    ("heartbeat_send_max_interval_s", "主机最大心跳发送间隔", "s；本轮最坏间隔"),
+    ("heartbeat_send_lateness_s", "主机最近心跳发送迟到", "s；相对绝对截止时刻"),
+    ("heartbeat_send_max_lateness_s", "主机最大心跳发送迟到", "s；相对绝对截止时刻"),
+    ("heartbeat_deadline_miss_count", "累计错过心跳周期数", "个周期；逐次累计迟到跨过的完整周期"),
+    ("processing_duration_s", "主机最近轮处理耗时", "s；收发线程实际测量"),
+    ("processing_max_duration_s", "主机最大轮处理耗时", "s；收发线程实际测量"),
+    ("rtde_processing_duration_s", "RTDE 最近批处理耗时", "s；读取及解析预算"),
+    ("primary_processing_duration_s", "Primary 最近批处理耗时", "s；读取及解析预算"),
+)
+
 
 def _observation(value, state, label, source, unit, timestamp=None, age_s=None):
     """值、来源与有效性一同传递，缺失值不以零代替。"""
@@ -128,9 +143,10 @@ class AdmittanceMonitor:
                 "parameters", "reference_source", "space", "timestamp", "state_received_monotonic",
                 "q_master", "q_master_submitted", "q_nom", "q_cmd", "q_start", "actual_q", "actual_qd",
                 "actual_TCP_pose", "submitted_source_seq", "adopted_source_seq", "source_seq",
-                "robot_configuration", "drive", "delta_q", "delta_x", "v_free", "cycle_count",
+                "robot_configuration", "drive", "delta_q", "delta_x", "cycle_count",
                 "runtime_state", "safety_status_bits", "exit_reason", "exit_reason_text", "last_error",
                 "last_reference_sent_monotonic", "last_heartbeat_sent_monotonic")}
+            status.update({key: None for key, _, _ in TIMING_FIELDS})
             status.update(active=False, phase_name="未开启", state_receive_count=0,
                           reference_send_count=0, heartbeat_send_count=0)
         cfg = status["parameters"] if status["parameters"] is not None else parameters
@@ -159,10 +175,10 @@ class AdmittanceMonitor:
             return _observation(value, state, label, "专用 RTDE 同次状态", unit, timestamp, robot_age)
 
         joint = {
-            "q_master_adopted": target("q_master", "机器人已采用主端目标", source != "free"),
-            "q_nom": target("q_nom", "连续限速后的名义参考", source != "free"),
+            "q_master_adopted": target("q_master", "机器人已采用主端目标", source == "teleop"),
+            "q_nom": target("q_nom", "固定名义参考" if source == "fixed" else "连续限速后的名义参考"),
             "q_cmd": target("q_cmd", "导纳最终关节目标"),
-            "q_start": target("q_start", "主动柔顺启动位置", source == "free"),
+            "q_start": target("q_start", "固定启动锚点（机器人确认）", source == "fixed"),
         }
         live = status if active or realtime is None else realtime
         live_age = robot_age if live is status else _age(now, realtime["received_monotonic"])
@@ -179,8 +195,8 @@ class AdmittanceMonitor:
                                           "rad/s", live["timestamp"], live_age)
         errors = {}
         for key, label, left, right, applicable in (
-            ("nominal_following", "名义跟随差", "q_master", "q_nom", source != "free"),
-            ("command_correction", "最终命令相对名义参考的修正", "q_cmd", "q_nom", source != "free"),
+            ("nominal_following", "名义跟随差", "q_master", "q_nom", source == "teleop"),
+            ("command_correction", "最终命令相对名义参考的修正", "q_cmd", "q_nom", True),
             ("tracking", "机器人关节跟踪误差", "q_cmd", "actual_q", True),
         ):
             value = None
@@ -196,24 +212,25 @@ class AdmittanceMonitor:
         udp_state = _freshness(command, udp_age, monitoring_cfg["MASTER_FRAME_TIMEOUT_S"])
         if udp_snapshot is not None and udp_snapshot["last_error"] is not None:
             udp_state = "stale"
-        received = _observation(None if command is None or command.mode != 1 else command.q_arm,
-                                "inapplicable" if command is not None and command.mode != 1 else udp_state,
+        received = _observation(None if source == "fixed" or command is None or command.mode != 1 else command.q_arm,
+                                "inapplicable" if source == "fixed" or command is not None and command.mode != 1 else udp_state,
                                 "主端最新接收目标", "UDP 有效接收", "rad",
                                 None if udp_snapshot is None else udp_snapshot["received_time"], udp_age)
-        submitted = _observation(status["q_master_submitted"] if source != "free" else None,
-                                 target_state if source != "free" else "inapplicable",
+        submitted = _observation(status["q_master_submitted"] if source == "teleop" else None,
+                                 target_state if source == "teleop" else "inapplicable",
                                  "主机已提交目标", "主机 submit_reference 保存值", "rad", None, None)
         joint.update(q_master_received=received, q_master_submitted=submitted)
         sync_error = None
-        if received["state"] == "fresh" and joint["actual_q"]["state"] == "fresh":
+        if source == "teleop" and received["state"] == "fresh" and joint["actual_q"]["state"] == "fresh":
             sync_error = np.asarray(received["value"]) - np.asarray(joint["actual_q"]["value"])
-        errors["sync"] = _observation(sync_error, "fresh" if sync_error is not None else "waiting",
+        sync_state = "inapplicable" if source == "fixed" else ("fresh" if sync_error is not None else "waiting")
+        errors["sync"] = _observation(sync_error, sync_state,
                                       "主从同步误差", "UDP 与实际反馈独立采样", "rad")
 
         configuration = status["robot_configuration"]
         tcp = {key: self._estimate_tcp(joint[key], run_id,
                None if key == "q_master_received" and not active else configuration)
-               for key in ("q_master_adopted", "q_nom", "q_cmd", "q_master_received")}
+               for key in ("q_master_adopted", "q_nom", "q_cmd", "q_master_received", "q_start")}
         tcp["actual_TCP_pose"] = _observation(live["actual_TCP_pose"], live_state,
                                                "机器人反馈实际 TCP", live_source, "pose",
                                                live["timestamp"], live_age)
@@ -227,9 +244,8 @@ class AdmittanceMonitor:
             "最终 TCP 模型估算与反馈差（含模型差异）", "同次关节正解及实际 TCP；姿态为相对旋转", "pose", timestamp, robot_age)
         admittance = {
             "drive": target("drive", "导纳驱动力（经偏置、滤波、死区、轴选择）", unit="joint_load" if space == "joint" else "wrench"),
-            "delta_q": target("delta_q", "遥操作关节导纳偏移", source == "teleop" and space == "joint"),
-            "delta_x": target("delta_x", "遥操作末端导纳偏移", source == "teleop" and space == "cartesian", "pose"),
-            "v_free": target("v_free", "主动柔顺速度", source == "free", "rad/s" if space == "joint" else "twist"),
+            "delta_q": target("delta_q", "关节导纳偏移", space == "joint"),
+            "delta_x": target("delta_x", "末端导纳偏移", space == "cartesian", "pose"),
         }
         rates = {
             "udp_receive_hz": self._rate("udp", None if udp_snapshot is None else udp_snapshot["frame_count"], now),
@@ -246,9 +262,9 @@ class AdmittanceMonitor:
             "sender_address": None if udp_snapshot is None else udp_snapshot["sender_address"],
             "bind_address": None if udp_snapshot is None else udp_snapshot["bind_address"],
             "last_error": None if udp_snapshot is None else udp_snapshot["last_error"],
-            "submitted_source_seq": status["submitted_source_seq"] if source != "free" else None,
-            "adopted_source_seq": status["adopted_source_seq"] if source != "free" else None,
-            "source_seq": status["source_seq"] if source != "free" else None,
+            "submitted_source_seq": status["submitted_source_seq"] if source == "teleop" else None,
+            "adopted_source_seq": status["adopted_source_seq"] if source == "teleop" else None,
+            "source_seq": status["source_seq"] if source == "teleop" else None,
             "sync_max_abs_rad": None if sync_error is None else float(np.max(np.abs(sync_error))),
             "sync_tolerance_rad": monitoring_cfg["TELEOP_SYNC_TOLERANCE_RAD"],
             "gripper": deepcopy(gripper),
@@ -257,13 +273,15 @@ class AdmittanceMonitor:
             "runtime_state", "safety_status_bits", "cycle_count", "exit_reason", "exit_reason_text", "last_error",
             "state_receive_count", "state_received_monotonic", "reference_send_count", "heartbeat_send_count",
             "last_reference_sent_monotonic", "last_heartbeat_sent_monotonic")}
+        diagnostics.update({key: status[key] for key, _, _ in TIMING_FIELDS})
         diagnostics.update(ft_sensor=deepcopy(ft_sensor), realtime=deepcopy(realtime),
                            state_age_s=robot_age, state_timeout_s=cfg["ADMITTANCE_STATE_TIMEOUT_S"])
         snapshot = {
             "phase": status["phase_name"], "freshness": STATE_TEXT[live_state] +
                 ("" if live_age is None else f" / 年龄 {live_age:.3f} s"),
             "run_identity": f"本轮 {run_id if run_id is not None else '未启动'} / 参数修订 {parameter_revision if parameter_revision is not None else '未应用'}",
-            "source_time": f"机器人时间 {_text(live['timestamp'])} s；UDP 年龄 {_text(udp_age)} s（独立采样）",
+            "source_time": f"机器人时间 {_text(live['timestamp'])} s；" + (
+                "主端不适用" if source == "fixed" else f"UDP 年龄 {_text(udp_age)} s（独立采样）"),
             "run_id": run_id, "reference_source": source, "space": space, "active": active,
             "joint": joint, "tcp": tcp, "errors": errors, "admittance": admittance,
             "master": master, "configuration": deepcopy(configuration), "diagnostics": diagnostics,
@@ -344,6 +362,7 @@ class AdmittanceMonitor:
         diag = snapshot["diagnostics"]
         cfg = snapshot["parameters"]
         command = master["command"]
+        fixed = snapshot["reference_source"] == "fixed"
         rows = {
             "joint_rows": [[f"J{i + 1}"] + [cell(joint[key], i) for key in
                 ("q_master_adopted", "q_nom", "q_cmd", "actual_q")] + [cell(snapshot["errors"]["tracking"], i)] for i in range(6)],
@@ -359,11 +378,11 @@ class AdmittanceMonitor:
                 ["最新接收 TCP 模型估算", vector(tcp["q_master_received"]), "仅运行中采用本轮 TCP；不是机器人回传目标"],
                 ["主机已提交目标", vector(joint["q_master_submitted"]), "提交不表示机器人已采用"],
                 ["有效接收计数", _text(master["frame_count"]), "本机计数；不是主端发送序号"],
-                ["已提交完整序号", _text(master["submitted_source_seq"]), "主机保存值"],
-                ["已采用线上序号 / 完整序号", "不适用" if snapshot["reference_source"] == "free" else f"{_text(master['adopted_source_seq'])} / {_text(master['source_seq'])}", "线上取模序号 / 匹配的本机接收计数"],
-                ["接收至采用计数进度", "未匹配" if master["source_seq"] is None or master["frame_count"] is None else _text(master["frame_count"] - master["source_seq"]), "相同本机计数域；不是真实丢包率"],
+                ["已提交完整序号", "不适用" if fixed else _text(master["submitted_source_seq"]), "主机保存值"],
+                ["已采用线上序号 / 完整序号", "不适用" if fixed else f"{_text(master['adopted_source_seq'])} / {_text(master['source_seq'])}", "线上取模序号 / 匹配的本机接收计数"],
+                ["接收至采用计数进度", "不适用" if fixed else ("未匹配" if master["source_seq"] is None or master["frame_count"] is None else _text(master["frame_count"] - master["source_seq"])), "相同本机计数域；不是真实丢包率"],
                 ["同步每轴误差", vector(snapshot["errors"]["sync"]), "UDP 与实际状态独立采样"],
-                ["最大同步误差 / 容差", f"{_text(master['sync_max_abs_rad'])} / {_text(master['sync_tolerance_rad'])} rad", snapshot["source_time"]],
+                ["最大同步误差 / 容差", "不适用" if fixed else f"{_text(master['sync_max_abs_rad'])} / {_text(master['sync_tolerance_rad'])} rad", snapshot["source_time"]],
                 ["主端夹爪三通道", "未提供" if command is None else _text(command.q_gripper), "UDP 原始夹爪通道"],
                 ["夹爪开度输入 / 附加原始量", "未提供" if command is None else f"{_text(command.q_gripper[0])} / {_text(command.q_gripper[1:])}", "第一通道用于已有跟随；后两通道未用于接收方向控制"],
                 ["主端接收墙时 / 单调时刻", f"{_text(master['received_time'])} / {_text(master['received_monotonic'])}", "主机时间；不代表单向网络延迟"],
@@ -372,12 +391,16 @@ class AdmittanceMonitor:
             ],
             "admittance_rows": [], "robot_configuration_rows": [], "diagnostic_rows": [],
         }
-        for item in list(snapshot["errors"].values()) + list(snapshot["admittance"].values()) + [joint["actual_qd"], joint["q_start"]]:
+        for item in list(snapshot["errors"].values()) + list(snapshot["admittance"].values()) + [joint["q_nom"], joint["actual_qd"], joint["q_start"], tcp["q_start"]]:
             rows["admittance_rows"].append([item["label"], vector(item), item["source"]])
+        prefix = "JOINT" if snapshot["space"] == "joint" else "CART"
         rows["admittance_rows"].extend([
             ["柔顺坐标", cfg["CART_FRAME"], "tool_start 为启动时固定工具方向，中心在当前 TCP"],
-            ["控制模型", "质量—阻尼；本轮恢复刚度为 0" if snapshot["reference_source"] == "free" else "质量—阻尼—刚度", "主动柔顺不以启动位置作为吸引目标"],
-            ["目标载荷", _text(cfg["JOINT_TARGET_TORQUE_NM"] if snapshot["space"] == "joint" else cfg["CART_TARGET_WRENCH"]), "关节 N·m；末端平移 N、转动 N·m"],
+            ["控制模型", "质量—阻尼—刚度", "固定启动参考，撤力回位" if fixed else "随主端移动的名义参考"],
+            ["虚拟质量 / 惯量 M", _text(cfg[prefix + "_MASS"]), "关节 kg·m²；末端前三轴 kg、后三轴 kg·m²"],
+            ["阻尼 D", _text(cfg[prefix + "_DAMPING"]), "关节 N·m·s/rad；末端 N·s/m、N·m·s/rad"],
+            ["恢复刚度 K", _text(cfg[prefix + "_STIFFNESS"]), "关节 N·m/rad；末端 N/m、N·m/rad"],
+            ["目标载荷", _text(cfg["JOINT_TARGET_TORQUE_NM"] if snapshot["space"] == "joint" else cfg["CART_TARGET_WRENCH"]), "定点柔顺必须全为 0；关节 N·m，末端 N/N·m" if fixed else "关节 N·m；末端平移 N、转动 N·m"],
             ["连续死区", _text(cfg["JOINT_DEADBAND_NM"] if snapshot["space"] == "joint" else cfg["CART_DEADBAND"]), "原始载荷与导纳驱动力含义不同"],
         ])
         configuration = snapshot["configuration"]
@@ -401,8 +424,8 @@ class AdmittanceMonitor:
         if context is not None:
             rows["master_rows"].extend([
                 ["UDP 反馈目的地址", _text(context["feedback_destination"]), "主程序已有反馈路径"],
-                ["主从同步状态", "同步运动中" if context["udp_sync_pending"] else ("已同步" if context["udp_synced"] else "未同步"), "主程序同步状态"],
-                ["UDP 夹爪跟随", "正在跟随" if context["gripper_following"] else "未跟随", "主动柔顺期间主端不驱动夹爪"],
+                ["主从同步状态", "不适用" if fixed else ("同步运动中" if context["udp_sync_pending"] else ("已同步" if context["udp_synced"] else "未同步")), "主程序同步状态"],
+                ["UDP 夹爪跟随", "正在跟随" if context["gripper_following"] else "未跟随", "定点柔顺期间主端不驱动夹爪"],
             ])
             rows["diagnostic_rows"].append(["主界面速度请求", _text(context["requested_speed_percent"]), "%；请求值不代表实测速度"])
         names = {"runtime_state": "机器人运行状态", "safety_status_bits": "安全状态位", "cycle_count": "机器人周期计数",
@@ -413,6 +436,8 @@ class AdmittanceMonitor:
                  "state_age_s": "状态年龄", "state_timeout_s": "状态过期阈值"}
         for key, label in names.items():
             rows["diagnostic_rows"].append([label, _text(diag[key]), "主机发送成功不代表机器人收到" if "sent" in key or "send_count" in key else "专用状态快照"])
+        for key, label, explanation in TIMING_FIELDS:
+            rows["diagnostic_rows"].append([label, _text(diag[key]), explanation])
         rate_names = {"udp_receive_hz": "UDP 实测有效接收速率", "state_receive_hz": "状态实测接收速率",
                       "reference_send_hz": "参考实测发送速率", "heartbeat_send_hz": "心跳实测发送速率", "cycle_count_hz": "机器人周期计数速率"}
         for key, label in rate_names.items():
@@ -443,7 +468,6 @@ class AdmittanceMonitor:
             "tcp_targets": ("TCP 位姿对照（目标为模型估算）", "tcp", ("q_master_adopted", "q_nom", "q_cmd", "actual_TCP_pose")),
             "delta_q": ("关节导纳偏移", "admittance", ("delta_q",)),
             "delta_x": ("末端导纳偏移", "admittance", ("delta_x",)),
-            "v_free": ("主动柔顺速度", "admittance", ("v_free",)),
             "drive": ("导纳驱动力", "admittance", ("drive",)),
             "actual_qd": ("实际关节速度", "joint", ("actual_qd",)),
             "master_received": ("主端最新接收关节目标", "joint", ("q_master_received",)),
@@ -458,7 +482,7 @@ class AdmittanceMonitor:
             points = []
             label = key
             for sample in samples:
-                if self.snapshot is not None and signal in ("drive", "v_free") and sample["space"] != self.snapshot["space"]:
+                if self.snapshot is not None and signal == "drive" and sample["space"] != self.snapshot["space"]:
                     continue
                 item = sample[group][key]
                 factor, unit = self._unit_factor(item["unit"], axis, angle_unit, length_unit)

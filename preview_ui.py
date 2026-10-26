@@ -1,4 +1,4 @@
-"""仅预览界面，不导入主程序、不连接设备、不创建采集文件。"""
+"""仅预览界面，不导入主程序、不连接设备、不创建采集或调试日志文件。"""
 
 import argparse
 import math
@@ -56,13 +56,17 @@ class PreviewWindow(QtWidgets.QMainWindow):
 
 
 def create_admittance_preview(scenario='teleop-joint', settings=None):
-    """用固定演示样本展示四种场景，不初始化任何硬件对象。"""
+    """用离线演示样本展示四种场景及受力偏移、撤力回位，不初始化硬件。"""
+    import numpy as np
+
     from admittance_window import AdmittanceWindow
+    from UR_Utils.ur5e_kinematics import UR5eKinematics
+    from UR_Utils.ur_pose_math import matrix_to_rotvec, rotvec_to_matrix
 
     source, space = scenario.split('-')
     window = AdmittanceWindow(settings=settings)
     window.setWindowTitle('导纳调参与监视 · 演示数据 · 不连接设备')
-    window.ui.comboBox_ReferenceSource.setCurrentIndex(('teleop', 'free').index(source))
+    window.ui.comboBox_ReferenceSource.setCurrentIndex(('teleop', 'fixed').index(source))
     window.ui.comboBox_AdmittanceSpace.setCurrentIndex(('joint', 'cartesian').index(space))
     config = window.parameters.prepared_copy()
     if space == 'cartesian':
@@ -77,13 +81,32 @@ def create_admittance_preview(scenario='teleop-joint', settings=None):
         'payload_inertia': [0.002, 0.002, 0.001, 0.0, 0.0, 0.0], 'timestamp': 42.0,
     }
     base = [0.0, -1.15, 1.45, -1.8, -1.57, 0.1]
+    kinematics = UR5eKinematics(tcp_offset=configuration['tcp_offset'][:3],
+                               tcp_rotation=configuration['tcp_offset'][3:], load_geometry=False)
+    start_pose = kinematics.forward_kinematics(base)[3]
+    compliance_rotation = rotvec_to_matrix(start_pose[3:]) if config['CART_FRAME'] == 'tool_start' else np.eye(3)
+    previous_actual = base
     status = None
     for index in range(160):
         now = 1000.0 + index * 0.05
+        elapsed = index * 0.05
         movement = 0.025 * math.sin(index * 0.06)
-        actual = [value + movement * (1 if axis % 2 == 0 else -0.6) for axis, value in enumerate(base)]
-        final = [value + 0.002 for value in actual]
-        nominal = [value - 0.006 for value in final]
+        nominal = [value + movement * (1 if axis % 2 == 0 else -0.6)
+                   for axis, value in enumerate(base)] if source == 'teleop' else list(base)
+        response = (0.0 if elapsed < 0.5 else 0.025 * (1.0 - math.exp(-(elapsed - 0.5) / 0.6)))
+        if elapsed >= 3.0:
+            response = 0.025 * (1.0 - math.exp(-2.5 / 0.6)) * math.exp(-(elapsed - 3.0) / 0.8)
+        delta_q = [response * (1 if axis % 2 == 0 else -0.6) for axis in range(6)]
+        final = [value + offset for value, offset in zip(nominal, delta_q)]
+        actual = [value + offset * 0.98 for value, offset in zip(nominal, delta_q)]
+        actual_qd = [(value - previous) / 0.05 for value, previous in zip(actual, previous_actual)]
+        previous_actual = actual
+        nominal_pose = kinematics.forward_kinematics(nominal)[3]
+        final_pose = kinematics.forward_kinematics(final)[3]
+        delta_x = np.concatenate((
+            compliance_rotation.T @ (np.asarray(final_pose[:3]) - np.asarray(nominal_pose[:3])),
+            compliance_rotation.T @ matrix_to_rotvec(rotvec_to_matrix(final_pose[3:]) @ rotvec_to_matrix(nominal_pose[3:]).T),
+        )).tolist()
         master = [value + 0.003 for value in nominal]
         status = {
             'active': True, 'reference_source': source, 'space': space, 'phase_name': '运行中（演示）',
@@ -91,23 +114,29 @@ def create_admittance_preview(scenario='teleop-joint', settings=None):
             'state_received_monotonic': now - 0.004, 'state_receive_count': 1000 + index * 5,
             'q_master': master if source == 'teleop' else None,
             'q_master_submitted': [value + 0.001 for value in master] if source == 'teleop' else None,
-            'q_nom': nominal if source == 'teleop' else None, 'q_cmd': final,
-            'q_start': base if source == 'free' else None,
-            'actual_q': actual, 'actual_qd': [0.005 * math.cos(index * 0.06)] * 6,
-            'actual_TCP_pose': [0.35, -0.21, 0.48, 0.01, 3.10, 0.02],
+            'q_nom': nominal, 'q_cmd': final,
+            'q_start': base if source == 'fixed' else None,
+            'actual_q': actual, 'actual_qd': actual_qd,
+            'actual_TCP_pose': kinematics.forward_kinematics(actual)[3].tolist(),
             'submitted_source_seq': 1000 + index * 5 if source == 'teleop' else None,
             'adopted_source_seq': 999 + index * 5 if source == 'teleop' else None,
             'source_seq': 999 + index * 5 if source == 'teleop' else None,
-            'robot_configuration': configuration, 'drive': [1.2, -0.8, 0.4, 0.08, -0.03, 0.02],
-            'delta_q': [0.006] * 6 if source == 'teleop' and space == 'joint' else None,
-            'delta_x': [0.001, 0.002, -0.001, 0.003, 0.0, 0.002] if source == 'teleop' and space == 'cartesian' else None,
-            'v_free': [0.004, 0.003, -0.002, 0.001, 0.0, 0.001] if source == 'free' else None,
+            'robot_configuration': configuration,
+            'drive': [1.2, -0.8, 0.4, 0.08, -0.03, 0.02] if 0.5 <= elapsed < 3.0 else [0.0] * 6,
+            'delta_q': delta_q if space == 'joint' else None,
+            'delta_x': delta_x if space == 'cartesian' else None,
             'cycle_count': 6000 + index * 25, 'runtime_state': 2, 'safety_status_bits': 1,
             'exit_reason': 0, 'exit_reason_text': '未退出', 'last_error': None,
             'reference_send_count': 1000 + index * 5 if source == 'teleop' else 0,
             'heartbeat_send_count': 500 + index * 2,
             'last_reference_sent_monotonic': now - 0.006 if source == 'teleop' else None,
             'last_heartbeat_sent_monotonic': now - 0.01,
+            'heartbeat_echo': 500 + index * 2, 'heartbeat_age_us': 10000,
+            'heartbeat_max_interval_us': 22000, 'heartbeat_send_interval_s': 0.02,
+            'heartbeat_send_max_interval_s': 0.021, 'heartbeat_send_lateness_s': 0.0002,
+            'heartbeat_send_max_lateness_s': 0.001, 'heartbeat_deadline_miss_count': 0,
+            'processing_duration_s': 0.0012, 'processing_max_duration_s': 0.0024,
+            'rtde_processing_duration_s': 0.0008, 'primary_processing_duration_s': 0.0002,
         }
         udp = {'command': SimpleNamespace(mode=1, q_arm=[value + 0.0015 for value in master],
                                            q_gripper=[0.4, 0.2, 0.3]),
@@ -122,26 +151,47 @@ def create_admittance_preview(scenario='teleop-joint', settings=None):
                                                   'feedback_received_monotonic': now - 0.01,
                                                   'feedback_count': 200 + index, 'following_thread_active': source == 'teleop',
                                                   'last_error': None})
+    debug_log_status = {
+        'enabled': True, 'active': True,
+        'path': '演示日志/admittance_run7.jsonl（仅展示，不创建文件）',
+        'record_count': 1737, 'dropped_count': 0, 'pending_count': 0, 'error': None,
+    }
     window.update_context({'robot_ready': True, 'occupied': True, 'master_fresh': True,
                            'synced': source == 'teleop', 'phase': status['phase_name'], 'run_id': 7,
                            'robot_address': '192.0.2.20（演示地址）',
                            'controller_joint_limits': config['JOINT_POSITION_LIMIT_RAD'],
+                           'debug_log_status': debug_log_status,
                            'run_metadata': {'run_id': 7, 'reference_source': source, 'space': space,
+                                            'schema_version': 2, 'backend': 'urscript', 'model': 'mass_damper_spring',
+                                            'reference_behavior': 'moving_reference' if source == 'teleop' else 'fixed_anchor',
+                                            'source_codes': {1: 'teleop', 2: 'free', 3: 'fixed'},
                                             'robot_configuration': configuration, 'start_time': '演示数据',
                                             'end_time': None}})
     window.update_snapshot(snapshot)
+    window.ui.comboBox_PlotWindow.setCurrentIndex(1)
+    window.ui.comboBox_PlotSignal.setCurrentIndex(3 if space == 'joint' else 4)
     window._refresh_plot()
-    window.ui.label_OperationHint.setText('演示数据 · 固定离线样本 · 不连接设备；--scenario 可选四种场景。')
-    window.append_log('固定演示数据：' + ('遥操作导纳' if source == 'teleop' else '主动柔顺') + ' / ' + ('关节空间' if space == 'joint' else '末端空间'))
+    window.ui.label_OperationHint.setText('离线演示：不连接设备、不创建日志文件。' + window.ui.label_OperationHint.text())
+    window.append_log('离线演示数据：' + ('遥操作导纳' if source == 'teleop' else '定点柔顺（撤力回位）') + ' / ' + ('关节空间' if space == 'joint' else '末端空间'))
+    window.append_log('演示趋势：0.5 s 开始受力，3 s 撤力后偏移回零；日志开关仅切换演示状态。')
+
+    def toggle_preview_logging(enabled):
+        debug_log_status['enabled'] = enabled
+        debug_log_status['active'] = status['active']
+        window.update_context({'debug_log_status': debug_log_status})
+
     def stop_preview():
         status['active'] = False
         status['phase_name'] = '已停止（演示）'
         status['exit_reason_text'] = '用户停止演示'
-        window.update_context({'occupied': False, 'robot_ready': False, 'phase': status['phase_name']})
+        debug_log_status['active'] = False
+        window.update_context({'occupied': False, 'robot_ready': False, 'phase': status['phase_name'],
+                               'debug_log_status': debug_log_status})
         window.update_snapshot(window.monitor.update(status, udp, run_id=7, connected=True,
                                                      now=1008.1, parameter_revision=window.parameters.revision))
         window.append_log('演示已停止；再次运行预览可重新建立固定样本。')
 
+    window.logging_toggled.connect(toggle_preview_logging)
     window.stop_requested.connect(stop_preview)
     return window
 
@@ -149,7 +199,7 @@ def create_admittance_preview(scenario='teleop-joint', settings=None):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='URControl 离线界面预览，不连接设备')
     parser.add_argument('--admittance', action='store_true', help='预览独立导纳窗口')
-    parser.add_argument('--scenario', choices=('teleop-joint', 'teleop-cartesian', 'free-joint', 'free-cartesian'),
+    parser.add_argument('--scenario', choices=('teleop-joint', 'teleop-cartesian', 'fixed-joint', 'fixed-cartesian'),
                         default='teleop-joint', help='固定演示场景')
     args = parser.parse_args()
     configure_high_dpi()

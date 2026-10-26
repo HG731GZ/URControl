@@ -1,6 +1,7 @@
 import math
 import select
 import struct
+import time
 from typing import Literal, Optional, Sequence
 
 import numpy as np
@@ -48,28 +49,44 @@ class URScriptClient(URTcpClient):
         if self.is_connected:
             self.send_text(script, append_terminator=False)
 
-    def poll_script_error(self) -> Optional[str]:
+    def poll_script_error(
+        self, *, deadline: float, max_read_bytes: int, buffer_limit_bytes: int,
+    ) -> Optional[str]:
         """非阻塞读取 Primary 上传连接的脚本异常，同时排空机器人状态消息。
 
         导纳使用 30001 上传并保留此连接。编译错误会回到上传客户端，
-        不能靠另开的 RTDE 或 Secondary 连接取得。TCP 拆包留待下一次读取。
+        不能靠另开的 RTDE 或 Secondary 连接取得。读取和解析共用单调时钟
+        截止时间；TCP 拆包及未处理的完整消息留待下一批读取。
         """
         with self._lock:
             sock = self._ensure_connected()
-            # 限制单次读取量，避免诊断流占用参考和心跳的发送周期。
-            for _ in range(32):
+            # 先处理积压完整消息，避免读入新数据挤占异常解析预算。
+            error = self._consume_script_messages(deadline, buffer_limit_bytes)
+            if error is not None:
+                return error
+            read_bytes = 0
+            while time.monotonic() < deadline and read_bytes < max_read_bytes:
+                capacity = buffer_limit_bytes - len(self._script_response_buffer)
+                if capacity <= 0:
+                    break
                 if not select.select([sock], [], [], 0)[0]:
                     break
-                self._script_response_buffer.extend(self.recv_once())
-            return self._consume_script_messages()
+                data = sock.recv(min(self.recv_buffer_size, max_read_bytes - read_bytes, capacity))
+                if not data:
+                    raise URTcpError("Primary 连接已被控制器关闭")
+                self._script_response_buffer.extend(data)
+                read_bytes += len(data)
+                error = self._consume_script_messages(deadline, buffer_limit_bytes)
+                if error is not None:
+                    return error
+            return None
 
-    def _consume_script_messages(self) -> Optional[str]:
+    def _consume_script_messages(self, deadline: float, buffer_limit_bytes: int) -> Optional[str]:
         """按 Primary 长度前缀解包，只提取本次最早的脚本异常。"""
-        error = None
         buffer = self._script_response_buffer
-        while len(buffer) >= 5:
+        while len(buffer) >= 5 and time.monotonic() < deadline:
             size, message_type = struct.unpack_from(">IB", buffer)
-            if not 5 <= size <= 1024 * 1024:
+            if not 5 <= size <= buffer_limit_bytes:
                 raise URTcpError(f"Primary 消息长度无效：{size}")
             if len(buffer) < size:
                 break
@@ -80,9 +97,8 @@ class URScriptClient(URTcpClient):
             if message_type == 20 and size >= 23 and packet[14] == 10:
                 line, column = struct.unpack_from(">II", packet, 15)
                 message = packet[23:].rstrip(b"\x00").decode("utf-8", errors="replace")
-                if error is None:
-                    error = f"URScript 错误（第 {line} 行，第 {column} 列）：{message}"
-        return error
+                return f"URScript 错误（第 {line} 行，第 {column} 列）：{message}"
+        return None
 
 
     def movej(

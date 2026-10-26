@@ -32,20 +32,20 @@ FIELDS = (
     ParameterField("JOINT_AXES", "柔顺轴启用", "J1–J6", "joint", "JointAxis", "joint"),
     ParameterField("JOINT_MASS", "虚拟惯量 M", "kg·m²", "joint", "JointMass", "joint"),
     ParameterField("JOINT_DAMPING", "阻尼 D", "N·m·s/rad", "joint", "JointDamping", "joint"),
-    ParameterField("TELEOP_JOINT_STIFFNESS", "恢复刚度 K", "N·m/rad", "joint", "JointStiffness", "teleop_joint"),
+    ParameterField("JOINT_STIFFNESS", "恢复刚度 K", "N·m/rad", "joint", "JointStiffness", "joint"),
     ParameterField("JOINT_TARGET_TORQUE_NM", "目标力矩", "N·m", "joint", "JointTargetTorque", "joint"),
     ParameterField("JOINT_DEADBAND_NM", "连续死区", "N·m", "joint", "JointDeadband", "joint"),
     ParameterField("CART_FRAME", "柔顺方向", "固定方向，中心为当前 TCP", "cart", "CartFrame", "cartesian"),
     ParameterField("CART_AXES", "柔顺轴启用", "x、y、z、rx、ry、rz", "cart", "CartAxis", "cartesian"),
     ParameterField("CART_MASS", "虚拟质量 / 惯量 M", "前三轴 kg；后三轴 kg·m²", "cart", "CartMass", "cartesian"),
     ParameterField("CART_DAMPING", "阻尼 D", "前三轴 N·s/m；后三轴 N·m·s/rad", "cart", "CartDamping", "cartesian"),
-    ParameterField("TELEOP_CART_STIFFNESS", "恢复刚度 K", "前三轴 N/m；后三轴 N·m/rad", "cart", "CartStiffness", "teleop_cartesian"),
+    ParameterField("CART_STIFFNESS", "恢复刚度 K", "前三轴 N/m；后三轴 N·m/rad", "cart", "CartStiffness", "cartesian"),
     ParameterField("CART_TARGET_WRENCH", "目标载荷", "前三轴 N；后三轴 N·m", "cart", "CartTargetWrench", "cartesian"),
     ParameterField("CART_DEADBAND", "连续死区", "前三轴 N；后三轴 N·m", "cart", "CartDeadband", "cartesian"),
 )
 FIELD_MAP = {field.key: field for field in FIELDS}
 EDITABLE_KEYS = frozenset(field.key for field in FIELDS)
-# 运行记录继续单列原有的控制器范围及寄存器约定，保留记录格式。
+# 运行记录单列控制器范围及寄存器约定，使用新的固定参考语义。
 READONLY_KEYS = frozenset({
     "JOINT_POSITION_LIMIT_RAD", "ADMITTANCE_INPUT_INT_BASE", "ADMITTANCE_INPUT_FLOAT_BASE",
     "ADMITTANCE_OUTPUT_INT_BASE", "ADMITTANCE_OUTPUT_FLOAT_BASE",
@@ -126,11 +126,11 @@ class AdmittanceParameters:
         if not isinstance(data, dict) or set(data) != {
                 "schema_version", "name", "reference_source", "space", "parameters"}:
             raise ValueError("预设必须完整包含 schema_version、name、reference_source、space、parameters；运行记录不可作为预设导入")
-        if type(data["schema_version"]) is not int or data["schema_version"] != 2:
-            raise ValueError("仅支持 schema_version 为 2 的关键参数预设；旧版 v1 预设包含已移入 Python 的参数，请重新导出 v2 预设")
+        if type(data["schema_version"]) is not int or data["schema_version"] != 3:
+            raise ValueError("仅支持 schema_version 为 3 的预设；旧版 v1/v2 的模式语义及参数字段已变化，请参照原值重新建立新预设")
         if not isinstance(data["name"], str) or not data["name"].strip():
             raise ValueError("预设名称必须为非空文字")
-        if data["reference_source"] not in ("teleop", "free") or data["space"] not in ("joint", "cartesian"):
+        if data["reference_source"] not in ("teleop", "fixed") or data["space"] not in ("joint", "cartesian"):
             raise ValueError("预设场景或空间无效")
         if not isinstance(data["parameters"], dict) or set(data["parameters"]) != EDITABLE_KEYS:
             raise ValueError("调参预设必须包含全部 13 个界面参数，不能包含 Python 配置项或未知字段")
@@ -140,7 +140,7 @@ class AdmittanceParameters:
 
     def export_preset(self, path, name, reference_source, space):
         values = admittance_config.validate_config(_merge_program_configuration(self.draft_parameters))
-        data = {"schema_version": 2, "name": name,
+        data = {"schema_version": 3, "name": name,
                 "reference_source": reference_source, "space": space,
                 "parameters": {field.key: values[field.key] for field in FIELDS if field.editable}}
         Path(path).write_text(json.dumps(data, ensure_ascii=False, indent=2, allow_nan=False) + "\n", encoding="utf-8")
@@ -148,8 +148,13 @@ class AdmittanceParameters:
     def export_effective(self, path, metadata):
         if self.effective_parameters is None:
             raise ValueError("尚无后端确认的生效参数")
-        data = {"record_type": "admittance_run_record", "schema_version": 1,
+        data = {"record_type": "admittance_run_record", "schema_version": 2,
                 "purpose": "本轮完整生效参数与只读元数据；不可作为调参预设导入",
+                "reference_behavior": {"teleop": "moving_reference", "fixed": "fixed_anchor"}[metadata["reference_source"]],
+                "model": "mass_damper_spring", "backend": "urscript",
+                "source_codes": {1: "teleop", 2: "free", 3: "fixed"},
+                "units": admittance_config.units(metadata["reference_source"], metadata["space"],
+                                                config=self.effective_parameters),
                 "parameters_revision": self.effective_revision,
                 "parameters": deepcopy(self.effective_parameters),
                 "readonly_parameters": {key: deepcopy(self.effective_parameters[key]) for key in READONLY_KEYS},

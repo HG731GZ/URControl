@@ -18,5 +18,7 @@ Thumbs.db
 
 # data
 data/
+/logs/admittance/
 /URControl_代码修改方案.md
 /URControl_Architecture_Analysis.md
+/.agents/

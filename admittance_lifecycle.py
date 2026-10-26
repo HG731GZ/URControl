@@ -12,7 +12,7 @@ class AdmittanceLifecycleWorker(QThread):
     completed = pyqtSignal(dict)
 
     def __init__(self, controller, operation, *, start_kwargs=None,
-                 stop_event=None, parent=None):
+                 stop_event=None, log_sink=None, parent=None):
         super().__init__(parent)
         if operation not in ("start", "stop"):
             raise ValueError("导纳生命周期任务必须为 start 或 stop")
@@ -20,6 +20,7 @@ class AdmittanceLifecycleWorker(QThread):
         self.operation = operation
         self.start_kwargs = deepcopy({} if start_kwargs is None else start_kwargs)
         self.stop_event = threading.Event() if stop_event is None else stop_event
+        self.log_sink = log_sink
 
     def run(self):
         """任务异常在本操作边界明确报告，不重试、不恢复其他控制程序。"""
@@ -35,7 +36,7 @@ class AdmittanceLifecycleWorker(QThread):
                 else:
                     attempted_start = True
                     result["success"] = self.controller.start_admittance(
-                        **self.start_kwargs, stop_event=self.stop_event,
+                        **self.start_kwargs, stop_event=self.stop_event, log_sink=self.log_sink,
                     )
                     result["cancelled"] = self.stop_event.is_set()
                     if result["cancelled"]:
@@ -61,3 +62,16 @@ class AdmittanceLifecycleWorker(QThread):
                     result["success"] = False
                     result["cancelled"] = False
             self.completed.emit(result)
+
+
+class AdmittanceLogFinishWorker(QThread):
+    """在机械臂停止确认后等待日志落盘，不阻塞界面或下一轮通信。"""
+
+    def __init__(self, logger, summary, parent=None):
+        super().__init__(parent)
+        self.logger = logger
+        self.summary = deepcopy(summary)
+        self.result = None
+
+    def run(self):
+        self.result = self.logger.finish(self.summary)

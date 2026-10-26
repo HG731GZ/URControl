@@ -18,6 +18,7 @@ class AdmittanceWindow(QtWidgets.QMainWindow):
     sync_requested = QtCore.pyqtSignal()
     apply_requested = QtCore.pyqtSignal()
     visibility_changed = QtCore.pyqtSignal(bool)
+    logging_toggled = QtCore.pyqtSignal(bool)
 
     def __init__(self, settings=None, parent=None):
         super().__init__(parent, QtCore.Qt.Window)
@@ -35,6 +36,10 @@ class AdmittanceWindow(QtWidgets.QMainWindow):
             "phase": "未开启", "run_id": None, "robot_address": "未连接",
             "controller_joint_limits": None, "parameters_revision": 0,
             "run_metadata": {},
+            "debug_log_status": {
+                "enabled": True, "active": False, "path": None,
+                "record_count": 0, "dropped_count": 0, "pending_count": 0, "error": None,
+            },
         }
         self._editors = {}
         defaults = self.parameters.draft_parameters
@@ -65,6 +70,7 @@ class AdmittanceWindow(QtWidgets.QMainWindow):
         self.ui.pushButton_StartAdmittance.clicked.connect(self._start)
         self.ui.pushButton_StopAdmittance.clicked.connect(self.stop_requested.emit)
         self.ui.pushButton_SyncMaster.clicked.connect(self.sync_requested.emit)
+        self.ui.checkBox_DebugLogging.toggled.connect(self._debug_logging_toggled)
         self.ui.comboBox_ReferenceSource.currentIndexChanged.connect(self._selection_changed)
         self.ui.comboBox_AdmittanceSpace.currentIndexChanged.connect(self._selection_changed)
         self.ui.comboBox_AngleUnit.currentIndexChanged.connect(self._units_changed)
@@ -91,7 +97,7 @@ class AdmittanceWindow(QtWidgets.QMainWindow):
 
     @property
     def reference_source(self):
-        return ("teleop", "free")[self.ui.comboBox_ReferenceSource.currentIndex()]
+        return ("teleop", "fixed")[self.ui.comboBox_ReferenceSource.currentIndex()]
 
     @property
     def space(self):
@@ -104,6 +110,14 @@ class AdmittanceWindow(QtWidgets.QMainWindow):
     @property
     def length_unit(self):
         return ("mm", "m")[self.ui.comboBox_LengthUnit.currentIndex()]
+
+    @property
+    def debug_logging_enabled(self):
+        return self.ui.checkBox_DebugLogging.isChecked()
+
+    def _debug_logging_toggled(self, enabled):
+        self._context["debug_log_status"]["enabled"] = enabled
+        self.logging_toggled.emit(enabled)
 
     def _load_settings(self):
         self.settings.beginGroup("admittanceWindow")
@@ -206,7 +220,7 @@ class AdmittanceWindow(QtWidgets.QMainWindow):
                 row, not field.participates(self.reference_source, self.space))
 
     def _update_parameter_visibility(self):
-        """随所选空间显示一个参数页，主动柔顺不展示无效的刚度列。"""
+        """随所选空间显示参数页，两种来源均使用恢复刚度。"""
         tabs = self.ui.tabWidget_Parameters
         showing_diff = tabs.currentWidget() is self.ui.tab_ParameterDiff
         for space, page in (("joint", self.ui.tab_Parameters_joint),
@@ -214,13 +228,8 @@ class AdmittanceWindow(QtWidgets.QMainWindow):
             tabs.setTabVisible(tabs.indexOf(page), self.space == space)
             if self.space == space and not showing_diff:
                 tabs.setCurrentWidget(page)
-        teleop = self.reference_source == "teleop"
-        for prefix, group in (("Joint", "joint"), ("Cart", "cart")):
-            getattr(self.ui, "label_Header_" + prefix + "Stiffness").setVisible(teleop)
-            for editor in self._editors["TELEOP_" + prefix.upper() + "_STIFFNESS"]:
-                editor.setVisible(teleop)
-            getattr(self.ui, "label_Model_" + group).setVisible(teleop)
-            getattr(self.ui, "label_FreeModel_" + group).setVisible(not teleop)
+        for group in ("joint", "cart"):
+            getattr(self.ui, "label_FixedModel_" + group).setVisible(self.reference_source == "fixed")
 
     def _apply_parameters(self):
         try:
@@ -248,7 +257,7 @@ class AdmittanceWindow(QtWidgets.QMainWindow):
         except (OSError, UnicodeError, ValueError) as error:
             QtWidgets.QMessageBox.warning(self, "预设导入失败", str(error))
             return
-        self.ui.comboBox_ReferenceSource.setCurrentIndex(("teleop", "free").index(reference_source))
+        self.ui.comboBox_ReferenceSource.setCurrentIndex(("teleop", "fixed").index(reference_source))
         self.ui.comboBox_AdmittanceSpace.setCurrentIndex(("joint", "cartesian").index(space))
         self._write_editors()
         self.append_log(f"预设“{name}”已装入草稿；仍需应用。")
@@ -332,6 +341,37 @@ class AdmittanceWindow(QtWidgets.QMainWindow):
         else:
             hint = "参数已应用；修改后请重新应用。"
         self.ui.label_ParameterHint.setText(hint)
+        self._update_debug_log_status()
+
+    def _update_debug_log_status(self):
+        """用后端状态同步日志开关与文件信息，不把开关保存到用户设置。"""
+        status = self._context["debug_log_status"]
+        checkbox = self.ui.checkBox_DebugLogging
+        previous = checkbox.blockSignals(True)
+        checkbox.setChecked(status["enabled"])
+        checkbox.blockSignals(previous)
+        if not status["enabled"]:
+            if status["pending_count"] and not status["error"]:
+                state = "已关闭，正在写入剩余记录"
+            else:
+                state = "已关闭" if status["path"] else "已关闭，尚未创建日志"
+        elif status["error"]:
+            state = "记录已中断"
+        elif status["active"]:
+            if self._context["occupied"] or self._context["stop_pending"]:
+                state = "正在记录"
+            else:
+                state = "正在收尾，写入剩余记录" if status["pending_count"] else "正在收尾"
+        else:
+            state = "已开启，等待启动导纳"
+        if status["error"]:
+            state += "；日志错误：" + status["error"]
+        text = (f"{state} · 已写入 {status['record_count']} 条"
+                f" · 待写 {status['pending_count']} 条 · 丢弃 {status['dropped_count']} 条")
+        if status["path"]:
+            text += "\n日志：" + str(status["path"])
+        self.ui.label_DebugLogStatus.setText(text)
+        self.ui.label_DebugLogStatus.setToolTip(text)
 
     @staticmethod
     def _fill_table(table, rows):
@@ -373,7 +413,7 @@ class AdmittanceWindow(QtWidgets.QMainWindow):
 
     def _refresh_plot(self):
         signal = ("joint_targets", "joint_errors", "tcp_targets", "delta_q", "delta_x",
-                  "v_free", "drive", "actual_qd", "master_received")[self.ui.comboBox_PlotSignal.currentIndex()]
+                  "drive", "actual_qd", "master_received")[self.ui.comboBox_PlotSignal.currentIndex()]
         data = self.monitor.plot_series(signal, self.ui.comboBox_PlotAxis.currentIndex(),
                                         angle_unit=self.angle_unit, length_unit=self.length_unit)
         self.ui.widget_TrendPlot.set_data(data)

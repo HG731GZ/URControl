@@ -18,7 +18,8 @@ from RealSenseCamera import Camera, CameraError
 from window_display import WindowDisplayController, configure_high_dpi
 from window_layouts import create_layout, saved_layout, switch_layout
 from admittance_window import AdmittanceWindow
-from admittance_lifecycle import AdmittanceLifecycleWorker
+from admittance_lifecycle import AdmittanceLifecycleWorker, AdmittanceLogFinishWorker
+from admittance_logger import AdmittanceLogger
 from UR_Utils.URDashboardClient import URDashboardClient
 from UR_Utils.URRealtimeClient import URRealtimeClient
 from UR_Utils.URRTDEController import URRTDEController
@@ -49,6 +50,17 @@ UR_485_PORT = 54321
 DATA_COLLECT_FREQ = 20.0
 DATA_DIRECTORY = 'data'
 SESSION_NAME_FORMAT = 'URCollect_%Y%m%d_%H%M%S'
+ADMITTANCE_SOURCE_CODES = {1: 'teleop', 2: 'free', 3: 'fixed'}
+ADMITTANCE_RECORD_VERSION = 2
+ADMITTANCE_HOST_TIMING_FIELDS = (
+    'state_receive_count', 'state_received_monotonic', 'reference_send_count',
+    'last_reference_sent_monotonic', 'heartbeat_send_count', 'last_heartbeat_sent_monotonic',
+    'heartbeat_send_interval_s', 'heartbeat_send_max_interval_s',
+    'heartbeat_send_lateness_s', 'heartbeat_send_max_lateness_s', 'heartbeat_deadline_miss_count',
+    'processing_duration_s', 'processing_max_duration_s',
+    'rtde_processing_duration_s', 'primary_processing_duration_s',
+)
+ADMITTANCE_ROBOT_HEARTBEAT_FIELDS = ('heartbeat_echo', 'heartbeat_age_us', 'heartbeat_max_interval_us')
 
 
 class MainWindow(QMainWindow):
@@ -82,6 +94,10 @@ class MainWindow(QMainWindow):
         self._admittance_parameters = None
         self._last_admittance_status = None
         self._last_admittance_run_id = None
+        self._admittance_logging_enabled = True
+        self._admittance_logger = None
+        self._admittance_log_finish_workers = []
+        self._admittance_reported_log_error = None
         self._last_collected_admittance_time = None
         self._last_collected_submitted_seq = None
         self._last_collected_master_count = None
@@ -141,7 +157,9 @@ class MainWindow(QMainWindow):
             extra_metadata={
                 'admittance_parameters': admittance_config.snapshot(),
                 'collection_hz': DATA_COLLECT_FREQ,
-                'master_not_applicable': '主动柔顺期间不写入主端目标组',
+                'admittance_record_version': ADMITTANCE_RECORD_VERSION,
+                'admittance_source_codes': ADMITTANCE_SOURCE_CODES,
+                'master_not_applicable': '定点柔顺期间不写入主端目标组，code 2 仅供识别历史 free 记录',
                 'admittance_phase_codes': PHASE_NAMES,
                 'admittance_exit_codes': EXIT_REASONS,
                 'admittance_runs': [],
@@ -154,10 +172,11 @@ class MainWindow(QMainWindow):
             ('MASTER_JOINT', [f'q{i}' for i in range(1, 7)], ['rad'] * 6),
             ('ADMITTANCE_STATE', ['run', 'reference_source', 'space', 'phase', 'exit_reason',
                                   'source_seq', 'adopted_source_seq', 'cycle', 'robot_time'],
-             ['编号', '1=teleop;2=free', '1=joint;2=cartesian', '阶段编号', '退出原因编号',
+             ['编号', '1=teleop;2=free(历史);3=fixed', '1=joint;2=cartesian', '阶段编号', '退出原因编号',
               '帧序号;NaN=不适用', '帧序号;NaN=不适用', '周期', 's']),
             ('ADMITTANCE_Q_CMD', [f'q{i}' for i in range(1, 7)], ['rad'] * 6),
             ('ADMITTANCE_Q_ACTUAL', [f'q{i}' for i in range(1, 7)], ['rad'] * 6),
+            ('ADMITTANCE_QD_ACTUAL', [f'qd{i}' for i in range(1, 7)], ['rad/s'] * 6),
             ('ADMITTANCE_Q_MASTER', [f'q{i}' for i in range(1, 7)], ['rad'] * 6),
             ('ADMITTANCE_Q_SUBMITTED', [f'q{i}' for i in range(1, 7)], ['rad'] * 6),
             ('ADMITTANCE_SUBMISSION', ['run', 'source_seq', 'observed_monotonic'],
@@ -167,18 +186,17 @@ class MainWindow(QMainWindow):
                                          ['gripper', 'gripper_raw2', 'gripper_raw3'],
              ['编号', '本机有效接收计数', 's', '模式编号'] + ['rad；非关节跟踪时NaN'] * 6 +
              ['协议开度或原始位置', '附加原始量', '附加原始量']),
-            ('ADMITTANCE_HOST_TIMING', ['state_receive_count', 'state_received_monotonic',
-                                       'reference_send_count', 'last_reference_sent_monotonic',
-                                       'heartbeat_send_count', 'last_heartbeat_sent_monotonic'],
-             ['计数', 's', '计数', 's；未发送时NaN', '计数', 's；未发送时NaN']),
+            ('ADMITTANCE_HOST_TIMING', list(ADMITTANCE_HOST_TIMING_FIELDS),
+             ['计数', 's', '计数', 's；未发送时NaN', '计数', 's；未发送时NaN',
+              's', 's', 's', 's', '累计错过心跳周期数', 's', 's', 's', 's']),
+            ('ADMITTANCE_ROBOT_HEARTBEAT', list(ADMITTANCE_ROBOT_HEARTBEAT_FIELDS),
+             ['心跳回显计数', 'us', 'us']),
             ('ADMITTANCE_Q_NOM', [f'q{i}' for i in range(1, 7)], ['rad'] * 6),
             ('ADMITTANCE_Q_START', [f'q{i}' for i in range(1, 7)], ['rad'] * 6),
             ('ADMITTANCE_JOINT_DRIVE', [f'tau{i}' for i in range(1, 7)], ['Nm'] * 6),
             ('ADMITTANCE_CART_DRIVE', ['fx', 'fy', 'fz', 'tx', 'ty', 'tz'], ['N'] * 3 + ['Nm'] * 3),
             ('ADMITTANCE_DELTA_Q', [f'dq{i}' for i in range(1, 7)], ['rad'] * 6),
             ('ADMITTANCE_DELTA_X', ['dx', 'dy', 'dz', 'drx', 'dry', 'drz'], ['m'] * 3 + ['rad'] * 3),
-            ('ADMITTANCE_FREE_QD', [f'qd{i}' for i in range(1, 7)], ['rad/s'] * 6),
-            ('ADMITTANCE_FREE_XD', ['vx', 'vy', 'vz', 'wx', 'wy', 'wz'], ['m/s'] * 3 + ['rad/s'] * 3),
         ):
             self.collector.register_numeric(name, columns, units=units)
         for index, camera in enumerate((self.camera_1, self.camera_2), 1):
@@ -421,6 +439,8 @@ class MainWindow(QMainWindow):
                 self.append_message(f'RTDE 初始化失败：{exc}')
         self.update_motion_status(state)
         self.update_admittance_status()
+        self.record_admittance_application_state()
+        self.report_admittance_log_error()
         self.update_torque_subscription()
         self.update_buttons()
         mode = f'机器人模式 {state.robot_mode}' if state else '无实时状态'
@@ -488,6 +508,7 @@ class MainWindow(QMainWindow):
             window.sync_requested.connect(self.sync_admittance_master)
             window.apply_requested.connect(self.on_admittance_parameters_applied)
             window.visibility_changed.connect(self.on_admittance_visibility)
+            window.logging_toggled.connect(self.on_admittance_logging_toggled)
             if self._admittance_parameters is not None:
                 revision = self._admittance_runs[-1]['parameter_revision']
                 window.set_effective(self._admittance_parameters, revision)
@@ -498,6 +519,8 @@ class MainWindow(QMainWindow):
         self.refresh_admittance_window()
 
     def on_admittance_visibility(self, visible):
+        if self._admittance_logger is not None:
+            self._admittance_logger.record('monitor_visibility', {'visible': visible})
         self.admittance_window.monitor.set_visible(visible)
         if visible:
             self.admittance_monitor_timer.start(50)
@@ -507,6 +530,72 @@ class MainWindow(QMainWindow):
 
     def on_admittance_parameters_applied(self):
         self.append_message(f'导纳准备参数已应用，修订号 {self.admittance_window.parameters.revision}')
+        self.update_admittance_window_context()
+
+    def admittance_log_status(self):
+        """开关属于本次应用会话；上一轮写盘期间仍可准备下一轮的选择。"""
+        status = ({'active': False, 'path': None, 'record_count': 0, 'dropped_count': 0,
+                   'pending_count': 0, 'error': None}
+                  if self._admittance_logger is None else self._admittance_logger.get_status())
+        status['enabled'] = self._admittance_logging_enabled
+        return status
+
+    def on_admittance_logging_toggled(self, enabled):
+        """只切换诊断记录；运行中的控制参数和运动状态不随开关变化。"""
+        self._admittance_logging_enabled = enabled
+        if self._admittance_logger is not None and self._admittance_run is not None:
+            status = (self.rtde_controller.get_status()['admittance']
+                      if self._admittance_handoff_complete else self._last_admittance_status)
+            self._admittance_logger.set_enabled(enabled, context={
+                'run_metadata': deepcopy(self._admittance_run), 'controller_status': status,
+            })
+        self.append_message('导纳调试日志已开启' if enabled else '导纳调试日志已关闭')
+        self.update_admittance_window_context()
+
+    def report_admittance_log_error(self):
+        """写盘失败独立报告，保留机械臂控制及停止确认流程。"""
+        status = self.admittance_log_status()
+        if status['error'] is not None and status['error'] != self._admittance_reported_log_error:
+            self._admittance_reported_log_error = status['error']
+            self.append_message(f"导纳日志记录失败：{status['error']}；路径：{status['path']}")
+
+    def record_admittance_application_state(self):
+        """以界面状态周期补充独立通道上下文，不替代逐包 RTDE 日志。"""
+        if self._admittance_run is None or not self._admittance_logging_enabled:
+            return
+        udp = self.udp_client.get_monitor_snapshot()
+        command = udp['command']
+        udp['command'] = (None if command is None else {
+            'q_arm': list(command.q_arm), 'mode': command.mode,
+            'q_gripper': list(command.q_gripper), 'received_time': command.recv_time,
+        })
+        self._admittance_logger.record('application_state', {
+            'sample_source': '主界面状态定时器；目标 10 Hz，各通道独立采样',
+            'control_source': self.control_source, 'robot_ready': self.robot_ready,
+            'stop_pending': self._admittance_stop_pending,
+            'handoff_complete': self._admittance_handoff_complete,
+            'udp_synced': self._udp_synced, 'udp_sync_pending': self._udp_sync_pending,
+            'speed_slider_percent': self.horizontalSlider_SpeedSlider.value(),
+            'collection_active': self.collector.episode_active,
+            'monitor_visible': self.admittance_window is not None and self.admittance_window.isVisible(),
+            'udp': udp,
+            'gripper': None if self.gripper is None else self.gripper.get_monitor_snapshot(),
+        })
+
+    def on_admittance_log_finished(self, worker):
+        """后台排空完成后报告路径，按本轮身份更新采集元数据。"""
+        result = worker.result
+        for run in self._admittance_runs:
+            if run['id'] == worker.summary['run_id']:
+                run['debug_log'] = result
+                break
+        self.collector.update_metadata({'admittance_runs': self._admittance_runs})
+        if result['error'] is not None:
+            self.append_message(f"导纳日志写盘失败：{result['error']}；路径：{result['path']}")
+        elif result['path'] is not None:
+            self.append_message(f"导纳日志已保存：{result['path']}（{result['record_count']} 条，丢弃 {result['dropped_count']} 条）")
+        self._admittance_log_finish_workers.remove(worker)
+        worker.deleteLater()
         self.update_admittance_window_context()
 
     def update_admittance_window_context(self):
@@ -533,6 +622,7 @@ class MainWindow(QMainWindow):
                                         self.rtde_controller.get_status()['joint_position_limit']),
             'parameters_revision': None if run is None else run['parameter_revision'],
             'run_metadata': deepcopy(run),
+            'debug_log_status': self.admittance_log_status(),
             'speed_slider_percent': self.horizontalSlider_SpeedSlider.value(),
         })
 
@@ -600,12 +690,9 @@ class MainWindow(QMainWindow):
             self.append_message('请先停止当前运动，并确认机器人就绪')
             return
         try:
-            parameters = admittance_config.validate_config(config)
+            parameters = admittance_config.validate_run_config(reference_source, space, config=config)
         except ValueError as exc:
             self.append_message(f'导纳参数无效：{exc}')
-            return
-        if reference_source not in ('teleop', 'free') or space not in ('joint', 'cartesian'):
-            self.append_message('导纳场景或空间无效')
             return
         state = self.get_robot_snapshot()
         if state is None or np.max(np.abs(state.qd_actual)) > parameters['STATIONARY_MAX_QD_RAD_S']:
@@ -636,11 +723,24 @@ class MainWindow(QMainWindow):
         self._admittance_message = '导纳启动中：静止采样偏置，请勿接触机器人'
         self._last_admittance_run_id = len(self._admittance_runs) + 1
         self._admittance_run = {
+            'record_version': ADMITTANCE_RECORD_VERSION,
             'id': self._last_admittance_run_id, 'parameter_revision': revision,
+            'run_id': self._last_admittance_run_id, 'robot_address': self.connected_ip,
             'started_at': time.time(), 'reference_source': reference_source, 'space': space,
+            'reference_behavior': 'moving_reference' if reference_source == 'teleop' else 'fixed_anchor',
+            'model': 'mass_damper_spring', 'backend': 'urscript',
+            'source_codes': deepcopy(ADMITTANCE_SOURCE_CODES),
             'prepared_parameters': deepcopy(parameters), 'parameters': None,
             'units_and_coordinates': None, 'master_applicable': reference_source == 'teleop',
+            'debug_logging_enabled_at_start': self._admittance_logging_enabled,
         }
+        self._admittance_logger = AdmittanceLogger(enabled=self._admittance_logging_enabled)
+        self._admittance_reported_log_error = None
+        self._admittance_logger.start({
+            **deepcopy(self._admittance_run), 'python_version': sys.version,
+            'units_and_coordinates': admittance_config.units(reference_source, space, config=parameters),
+            'state_sampling': '每个实际收到的专用 RTDE 输出包；配置频率不代表保证的采样率',
+        })
         self._admittance_runs.append(self._admittance_run)
         self.collector.update_metadata({'admittance_runs': self._admittance_runs})
         self.set_joint_targets_readonly(True)
@@ -658,7 +758,7 @@ class MainWindow(QMainWindow):
         """同一时刻只有一个启停等待任务；完成收尾仍在界面线程。"""
         worker = AdmittanceLifecycleWorker(
             self.rtde_controller, operation, start_kwargs=start_kwargs,
-            stop_event=self._admittance_stop_event, parent=self)
+            stop_event=self._admittance_stop_event, log_sink=self._admittance_logger, parent=self)
         self._admittance_worker = worker
         self._admittance_worker_result = None
         worker.completed.connect(self.on_admittance_worker_result)
@@ -675,6 +775,7 @@ class MainWindow(QMainWindow):
         self._admittance_worker_result = None
         worker.deleteLater()
         status = result['status']
+        self._admittance_logger.record('lifecycle_result', deepcopy(result))
         if result['operation'] == 'start':
             self._admittance_handoff_complete = result['parameters_accepted']
             if self._admittance_handoff_complete:
@@ -692,7 +793,7 @@ class MainWindow(QMainWindow):
                 else:
                     self.finish_admittance(result['error'] or '导纳启动已取消', status)
             else:
-                self.control_source = 'udp' if self._admittance_reference_source == 'teleop' else 'admittance_free'
+                self.control_source = 'udp' if self._admittance_reference_source == 'teleop' else 'admittance_fixed'
                 if self._admittance_reference_source == 'teleop':
                     self.udp_control_timer.start(max(1, round(1000 / self._admittance_parameters['TELEOP_REFERENCE_HZ'])))
         elif result['success']:
@@ -733,6 +834,9 @@ class MainWindow(QMainWindow):
         self._admittance_stop_pending = True
         self._admittance_message = '导纳停止中，正在等待机器人确认'
         if first_request:
+            self._admittance_logger.record('application_stop_requested', {
+                'control_source': self.control_source, 'phase': self._admittance_message,
+            })
             self.append_message(self._admittance_message)
         self.update_buttons()
         if self._admittance_worker is None:
@@ -755,7 +859,16 @@ class MainWindow(QMainWindow):
         if status['robot_configuration'] is not None and 'robot_configuration' not in run:
             run['robot_configuration'] = deepcopy(status['robot_configuration'])
             changed = True
+        if status['q_start'] is not None and 'q_start' not in run:
+            # 锚点只取机器人已确认的本轮固定名义参考，后续实际运动不能改写。
+            run['q_start'] = list(status['q_start'])
+            changed = True
+        # 收发点累计的最坏值随快照保存；20 Hz 采集只记录统计快照，不反推逐帧时序。
+        run['timing_diagnostics'] = {
+            key: status[key] for key in ADMITTANCE_HOST_TIMING_FIELDS + ADMITTANCE_ROBOT_HEARTBEAT_FIELDS
+        }
         if changed:
+            self._admittance_logger.record('run_metadata_updated', deepcopy(run))
             self.collector.update_metadata({'admittance_runs': self._admittance_runs})
 
     def update_admittance_status(self):
@@ -770,7 +883,7 @@ class MainWindow(QMainWindow):
             self._admittance_message = f"导纳异常：{status['last_error']}"
         elif status['running']:
             space = '关节' if self.admittance_mode == 'joint' else '末端'
-            source = '遥操作导纳' if self._admittance_reference_source == 'teleop' else '主动柔顺'
+            source = '遥操作导纳' if self._admittance_reference_source == 'teleop' else '定点柔顺'
             self._admittance_message = f'{space}{source}：运行中'
         else:
             self._admittance_message = f"导纳：{status['phase_name']}"
@@ -786,6 +899,15 @@ class MainWindow(QMainWindow):
                 self.collect_admittance_sample(time.time(), status)
             self._admittance_run.update(ended_at=time.time(), exit_reason=reason,
                                         exit_code=None if status is None else status['exit_reason'])
+            self._admittance_logger.record('application_run_finished', {
+                'reason': reason, 'controller_status': deepcopy(status),
+            })
+            self._admittance_run['debug_log'] = self._admittance_logger.get_status()
+            log_worker = AdmittanceLogFinishWorker(
+                self._admittance_logger, self._admittance_run, parent=self)
+            self._admittance_log_finish_workers.append(log_worker)
+            log_worker.finished.connect(lambda worker=log_worker: self.on_admittance_log_finished(worker))
+            log_worker.start()
             self.collector.update_metadata({'admittance_runs': self._admittance_runs})
             self._admittance_run = None
         self._admittance_message = reason
@@ -1057,7 +1179,7 @@ class MainWindow(QMainWindow):
         feedback = self.get_gripper_feedback()
         frames = self.get_camera_frames()
         # 每个采样周期使用同一数值时间戳，未更新的数据源不重复入库。
-        if (self._admittance_reference_source != 'free' and command is not None
+        if (self._admittance_reference_source != 'fixed' and command is not None
                 and command.recv_time != self._last_collected_udp_time):
             self.collector.push_numeric('MASTER_GRIPPER', [command.q_gripper[0]], timestamp)
             self.collector.push_numeric('MASTER_JOINT', command.q_arm, timestamp)
@@ -1084,7 +1206,8 @@ class MainWindow(QMainWindow):
         # 主端接收和主机提交按各自计数去重，不伪装成机器人同时采样。
         udp = self.udp_client.get_monitor_snapshot()
         command = udp['command']
-        if command is not None and udp['frame_count'] != self._last_collected_master_count:
+        if (status['reference_source'] == 'teleop' and command is not None
+                and udp['frame_count'] != self._last_collected_master_count):
             joint_values = command.q_arm if command.mode == UDPControlMode.JOINT_TRACK else [float('nan')] * 6
             self.collector.push_numeric('ADMITTANCE_MASTER_RECEIVED', [
                 run_id, udp['frame_count'], udp['received_monotonic'], command.mode,
@@ -1096,7 +1219,8 @@ class MainWindow(QMainWindow):
             self.collector.push_numeric('ADMITTANCE_SUBMISSION', [
                 run_id, status['submitted_source_seq'], time.monotonic()], timestamp)
             self._last_collected_submitted_seq = status['submitted_source_seq']
-        if status['timestamp'] is None:
+        # 启动前只读基线也有机器人时间，只有本轮周期证据成立后才写机器人导纳组。
+        if status['timestamp'] is None or status['cycle_count'] is None:
             return
         sample_key = (status['timestamp'], status['phase'])
         if sample_key == self._last_collected_admittance_time:
@@ -1105,7 +1229,7 @@ class MainWindow(QMainWindow):
         space = status['space']
         teleop = source == 'teleop'
         self.collector.push_numeric('ADMITTANCE_STATE', [
-            self._admittance_run['id'], 1 if teleop else 2, 1 if space == 'joint' else 2,
+            self._admittance_run['id'], 1 if teleop else 3, 1 if space == 'joint' else 2,
             status['phase'], status['exit_reason'],
             status['source_seq'] if teleop and status['source_seq'] is not None else float('nan'),
             status['adopted_source_seq'] if teleop and status['adopted_source_seq'] is not None else float('nan'),
@@ -1114,23 +1238,25 @@ class MainWindow(QMainWindow):
         groups = {
             'ADMITTANCE_Q_CMD': status['q_cmd'],
             'ADMITTANCE_Q_ACTUAL': status['actual_q'],
+            'ADMITTANCE_QD_ACTUAL': status['actual_qd'],
+            'ADMITTANCE_Q_NOM': status['q_nom'],
             'ADMITTANCE_JOINT_DRIVE' if space == 'joint' else 'ADMITTANCE_CART_DRIVE': status['drive'],
+            'ADMITTANCE_DELTA_Q' if space == 'joint' else 'ADMITTANCE_DELTA_X': (
+                status['delta_q'] if space == 'joint' else status['delta_x']),
         }
         if teleop:
-            groups.update(ADMITTANCE_Q_MASTER=status['q_master'], ADMITTANCE_Q_NOM=status['q_nom'])
-            groups['ADMITTANCE_DELTA_Q' if space == 'joint' else 'ADMITTANCE_DELTA_X'] = (
-                status['delta_q'] if space == 'joint' else status['delta_x'])
+            groups['ADMITTANCE_Q_MASTER'] = status['q_master']
         else:
             groups['ADMITTANCE_Q_START'] = status['q_start']
-            groups['ADMITTANCE_FREE_QD' if space == 'joint' else 'ADMITTANCE_FREE_XD'] = status['v_free']
         for name, values in groups.items():
             if values is not None:
                 self.collector.push_numeric(name, values, timestamp)
         self.collector.push_numeric('ADMITTANCE_HOST_TIMING', [
             float('nan') if status[key] is None else status[key]
-            for key in ('state_receive_count', 'state_received_monotonic', 'reference_send_count',
-                        'last_reference_sent_monotonic', 'heartbeat_send_count',
-                        'last_heartbeat_sent_monotonic')], timestamp)
+            for key in ADMITTANCE_HOST_TIMING_FIELDS], timestamp)
+        self.collector.push_numeric('ADMITTANCE_ROBOT_HEARTBEAT', [
+            float('nan') if status[key] is None else status[key]
+            for key in ADMITTANCE_ROBOT_HEARTBEAT_FIELDS], timestamp)
         self._last_collected_admittance_time = sample_key
 
     @staticmethod
@@ -1151,6 +1277,8 @@ class MainWindow(QMainWindow):
 
     def append_message(self, message):
         if message is not None:
+            if self._admittance_logger is not None:
+                self._admittance_logger.record('application_message', {'message': str(message)})
             message = time.strftime("%H:%M:%S", time.localtime()) + ': ' + message
             self.plainTextEdit_DashboardMessage.appendPlainText(message)
             if self.admittance_window is not None:
@@ -1239,6 +1367,14 @@ class MainWindow(QMainWindow):
         for camera in (self.camera_1, self.camera_2):
             if camera is not None:
                 camera.close()
+        # 机械臂已停止后再等待剩余日志落盘，退出时不遗留写盘线程。
+        for worker in list(self._admittance_log_finish_workers):
+            worker.wait()
+            for run in self._admittance_runs:
+                if run['id'] == worker.summary['run_id']:
+                    run['debug_log'] = worker.result
+                    break
+        self.collector.update_metadata({'admittance_runs': self._admittance_runs})
         self.collector.close()
         self.robot_visualizer.close()
         if self.admittance_window is not None:
