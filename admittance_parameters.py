@@ -148,10 +148,11 @@ class AdmittanceParameters:
     def export_effective(self, path, metadata):
         if self.effective_parameters is None:
             raise ValueError("尚无后端确认的生效参数")
-        data = {"record_type": "admittance_run_record", "schema_version": 2,
+        data = {"record_type": "admittance_run_record", "schema_version": 3,
                 "purpose": "本轮完整生效参数与只读元数据；不可作为调参预设导入",
                 "reference_behavior": {"teleop": "moving_reference", "fixed": "fixed_anchor"}[metadata["reference_source"]],
-                "model": "mass_damper_spring", "backend": "urscript",
+                "model": self.effective_parameters["DIAGNOSTIC_MODE"] if self.effective_parameters["DIAGNOSTIC_MODE"] != "admittance" else "mass_damper_spring",
+                "backend": "urscript",
                 "source_codes": {1: "teleop", 2: "free", 3: "fixed"},
                 "units": admittance_config.units(metadata["reference_source"], metadata["space"],
                                                 config=self.effective_parameters),

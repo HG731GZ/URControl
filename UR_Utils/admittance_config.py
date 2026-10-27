@@ -15,6 +15,24 @@ from UR_Utils import admittance_telemetry
 # 通信频率、心跳、超时和启动条件仅在本文件调整。
 TELEOP_REFERENCE_HZ = 100.0
 ADMITTANCE_STATE_HZ = 100.0
+# 类型、观测轴和预设运动轴独立；默认保持，不因切换观测轴开放运动。
+# 开启前确认输入整数 24～31、输出整数 24～47 未被其他程序占用。
+DIAGNOSTIC_MODE = "fixed_joint_hold"
+DIAGNOSTIC_AXIS = 1
+DIAGNOSTIC_MOTION_AXIS = 1
+DIAGNOSTIC_MOTION_AMPLITUDE_RAD = 0.004
+DIAGNOSTIC_MOTION_PERIOD_S = 8.0
+DIAGNOSTIC_MOTION_MAX_QD_RAD_S = 0.003
+DIAGNOSTIC_MOTION_MAX_QDD_RAD_S2 = 0.02
+DIAGNOSTIC_MOTION_TRACKING_RAD = 0.005
+DIAGNOSTIC_STATE_HZ = 500.0
+DIAGNOSTIC_SETTLE_S = 1.0
+DIAGNOSTIC_DURATION_S = 15.0
+# 有限片段包含两个基础帧；计算超预算、片段耗尽与执行缺帧分别停止，采样起点间隔仅观测。
+SERVO_DT_S = 0.002
+MODEL_DT_S = 0.004
+TIMING_TOLERANCE_S = 0.000001
+TELEMETRY_PERIOD_S = 0.008
 ADMITTANCE_HEARTBEAT_HZ = 50.0
 # 暂保留原通信阈值，等待双端实际间隔和停止距离联调后协调。
 # 80 毫秒软件超时到 10 赫兹硬看门狗仅有名义 20 毫秒间隙，不能保证 stopj 完成减速。
@@ -134,7 +152,13 @@ def validate_config(config=None):
         raise ValueError("导纳参数必须包含完整的已声明配置，且不能包含未知字段")
     for name, default in expected.items():
         value = values[name]
-        if isinstance(default, str):
+        if name in ("DIAGNOSTIC_AXIS", "DIAGNOSTIC_MOTION_AXIS"):
+            if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 6:
+                raise ValueError(f"{name} 必须为 1 至 6；运行类型由 DIAGNOSTIC_MODE 决定")
+        elif name == "DIAGNOSTIC_MODE":
+            if value not in ("fixed_joint_hold", "preset_joint_motion", "admittance"):
+                raise ValueError("DIAGNOSTIC_MODE 必须为 fixed_joint_hold、preset_joint_motion 或 admittance")
+        elif isinstance(default, str):
             if value not in ("base", "tool_start"):
                 raise ValueError("CART_FRAME 必须为 base 或 tool_start")
         elif isinstance(default, list):
@@ -155,8 +179,12 @@ def validate_config(config=None):
         elif name.endswith("_BYTES") and not isinstance(value, int):
             raise ValueError(f"{name} 必须为整数字节数")
 
-    for name, width in (("ADMITTANCE_INPUT_INT_BASE", 5), ("ADMITTANCE_INPUT_FLOAT_BASE", 6),
-                        ("ADMITTANCE_OUTPUT_INT_BASE", 8), ("ADMITTANCE_OUTPUT_FLOAT_BASE", 24)):
+    if values["SERVO_DT_S"] != 0.002 or values["MODEL_DT_S"] != 2 * values["SERVO_DT_S"]:
+        raise ValueError("本阶段明确采用 2 ms 伺服、4 ms 模型与两帧片段")
+    if values["DIAGNOSTIC_MOTION_AMPLITUDE_RAD"] > min(values["JOINT_MAX_OFFSET_RAD"]):
+        raise ValueError("预设微动幅度不能超过关节偏移边界")
+    for name, width in (("ADMITTANCE_INPUT_INT_BASE", 8), ("ADMITTANCE_INPUT_FLOAT_BASE", 6),
+                        ("ADMITTANCE_OUTPUT_INT_BASE", 24), ("ADMITTANCE_OUTPUT_FLOAT_BASE", 24)):
         base = values[name]
         if not isinstance(base, int) or base < 24 or base + width > 48:
             raise ValueError(f"{name} 的配方必须完全位于 24 至 47 上半区寄存器")
@@ -178,9 +206,13 @@ def validate_config(config=None):
         raise ValueError(f"RTDE 缓冲上限必须至少为当前输出配方的完整帧长度 {packet_bytes} 字节")
     if values["ADMITTANCE_START_TIMEOUT_S"] <= values["ADMITTANCE_BIAS_DURATION_S"]:
         raise ValueError("启动超时必须大于偏置采样时长")
+    if values["ADMITTANCE_START_TIMEOUT_S"] <= values["DIAGNOSTIC_SETTLE_S"] + values["ADMITTANCE_BIAS_DURATION_S"]:
+        raise ValueError("启动超时必须大于统一伺服保持与偏置采样的总时长")
+    if values["DIAGNOSTIC_DURATION_S"] > 60:
+        raise ValueError("单轮保持诊断最长 60 秒，请分轮采集以限制高频日志容量")
     if values["ADMITTANCE_STOP_TIMEOUT_S"] <= max(values["COMMAND_MAX_QD_RAD_S"]) / values["STOP_JOINT_ACCEL_RAD_S2"]:
         raise ValueError("停止超时必须覆盖最大命令速度的减速时间")
-    if max(values["ADMITTANCE_STATE_HZ"], values["TELEOP_REFERENCE_HZ"], values["ADMITTANCE_HEARTBEAT_HZ"]) > 500:
+    if max(values["ADMITTANCE_STATE_HZ"], values["DIAGNOSTIC_STATE_HZ"], values["TELEOP_REFERENCE_HZ"], values["ADMITTANCE_HEARTBEAT_HZ"]) > 500:
         raise ValueError("通信频率不能超过 500 Hz")
     return values
 
@@ -190,6 +222,8 @@ def validate_run_config(reference_source, space, *, config=None):
     if reference_source not in ("teleop", "fixed") or space not in ("joint", "cartesian"):
         raise ValueError("导纳场景或空间无效；新运行仅支持 teleop 或 fixed 来源")
     values = validate_config(config)
+    if reference_source != "fixed" or space != "joint":
+        raise ValueError("连续伺服首轮仅开放定点关节模式；遥操作与末端 IK 尚未完成模型预算验证")
     if reference_source == "fixed":
         prefix = "JOINT" if space == "joint" else "CART"
         for suffix in ("MASS", "DAMPING", "STIFFNESS"):
@@ -211,6 +245,7 @@ def render_script(reference_source, space, *, config=None):
     rendered = {name: repr(value) for name, value in values.items()}
     rendered["REFERENCE_SOURCE"] = "1" if reference_source == "teleop" else "3"
     rendered["ADMITTANCE_SPACE"] = "1" if space == "joint" else "2"
+    rendered["DIAGNOSTIC_MODE_CODE"] = str({"admittance": 0, "fixed_joint_hold": 1, "preset_joint_motion": 2}[values["DIAGNOSTIC_MODE"]])
     rendered["CART_FRAME_TOOL_START"] = "True" if values["CART_FRAME"] == "tool_start" else "False"
     rendered["WATCHDOG_VARIABLE"] = f'"input_int_register_{values["ADMITTANCE_INPUT_INT_BASE"] + 1}"'
     template = Path(__file__).with_name("scripts").joinpath("admittance_control.script").read_text(encoding="utf-8")

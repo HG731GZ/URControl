@@ -10,6 +10,12 @@ from admittance_parameters import AdmittanceParameters, FIELDS
 from ui_admittance_window import Ui_AdmittanceWindow
 
 
+OPERATOR_EVENTS = {
+    "force_start": "施力开始", "released": "完全松手",
+    "buzzing": "听到嗡鸣", "stop_requested": "请求停止",
+}
+
+
 class AdmittanceWindow(QtWidgets.QMainWindow):
     """只发送用户意图，控制状态与停止确认始终由主程序统一管理。"""
 
@@ -19,6 +25,7 @@ class AdmittanceWindow(QtWidgets.QMainWindow):
     apply_requested = QtCore.pyqtSignal()
     visibility_changed = QtCore.pyqtSignal(bool)
     logging_toggled = QtCore.pyqtSignal(bool)
+    operator_event_requested = QtCore.pyqtSignal(str, str)
 
     def __init__(self, settings=None, parent=None):
         super().__init__(parent, QtCore.Qt.Window)
@@ -36,9 +43,12 @@ class AdmittanceWindow(QtWidgets.QMainWindow):
             "phase": "未开启", "run_id": None, "robot_address": "未连接",
             "controller_joint_limits": None, "parameters_revision": 0,
             "run_metadata": {},
+            "diagnostic": None,
             "debug_log_status": {
                 "enabled": True, "active": False, "path": None,
                 "record_count": 0, "dropped_count": 0, "pending_count": 0, "error": None,
+                "logger_timing": {"schema_version": 1, "producer": {}, "writer": {},
+                                  "queue_observed_high_watermark": 0, "queue_age": None},
             },
         }
         self._editors = {}
@@ -71,6 +81,11 @@ class AdmittanceWindow(QtWidgets.QMainWindow):
         self.ui.pushButton_StopAdmittance.clicked.connect(self.stop_requested.emit)
         self.ui.pushButton_SyncMaster.clicked.connect(self.sync_requested.emit)
         self.ui.checkBox_DebugLogging.toggled.connect(self._debug_logging_toggled)
+        for name, event in (("ForceStart", "force_start"), ("Released", "released"),
+                            ("Buzzing", "buzzing"), ("Stop", "stop_requested")):
+            getattr(self.ui, "pushButton_Event" + name).clicked.connect(
+                lambda _, key=event: self.operator_event_requested.emit(
+                    key, self.ui.lineEdit_OperatorEventNote.text().strip()))
         self.ui.comboBox_ReferenceSource.currentIndexChanged.connect(self._selection_changed)
         self.ui.comboBox_AdmittanceSpace.currentIndexChanged.connect(self._selection_changed)
         self.ui.comboBox_AngleUnit.currentIndexChanged.connect(self._units_changed)
@@ -85,7 +100,10 @@ class AdmittanceWindow(QtWidgets.QMainWindow):
                      "RobotConfiguration", "Diagnostics", "ParameterDiff"):
             table = getattr(self.ui, "tableWidget_" + name)
             table.verticalHeader().setVisible(False)
-            table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
+            # 诊断长表按 Designer 列宽显示，避免每个计时值变化都重新扫描整列尺寸。
+            resize_mode = (QtWidgets.QHeaderView.Interactive if name == "Diagnostics"
+                           else QtWidgets.QHeaderView.ResizeToContents)
+            table.horizontalHeader().setSectionResizeMode(resize_mode)
             table.horizontalHeader().setStretchLastSection(True)
             table.setHorizontalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
         self._load_settings()
@@ -117,6 +135,7 @@ class AdmittanceWindow(QtWidgets.QMainWindow):
 
     def _debug_logging_toggled(self, enabled):
         self._context["debug_log_status"]["enabled"] = enabled
+        self._update_debug_log_status()
         self.logging_toggled.emit(enabled)
 
     def _load_settings(self):
@@ -309,6 +328,7 @@ class AdmittanceWindow(QtWidgets.QMainWindow):
         """进入新一轮前清除旧生效值，避免与新一轮元数据混配。"""
         self.parameters.effective_parameters = None
         self.parameters.effective_revision = None
+        self._context["diagnostic"] = None
         self._refresh_diff()
         self._update_controls()
         self.update_context({})
@@ -318,6 +338,11 @@ class AdmittanceWindow(QtWidgets.QMainWindow):
         idle = self._context["robot_ready"] and not self._context["busy"] and not occupied
         teleop = self.reference_source == "teleop"
         ready_source = not teleop or (self._context["master_fresh"] and self._context["synced"])
+        parameters = (self.parameters.effective_parameters if occupied and self.parameters.effective_parameters is not None
+                      else self.parameters.prepared_parameters)
+        diagnostic_axis = parameters["DIAGNOSTIC_AXIS"]
+        diagnostic_mode = parameters["DIAGNOSTIC_MODE"]
+        supported_selection = self.reference_source == "fixed" and self.space == "joint"
         for field in FIELDS:
             for editor in self._editors[field.key]:
                 editor.setEnabled(not occupied and field.participates(self.reference_source, self.space))
@@ -325,7 +350,9 @@ class AdmittanceWindow(QtWidgets.QMainWindow):
             getattr(self.ui, "pushButton_" + name).setEnabled(not occupied)
         self.ui.comboBox_ReferenceSource.setEnabled(not occupied)
         self.ui.comboBox_AdmittanceSpace.setEnabled(not occupied)
-        self.ui.pushButton_StartAdmittance.setEnabled(idle and ready_source and not self.parameters.has_unapplied_changes)
+        self.ui.pushButton_StartAdmittance.setEnabled(
+            idle and ready_source and not self.parameters.has_unapplied_changes
+            and supported_selection)
         self.ui.pushButton_SyncMaster.setEnabled(idle and teleop and self._context["master_fresh"])
         self.ui.pushButton_StopAdmittance.setEnabled(occupied)
         self.ui.actionExportDraft.setEnabled(not occupied)
@@ -341,6 +368,19 @@ class AdmittanceWindow(QtWidgets.QMainWindow):
         else:
             hint = "参数已应用；修改后请重新应用。"
         self.ui.label_ParameterHint.setText(hint)
+        self.ui.label_DiagnosticMode.setVisible(True)
+        if diagnostic_mode == "fixed_joint_hold":
+            text = (f"固定关节保持；J{diagnostic_axis} 观测，外力不驱动目标，"
+                    f"限时 {parameters['DIAGNOSTIC_DURATION_S']:g} 秒。")
+        elif diagnostic_mode == "preset_joint_motion":
+            text = (f"预设微动；J{parameters['DIAGNOSTIC_MOTION_AXIS']} 运动，J{diagnostic_axis} 观测，"
+                    "外力不驱动目标。")
+        else:
+            text = f"质量—阻尼—刚度导纳；J{diagnostic_axis} 为观测轴。"
+        text += f" 伺服 {parameters['SERVO_DT_S'] * 1000:g} ms / 模型 {parameters['MODEL_DT_S'] * 1000:g} ms。"
+        if not supported_selection:
+            text += " 本轮仅开放定点柔顺与关节空间；遥操作和末端空间尚未验收周期预算。"
+        self.ui.label_DiagnosticMode.setText(text)
         self._update_debug_log_status()
 
     def _update_debug_log_status(self):
@@ -368,19 +408,40 @@ class AdmittanceWindow(QtWidgets.QMainWindow):
             state += "；日志错误：" + status["error"]
         text = (f"{state} · 已写入 {status['record_count']} 条"
                 f" · 待写 {status['pending_count']} 条 · 丢弃 {status['dropped_count']} 条")
+        timing = status["logger_timing"]
+        queue_age = timing["queue_age"]
+        queue_delay = "未观测" if queue_age is None else f"{queue_age['max_s'] * 1000:.3f} ms"
+        text += (f" · 队列观测峰值 {timing['queue_observed_high_watermark']} 条"
+                 f" · 最大提交至出队 {queue_delay}")
         if status["path"]:
             text += "\n日志：" + str(status["path"])
         self.ui.label_DebugLogStatus.setText(text)
         self.ui.label_DebugLogStatus.setToolTip(text)
+        events_enabled = (self._context["occupied"] and self._context["run_id"] is not None
+                          and status["enabled"] and status["active"] and status["error"] is None)
+        for name in ("ForceStart", "Released", "Buzzing", "Stop"):
+            getattr(self.ui, "pushButton_Event" + name).setEnabled(events_enabled)
+
+    def operator_event_result(self, text):
+        """显示主程序实际提交结果，入队成功不宣称已经完成写盘。"""
+        self.ui.label_OperatorEventStatus.setText(text)
 
     @staticmethod
     def _fill_table(table, rows):
-        table.setRowCount(len(rows))
+        """复用表格项，只修改变化文字，避免每帧重建全部 Qt 对象。"""
+        if table.rowCount() != len(rows):
+            table.setRowCount(len(rows))
         for row, values in enumerate(rows):
             for column, value in enumerate(values):
-                item = QtWidgets.QTableWidgetItem(str(value))
-                item.setToolTip(str(value))
-                table.setItem(row, column, item)
+                text = str(value)
+                item = table.item(row, column)
+                if item is None:
+                    item = QtWidgets.QTableWidgetItem(text)
+                    item.setToolTip(text)
+                    table.setItem(row, column, item)
+                elif item.text() != text:
+                    item.setText(text)
+                    item.setToolTip(text)
 
     def _fill_waiting_tables(self):
         self._fill_table(self.ui.tableWidget_JointTargets, [[f"J{i}"] + ["未启动"] * 5 for i in range(1, 7)])
@@ -406,6 +467,21 @@ class AdmittanceWindow(QtWidgets.QMainWindow):
             self._fill_table(getattr(self.ui, "tableWidget_" + name), rows[key])
         self.ui.label_StateFreshness.setText(str(self._snapshot["freshness"]))
         self.ui.label_SourceTime.setText(str(self._snapshot["source_time"]))
+        diag = self._snapshot["diagnostics"]
+        cfg = self._snapshot["parameters"]
+
+        def milliseconds(value):
+            return "未观测" if value is None else f"{value * 1000:.3f} ms"
+
+        heartbeat_age = diag["heartbeat_age_us"]
+        prefix = "本轮" if self._snapshot["active"] else "最近一轮"
+        self.ui.label_HostBudgetSummary.setText(
+            f"{prefix}主机心跳最大间隔 {milliseconds(diag['heartbeat_send_max_interval_s'])}；"
+            f"机器人当前心跳年龄 {milliseconds(None if heartbeat_age is None else heartbeat_age / 1000000)} / "
+            f"软件阈值 {milliseconds(cfg['ADMITTANCE_HEARTBEAT_TIMEOUT_S'])}；"
+            f"最大唤醒迟到 {milliseconds(diag['wake_max_lateness_s'])}；"
+            f"最长持续未排空 {milliseconds(diag['rtde_backlog_max_duration_s'])}。"
+            "两端时基独立，上述差值不能作为已验证的停止余量。")
 
     def _units_changed(self):
         self._refresh_tables()

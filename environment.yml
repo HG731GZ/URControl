@@ -22,5 +22,5 @@ dependencies:
       - pyrealsense2==2.57.7.10387
       # 提供 rtde_control、rtde_receive 和 rtde_io。
       - ur-rtde==1.6.3
-      # 官方客户端提供 rtde 模块，与上面的 ur-rtde 是两个包。
-      - "UrRtde @ git+https://github.com/UniversalRobots/RTDE_Python_Client_Library.git@v2.7.12"
+      # 官方客户端提供 rtde 模块；固定本机已验证、包版本为 2.8.4 的源码提交。
+      - "UrRtde @ git+https://github.com/UniversalRobots/RTDE_Python_Client_Library.git@28db033e2cde98f782431452eb810fb76ebad17c"

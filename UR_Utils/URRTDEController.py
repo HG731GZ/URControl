@@ -12,7 +12,8 @@ import rtde_control
 import rtde_io
 import rtde_receive
 from UR_Utils.URRTDETorqueClient import URRTDETorqueClient
-from UR_Utils.URAdmittanceController import URAdmittanceController, idle_admittance_status
+from UR_Utils.URAdmittanceController import idle_admittance_status
+from UR_Utils.admittance_process import AdmittanceProcess
 from UR_Utils import admittance_config
 from UR_Utils.ur_pose_math import (
     apply_pose_delta,
@@ -185,7 +186,7 @@ class URRTDEController:
         self._speed_watchdog_deadline: Optional[float] = None
         self._last_speed_command_kind: Optional[str] = None
         self._direct_motion_kind: Optional[str] = None
-        self._admittance: Optional[URAdmittanceController] = None
+        self._admittance: Optional[AdmittanceProcess] = None
         self._last_admittance_start_accepted = False
         self._ordinary_connected = True
 
@@ -326,9 +327,11 @@ class URRTDEController:
             if self._is_shutdown:
                 raise RuntimeError("控制器已经关闭")
             self._require_ordinary_motion()
+            if self._admittance is not None:
+                self._admittance.close()
             cfg = admittance_config.validate_run_config(reference_source, space, config=config)
             cfg["JOINT_POSITION_LIMIT_RAD"] = self._joint_position_limit.tolist()
-            backend = URAdmittanceController(
+            backend = AdmittanceProcess(
                 self.robot_ip, reference_source, space,
                 q_master=q_master, source_seq=source_seq, config=cfg, stop_event=stop_event,
                 log_sink=log_sink,
@@ -390,7 +393,7 @@ class URRTDEController:
             if self._ordinary_connected:
                 self._stop_ordinary(stop_script=stop_script)
 
-    def _confirm_admittance_stopped(self, backend: URAdmittanceController) -> bool:
+    def _confirm_admittance_stopped(self, backend: AdmittanceProcess) -> bool:
         """专用通信故障时，用原只读连接的连续新鲜反馈确认程序退出。"""
         if not self.rtde_r.isConnected():
             return False
@@ -516,6 +519,8 @@ class URRTDEController:
                 return
 
             self.stop(stop_script=True)
+            if self._admittance is not None:
+                self._admittance.close()
             self.stop_raw_torque_stream()
             self._speed_watchdog_stop.set()
             if self._speed_watchdog_thread is not None:

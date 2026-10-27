@@ -30,7 +30,58 @@ TIMING_FIELDS = (
     ("processing_max_duration_s", "主机最大轮处理耗时", "s；收发线程实际测量"),
     ("rtde_processing_duration_s", "RTDE 最近批处理耗时", "s；读取及解析预算"),
     ("primary_processing_duration_s", "Primary 最近批处理耗时", "s；读取及解析预算"),
+    ("packet_prepare_duration_s", "主机最近报文准备耗时", "s；输入快照和序列化"),
+    ("packet_prepare_max_duration_s", "主机最大报文准备耗时", "s；本轮最大值"),
+    ("send_duration_s", "主机最近发送耗时", "s；实际发送调用"),
+    ("send_max_duration_s", "主机最大发送耗时", "s；本轮最大值"),
+    ("receive_duration_s", "主机最近接收耗时", "s；单次缓冲接收调用"),
+    ("receive_max_duration_s", "主机最大接收耗时", "s；本轮最大值"),
+    ("decode_duration_s", "主机最近状态解析耗时", "s；状态解析及事件提交"),
+    ("decode_max_duration_s", "主机最大状态解析耗时", "s；本轮最大值"),
+    ("log_submit_duration_s", "主机最近日志提交耗时", "s；入队耗时，不是写盘耗时"),
+    ("log_submit_max_duration_s", "主机最大日志提交耗时", "s；本轮最大值"),
+    ("last_wake_monotonic_s", "最近收发线程唤醒时刻", "s；主机单调时钟"),
+    ("wake_deadline_monotonic_s", "最近收发线程唤醒期限", "s；主机单调时钟"),
+    ("wake_lateness_s", "最近收发线程唤醒迟到", "s；相对所安排期限"),
+    ("wake_max_lateness_s", "最大收发线程唤醒迟到", "s；本轮最大值"),
+    ("rtde_buffered_bytes", "RTDE 当前未解析缓冲", "字节；读取后尚未解析的状态"),
+    ("rtde_buffered_max_bytes", "RTDE 未解析缓冲高水位", "字节；本轮最大值"),
+    ("state_timestamp_interval_s", "最近状态机器人时间间隔", "s；相邻状态机器人时间差"),
+    ("state_host_interval_s", "最近状态主机接收间隔", "s；相邻状态接收单调时间差"),
+    ("state_progress_lag_s", "当前未排空窗口推进差", "s；自最近明确排空起的主机与机器人推进差，仅观测，不是停止条件"),
+    ("state_progress_max_lag_s", "最大未排空窗口推进差", "s；本轮最大值，不将跨时钟推进差等同于网络积压"),
+    ("state_last_progress_monotonic_s", "最近状态时间推进的主机时刻", "s；主机单调时钟"),
+    ("state_progress_rate", "机器人与主机时间推进比", "机器人时间推进 / 主机时间推进；用于观察 URSim 时钟速度"),
+    ("state_progress_window_host_s", "推进比窗口的主机时间", "s；该统计窗口内主机单调时间推进"),
+    ("state_progress_window_robot_s", "推进比窗口的机器人时间", "s；同一统计窗口内机器人 timestamp 推进"),
+    ("rtde_socket_drained", "RTDE 本次确认已排空", "仅当 socket 当前不可读且用户缓冲为零时成立"),
+    ("rtde_last_drained_monotonic_s", "RTDE 最近确认排空时刻", "s；主机单调时钟"),
+    ("rtde_drain_count", "RTDE 明确排空观测次数", "次；独立于机器人时间推进速度"),
+    ("rtde_backlog_duration_s", "RTDE 当前持续未排空时间", "s；与 timestamp 停滞分别按状态超时阈值停止"),
+    ("rtde_backlog_max_duration_s", "RTDE 最长持续未排空时间", "s；本轮最大值，不由跨时钟累计差推算"),
+    ("communication_process_pid", "导纳通信进程 PID", "本机独立通信进程；未启动时未提供"),
+    ("process_worker_failed", "导纳通信进程工作失败", "失败后仍需确认机器人退出与静止"),
+    ("process_status_published_monotonic_s", "通信进程快照生成时刻", "s；子进程使用本机单调时钟"),
+    ("process_status_received_monotonic_s", "主程序收到进程快照时刻", "s；父进程桥接使用同一本机单调时钟"),
+    ("process_status_age_s", "通信进程快照年龄", "s；取快照时刻减去子进程生成时刻，不是机器人网络年龄"),
+    ("process_bridge_dropped_count", "进程日志桥接丢弃记录数", "条；独立于日志写盘队列丢弃计数"),
+    ("next_heartbeat_deadline_monotonic_s", "下一心跳发送期限", "s；主机单调时钟"),
+    ("next_reference_deadline_monotonic_s", "下一参考发送期限", "s；主机单调时钟"),
 )
+
+HOST_TIMING_LABELS = {
+    "input_snapshot_wait": "输入参考锁等待", "input_snapshot_copy": "输入参考快照",
+    "input_fields": "输入字段填充", "input_serialize": "输入配方序列化",
+    "packet_total": "单包准备至发送结束",
+    "packet_prepare": "报文准备", "socket_writable_wait": "等待套接字可写",
+    "socket_send": "套接字发送", "send": "完整报文发送", "rtde_read": "RTDE 读取",
+    "receive": "单包接收与解包", "rtde_processing": "RTDE 批处理",
+    "rtde_unpack": "RTDE 解包", "decode": "状态解码",
+    "state_publish": "状态发布", "state_lock_wait": "等待状态锁",
+    "state_lock_hold": "持有状态锁", "log_submit": "日志提交",
+    "primary": "Primary 处理", "processing": "收发轮处理", "wake_wait": "唤醒等待",
+    "owner_service": "进程指令与状态交接",
+}
 
 
 def _observation(value, state, label, source, unit, timestamp=None, age_s=None):
@@ -145,10 +196,13 @@ class AdmittanceMonitor:
                 "actual_TCP_pose", "submitted_source_seq", "adopted_source_seq", "source_seq",
                 "robot_configuration", "drive", "delta_q", "delta_x", "cycle_count",
                 "runtime_state", "safety_status_bits", "exit_reason", "exit_reason_text", "last_error",
-                "last_reference_sent_monotonic", "last_heartbeat_sent_monotonic")}
+                "last_reference_sent_monotonic", "last_heartbeat_sent_monotonic",
+                "telemetry_layout", "page_type", "page_seq", "load",
+                "speed_scaling", "target_speed_fraction", "scaling_ok")}
             status.update({key: None for key, _, _ in TIMING_FIELDS})
             status.update(active=False, phase_name="未开启", state_receive_count=0,
-                          reference_send_count=0, heartbeat_send_count=0)
+                          reference_send_count=0, heartbeat_send_count=0,
+                          continuous={"execution": None, "timing": None}, host_timing={})
         cfg = status["parameters"] if status["parameters"] is not None else parameters
         if cfg is None:
             cfg = admittance_config.snapshot()
@@ -166,6 +220,21 @@ class AdmittanceMonitor:
                                  cfg["ADMITTANCE_STATE_TIMEOUT_S"], connected)
         target_state = robot_state if active else ("previous" if status["q_cmd"] is not None else "not_started")
         timestamp = status["timestamp"]
+        execution = status["continuous"]["execution"]
+        load = status["load"]
+
+        def page_target(page, key, label, unit="rad"):
+            if page is None:
+                return _observation(None, "waiting" if active else "not_started", label,
+                                    "等待完整冻结页", unit)
+            age = _age(now, page["received_monotonic_s"])
+            state = _freshness(page[key], age, cfg["ADMITTANCE_STATE_TIMEOUT_S"], connected)
+            if not active:
+                state = "previous"
+            source_text = (f"独立冻结页 {page['page_seq']}；模型采样 {page['model_sample_seq']}；"
+                           f"脚本时刻 {page['snapshot_time_s']:.6f} s；接收年龄不代表采样年龄")
+            return _observation(page[key], state, label, source_text, unit,
+                                page["snapshot_time_s"], age)
 
         def target(key, label, applicable=True, unit="rad"):
             state = "inapplicable" if not applicable else target_state
@@ -176,10 +245,13 @@ class AdmittanceMonitor:
 
         joint = {
             "q_master_adopted": target("q_master", "机器人已采用主端目标", source == "teleop"),
-            "q_nom": target("q_nom", "固定名义参考" if source == "fixed" else "连续限速后的名义参考"),
-            "q_cmd": target("q_cmd", "导纳最终关节目标"),
+            "q_nom": page_target(execution, "q_nom", "固定名义参考" if source == "fixed" else "连续限速后的名义参考"),
+            "q_cmd": page_target(execution, "q_cmd", "执行器已采用关节目标"),
+            "qd_cmd": page_target(execution, "qd_cmd", "执行器已采用关节速度", "rad/s"),
             "q_start": target("q_start", "固定启动锚点（机器人确认）", source == "fixed"),
         }
+        if source == "fixed":
+            joint["q_start"]["source"] = "本轮已确认的固定锚点上下文，不随当前采样改变"
         live = status if active or realtime is None else realtime
         live_age = robot_age if live is status else _age(now, realtime["received_monotonic"])
         live_state = robot_state if live is status else _freshness(
@@ -195,17 +267,23 @@ class AdmittanceMonitor:
                                           "rad/s", live["timestamp"], live_age)
         errors = {}
         for key, label, left, right, applicable in (
-            ("nominal_following", "名义跟随差", "q_master", "q_nom", source == "teleop"),
-            ("command_correction", "最终命令相对名义参考的修正", "q_cmd", "q_nom", True),
-            ("tracking", "机器人关节跟踪误差", "q_cmd", "actual_q", True),
+            ("nominal_following", "主端采用与名义参考差（独立快照）", "q_master_adopted", "q_nom", source == "teleop"),
+            ("command_correction", "已采用命令相对名义参考的修正", "q_cmd", "q_nom", True),
+            ("tracking", "执行采用与实际反馈差（异步）", "q_cmd", "actual_q", True),
         ):
             value = None
-            if applicable and status[left] is not None and status[right] is not None:
-                value = np.asarray(status[left]) - np.asarray(status[right])
-            state = target_state if applicable else "inapplicable"
+            left_item, right_item = joint[left], joint[right]
+            if applicable and left_item["value"] is not None and right_item["value"] is not None:
+                value = np.asarray(left_item["value"]) - np.asarray(right_item["value"])
+            state = left_item["state"] if applicable else "inapplicable"
             if value is None and active and applicable:
                 state = "waiting"
-            errors[key] = _observation(value, state, label, "专用 RTDE 同次状态相减", "rad", timestamp, robot_age)
+            elif value is not None and right_item["state"] != "fresh":
+                state = right_item["state"]
+            difference_source = (left_item["source"] if key == "command_correction" else
+                                 "独立冻结执行页与最新反馈/参考相减；不是同周期跟踪误差")
+            errors[key] = _observation(value, state, label, difference_source, "rad",
+                                      left_item["timestamp"], left_item["age_s"])
 
         command = None if udp_snapshot is None else udp_snapshot["command"]
         udp_age = None if udp_snapshot is None else _age(now, udp_snapshot["received_monotonic"])
@@ -240,11 +318,12 @@ class AdmittanceMonitor:
             actual = np.asarray(status["actual_TCP_pose"])
             rotation = matrix_to_rotvec(rotvec_to_matrix(estimated[3:]) @ rotvec_to_matrix(actual[3:]).T)
             model_difference = np.concatenate((estimated[:3] - actual[:3], rotation))
-        errors["tcp_model_difference"] = _observation(model_difference, target_state,
-            "最终 TCP 模型估算与反馈差（含模型差异）", "同次关节正解及实际 TCP；姿态为相对旋转", "pose", timestamp, robot_age)
+        errors["tcp_model_difference"] = _observation(model_difference,
+            "waiting" if model_difference is None else target_state,
+            "已采用 TCP 模型估算与反馈差（异步，含模型差异）", "独立执行页关节正解与最新实际 TCP；姿态为相对旋转", "pose", timestamp, robot_age)
         admittance = {
-            "drive": target("drive", "导纳驱动力（经偏置、滤波、死区、轴选择）", unit="joint_load" if space == "joint" else "wrench"),
-            "delta_q": target("delta_q", "关节导纳偏移", space == "joint"),
+            "drive": page_target(load, "drive", "导纳驱动力（独立载荷页）", unit="joint_load" if space == "joint" else "wrench"),
+            "delta_q": page_target(execution, "delta_q", "执行页关节导纳偏移") if space == "joint" else target("delta_q", "关节导纳偏移", False),
             "delta_x": target("delta_x", "末端导纳偏移", space == "cartesian", "pose"),
         }
         rates = {
@@ -272,16 +351,25 @@ class AdmittanceMonitor:
         diagnostics = {key: deepcopy(status[key]) for key in (
             "runtime_state", "safety_status_bits", "cycle_count", "exit_reason", "exit_reason_text", "last_error",
             "state_receive_count", "state_received_monotonic", "reference_send_count", "heartbeat_send_count",
-            "last_reference_sent_monotonic", "last_heartbeat_sent_monotonic")}
+            "last_reference_sent_monotonic", "last_heartbeat_sent_monotonic",
+                "telemetry_layout", "page_type", "page_seq", "load",
+                "speed_scaling", "target_speed_fraction", "scaling_ok")}
         diagnostics.update({key: status[key] for key, _, _ in TIMING_FIELDS})
+        diagnostics["host_timing"] = deepcopy(status["host_timing"])
         diagnostics.update(ft_sensor=deepcopy(ft_sensor), realtime=deepcopy(realtime),
-                           state_age_s=robot_age, state_timeout_s=cfg["ADMITTANCE_STATE_TIMEOUT_S"])
+                           state_age_s=robot_age, state_timeout_s=cfg["ADMITTANCE_STATE_TIMEOUT_S"],
+                           continuous=deepcopy(status["continuous"]), load=deepcopy(load),
+                           telemetry_layout=status["telemetry_layout"], page_type=status["page_type"],
+                           page_seq=status["page_seq"], speed_scaling=status["speed_scaling"],
+                           target_speed_fraction=status["target_speed_fraction"], scaling_ok=status["scaling_ok"])
         snapshot = {
             "phase": status["phase_name"], "freshness": STATE_TEXT[live_state] +
                 ("" if live_age is None else f" / 年龄 {live_age:.3f} s"),
             "run_identity": f"本轮 {run_id if run_id is not None else '未启动'} / 参数修订 {parameter_revision if parameter_revision is not None else '未应用'}",
             "source_time": f"机器人时间 {_text(live['timestamp'])} s；" + (
-                "主端不适用" if source == "fixed" else f"UDP 年龄 {_text(udp_age)} s（独立采样）"),
+                "主端不适用" if source == "fixed" else f"UDP 年龄 {_text(udp_age)} s（独立采样）") +
+                ("；执行页尚未收到" if execution is None else
+                 f"；执行采用 {execution['adopted_seq']} / 帧 {execution['frame']}，页 {execution['page_seq']}；采用/反馈差为异步显示"),
             "run_id": run_id, "reference_source": source, "space": space, "active": active,
             "joint": joint, "tcp": tcp, "errors": errors, "admittance": admittance,
             "master": master, "configuration": deepcopy(configuration), "diagnostics": diagnostics,
@@ -361,6 +449,9 @@ class AdmittanceMonitor:
         master = snapshot["master"]
         diag = snapshot["diagnostics"]
         cfg = snapshot["parameters"]
+        diagnostic_mode = cfg["DIAGNOSTIC_MODE"]
+        hold_diagnostic = diagnostic_mode == "fixed_joint_hold"
+        preset_motion = diagnostic_mode == "preset_joint_motion"
         command = master["command"]
         fixed = snapshot["reference_source"] == "fixed"
         rows = {
@@ -391,12 +482,16 @@ class AdmittanceMonitor:
             ],
             "admittance_rows": [], "robot_configuration_rows": [], "diagnostic_rows": [],
         }
-        for item in list(snapshot["errors"].values()) + list(snapshot["admittance"].values()) + [joint["q_nom"], joint["actual_qd"], joint["q_start"], tcp["q_start"]]:
+        for item in list(snapshot["errors"].values()) + list(snapshot["admittance"].values()) + [joint["q_nom"], joint["qd_cmd"], joint["actual_qd"], joint["q_start"], tcp["q_start"]]:
             rows["admittance_rows"].append([item["label"], vector(item), item["source"]])
         prefix = "JOINT" if snapshot["space"] == "joint" else "CART"
         rows["admittance_rows"].extend([
             ["柔顺坐标", cfg["CART_FRAME"], "tool_start 为启动时固定工具方向，中心在当前 TCP"],
-            ["控制模型", "质量—阻尼—刚度", "固定启动参考，撤力回位" if fixed else "随主端移动的名义参考"],
+            ["控制模型", "固定关节保持诊断（不积分）" if hold_diagnostic else
+             ("预设单轴微动（外力不驱动）" if preset_motion else "质量—阻尼—刚度"),
+             "六轴目标保持启动锚点；所选轴仅观测" if hold_diagnostic else
+             (f"J{cfg['DIAGNOSTIC_MOTION_AXIS']} 预设轨迹；J{cfg['DIAGNOSTIC_AXIS']} 观测" if preset_motion else
+              ("固定启动参考，撤力回位" if fixed else "随主端移动的名义参考"))],
             ["虚拟质量 / 惯量 M", _text(cfg[prefix + "_MASS"]), "关节 kg·m²；末端前三轴 kg、后三轴 kg·m²"],
             ["阻尼 D", _text(cfg[prefix + "_DAMPING"]), "关节 N·m·s/rad；末端 N·s/m、N·m·s/rad"],
             ["恢复刚度 K", _text(cfg[prefix + "_STIFFNESS"]), "关节 N·m/rad；末端 N/m、N·m/rad"],
@@ -438,17 +533,98 @@ class AdmittanceMonitor:
             rows["diagnostic_rows"].append([label, _text(diag[key]), "主机发送成功不代表机器人收到" if "sent" in key or "send_count" in key else "专用状态快照"])
         for key, label, explanation in TIMING_FIELDS:
             rows["diagnostic_rows"].append([label, _text(diag[key]), explanation])
+        for key, segment in diag["host_timing"].items():
+            label = HOST_TIMING_LABELS[key]
+            rows["diagnostic_rows"].extend([
+                [label + " · 最近墙钟 / CPU", f"{_text(segment['last_wall_s'])} / {_text(segment['last_cpu_s'])}",
+                 "s；同一次分段测量；两者差值包含等待和调度"],
+                [label + " · 最大墙钟 / 同次 CPU / 最大 CPU",
+                 f"{_text(segment['max_wall_s'])} / {_text(segment['max_wall_cpu_s'])} / {_text(segment['max_cpu_s'])}",
+                 "s；最后一项为独立最大值，不与最大墙钟拼成一次样本"],
+                [label + " · 最大墙钟起止 / 样本数",
+                 f"{_text(segment['max_wall_started_monotonic_s'])} → {_text(segment['max_wall_finished_monotonic_s'])} / {_text(segment['count'])}",
+                 "主机单调时刻 s；用于定位最坏段与心跳迟到的先后关系"],
+            ])
         rate_names = {"udp_receive_hz": "UDP 实测有效接收速率", "state_receive_hz": "状态实测接收速率",
                       "reference_send_hz": "参考实测发送速率", "heartbeat_send_hz": "心跳实测发送速率", "cycle_count_hz": "机器人周期计数速率"}
         for key, label in rate_names.items():
             rows["diagnostic_rows"].append([label, _text(snapshot["rates"][key]), "Hz；计数差 / 主机时间差，不证明闭环性能"])
-        for key, label in (("TELEOP_REFERENCE_HZ", "参考配置频率"), ("ADMITTANCE_STATE_HZ", "状态订阅配置频率"), ("ADMITTANCE_HEARTBEAT_HZ", "心跳配置频率")):
+        state_hz_key = "DIAGNOSTIC_STATE_HZ" if diagnostic_mode != "admittance" else "ADMITTANCE_STATE_HZ"
+        for key, label in (("TELEOP_REFERENCE_HZ", "参考配置频率"), (state_hz_key, "状态订阅配置频率"), ("ADMITTANCE_HEARTBEAT_HZ", "心跳配置频率")):
             rows["diagnostic_rows"].append([label, _text(cfg[key]), "Hz；配置值"])
         rows["diagnostic_rows"].extend([
             ["显示 / 绘图 / 采集目标频率", "20 / 10 / 20 Hz", "独立定时器；非闭环频率"],
             ["q_des / 末端候选位姿", "机器人未上报", "不由不同时间样本反推"],
-            ["内部偏置 / 滤波后载荷 / 偏移速度", "机器人未上报", "现有遥测协议边界"],
+            ["载荷 / 执行 / 计时页", "各页独立冻结并保留身份", "不把不同模型采样周期拼成同步样本"],
         ])
+        continuous_rows = [
+            ["停止原因", f"{_text(diag['exit_reason'])} / {_text(diag['exit_reason_text'])}", "来自本轮完整页；停止是否完成由程序退出及六轴静止确认"],
+            ["速度缩放 / 目标速度比例", f"{_text(diag['speed_scaling'])} / {_text(diag['target_speed_fraction'])}", "当前 RTDE 值；本阶段只允许两项均为 1"],
+            ["主机缩放许可", _text(diag["scaling_ok"]), "由实际缩放反馈写入；变化后进入停止流程"],
+            ["遥测布局 / 当前页", f"{_text(diag['telemetry_layout'])} / {_text(diag['page_type'])} / {_text(diag['page_seq'])}", "原始包身份；下列缓存页分别保留自身身份"],
+            ["伺服 / 模型设计周期", f"{cfg['SERVO_DT_S']:g} / {cfg['MODEL_DT_S']:g} s", "配置时基；实际间隔另列，不以平均值代替最大值"],
+        ]
+        page_groups = (("执行页", diag["continuous"]["execution"], (
+            ("generated_seq", "模型生成序号", "生成不表示执行采用"),
+            ("submitted_seq", "模型提交序号", "完整片段已提交"),
+            ("adopted_seq", "执行采用序号", "执行器已接受片段"),
+            ("frame", "执行帧号", "有限片段内的实际采用帧"),
+            ("based_on_seq", "依据的已接受身份", "片段生成所依据的命令状态"),
+            ("start_frame", "片段起始帧", "适用帧范围"),
+            ("end_frame", "片段截止帧", "过期片段不补发"),
+            ("gap_count", "伺服帧缺口累计数", "本轮执行器累计值；不是 RTDE 丢包数"),
+            ("limit_reason", "命令约束原因", "执行页所带约束码"),
+            ("servoj_start_interval_s", "最近伺服开始间隔", "s；执行器相邻调用起点差"),
+            ("servoj_max_interval_s", "本轮最大伺服开始间隔", "s；执行器累计最大值"),
+        )), ("计时页", diag["continuous"]["timing"], (
+            ("generated_seq", "生成 / 提交所属生成序号", "计时页自身身份"),
+            ("submitted_seq", "提交序号", "计时页自身身份"),
+            ("adopted_seq", "采用序号", "计时页自身身份"),
+            ("frame", "执行帧号", "计时页自身身份"),
+            ("sample_time_s", "模型采样时刻", "s；脚本计时原点"),
+            ("generated_time_s", "模型生成时刻", "s；脚本计时原点"),
+            ("submitted_time_s", "模型提交时刻", "s；脚本计时原点"),
+            ("adopted_time_s", "执行采用时刻", "s；脚本计时原点"),
+            ("target_age_s", "当前目标年龄", "s；执行器有限目标有效期"),
+            ("target_max_age_s", "本轮最大目标年龄", "s；执行器累计最大值"),
+            ("dt_model_actual_s", "最近模型采样间隔", "s；滤波和积分时基独立于伺服"),
+            ("dt_model_max_s", "本轮最大模型间隔", "s；模型累计最大值"),
+            ("servoj_start_interval_s", "最近伺服开始间隔", "s；计时页独立快照"),
+            ("servoj_max_interval_s", "本轮最大伺服开始间隔", "s；计时页独立快照"),
+            ("dt_base_s", "控制器基础步长", "s"),
+            ("dt_model_design_s", "模型设计周期", "s"),
+            ("compute_duration_s", "最近目标准备耗时", "s；模型线程"),
+            ("compute_max_duration_s", "最大目标准备耗时", "s；本轮最大值"),
+            ("servoj_duration_s", "最近 servoj 调用耗时", "s；执行线程"),
+            ("servoj_duration_max_s", "最大 servoj 调用耗时", "s；本轮最大值"),
+            ("publish_duration_s", "最近遥测发布耗时", "s；遥测线程"),
+            ("publish_max_duration_s", "最大遥测发布耗时", "s；本轮最大值"),
+            ("bias_std_nm", "六轴偏置标准差", "N·m；独立计时页"),
+            ("bias_sample_count", "偏置样本数", "实际取样数"),
+            ("bias_ready", "偏置已完成", "本轮固定偏置"),
+        )), ("载荷页", diag["load"], (
+            ("sample_time_s", "载荷采样时刻", "s；脚本计时原点"),
+            ("generated_seq", "模型生成序号", "载荷页自身身份"),
+            ("submitted_seq", "模型提交序号", "载荷页自身身份"),
+            ("tau_raw_nm", "六轴原始力矩", "N·m；冻结载荷页"),
+            ("bias_nm", "六轴固定偏置", "N·m；冻结载荷页"),
+            ("filtered_nm", "六轴滤波载荷", "N·m；冻结载荷页"),
+            ("drive", "六轴死区后驱动力", "N·m；诊断模式不驱动运动"),
+            ("dt_model_actual_s", "模型实际采样间隔", "s；载荷页自身采样"),
+            ("dt_model_max_s", "最大模型采样间隔", "s；载荷页独立快照"),
+        )))
+        for title, page, fields in page_groups:
+            identity = "尚未收到" if page is None else (
+                f"轮次 {page['run_id']} / 页 {page['page_seq']} / 模型采样 {page['model_sample_seq']} / 阶段 {page['phase']}")
+            continuous_rows.append([title + "身份", identity, "该页全部字段来自同一冻结对象"])
+            if page is None:
+                continue
+            continuous_rows.append([title + "快照时刻 / 接收年龄",
+                                    f"{page['snapshot_time_s']:.6f} s / {_text(_age(snapshot['now'], page['received_monotonic_s']))} s",
+                                    "脚本时间 / 主机时间；不将接收年龄当采样年龄"])
+            for key, label, explanation in fields:
+                continuous_rows.append([title + " · " + label, _text(page[key]), explanation])
+        rows["diagnostic_rows"] = continuous_rows + rows["diagnostic_rows"]
         if diag["realtime"] is not None:
             real = diag["realtime"]
             for key, label in (("tcp_force", "实时 TCP 载荷（独立通道）"), ("speed_scaling", "速度缩放"),

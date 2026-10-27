@@ -1,6 +1,7 @@
 """仅预览界面，不导入主程序、不连接设备、不创建采集或调试日志文件。"""
 
 import argparse
+from copy import deepcopy
 import math
 import sys
 from types import SimpleNamespace
@@ -55,8 +56,8 @@ class PreviewWindow(QtWidgets.QMainWindow):
             self.setUpdatesEnabled(True)
 
 
-def create_admittance_preview(scenario='teleop-joint', settings=None):
-    """用离线演示样本展示四种场景及受力偏移、撤力回位，不初始化硬件。"""
+def create_admittance_preview(scenario='diagnostic-joint', settings=None):
+    """用离线演示样本展示柔顺场景或固定保持诊断，不初始化硬件。"""
     import numpy as np
 
     from admittance_window import AdmittanceWindow
@@ -64,6 +65,10 @@ def create_admittance_preview(scenario='teleop-joint', settings=None):
     from UR_Utils.ur_pose_math import matrix_to_rotvec, rotvec_to_matrix
 
     source, space = scenario.split('-')
+    diagnostic = source == 'diagnostic'
+    preset = source == 'preset'
+    if diagnostic or preset:
+        source = 'fixed'
     window = AdmittanceWindow(settings=settings)
     window.setWindowTitle('导纳调参与监视 · 演示数据 · 不连接设备')
     window.ui.comboBox_ReferenceSource.setCurrentIndex(('teleop', 'fixed').index(source))
@@ -71,8 +76,13 @@ def create_admittance_preview(scenario='teleop-joint', settings=None):
     config = window.parameters.prepared_copy()
     if space == 'cartesian':
         config['CART_FRAME'] = 'tool_start'
+    config['DIAGNOSTIC_AXIS'] = 3
+    config['DIAGNOSTIC_MODE'] = 'fixed_joint_hold' if diagnostic else ('preset_joint_motion' if preset else 'admittance')
     window.parameters.set_draft(config)
     window.parameters.apply()
+    # 离线预览需要演示专用配置；不写入 Python 配置文件或用户预设。
+    window.parameters.prepared_parameters = deepcopy(config)
+    window.parameters.draft_parameters = deepcopy(config)
     window._write_editors()
     window.set_effective(config, window.parameters.revision)
     configuration = {
@@ -97,6 +107,10 @@ def create_admittance_preview(scenario='teleop-joint', settings=None):
         if elapsed >= 3.0:
             response = 0.025 * (1.0 - math.exp(-2.5 / 0.6)) * math.exp(-(elapsed - 3.0) / 0.8)
         delta_q = [response * (1 if axis % 2 == 0 else -0.6) for axis in range(6)]
+        if diagnostic or preset:
+            delta_q = [0.0] * 6
+        if preset:
+            delta_q[config['DIAGNOSTIC_MOTION_AXIS'] - 1] = 0.5 * config['DIAGNOSTIC_MOTION_AMPLITUDE_RAD'] * (1.0 - math.cos(2.0 * math.pi * elapsed / config['DIAGNOSTIC_MOTION_PERIOD_S']))
         final = [value + offset for value, offset in zip(nominal, delta_q)]
         actual = [value + offset * 0.98 for value, offset in zip(nominal, delta_q)]
         actual_qd = [(value - previous) / 0.05 for value, previous in zip(actual, previous_actual)]
@@ -122,11 +136,12 @@ def create_admittance_preview(scenario='teleop-joint', settings=None):
             'adopted_source_seq': 999 + index * 5 if source == 'teleop' else None,
             'source_seq': 999 + index * 5 if source == 'teleop' else None,
             'robot_configuration': configuration,
-            'drive': [1.2, -0.8, 0.4, 0.08, -0.03, 0.02] if 0.5 <= elapsed < 3.0 else [0.0] * 6,
+            'drive': [1.2, -0.8, 0.4, 0.08, -0.03, 0.02] if not diagnostic and 0.5 <= elapsed < 3.0 else [0.0] * 6,
             'delta_q': delta_q if space == 'joint' else None,
             'delta_x': delta_x if space == 'cartesian' else None,
             'cycle_count': 6000 + index * 25, 'runtime_state': 2, 'safety_status_bits': 1,
             'exit_reason': 0, 'exit_reason_text': '未退出', 'last_error': None,
+            'speed_scaling': 1.0, 'target_speed_fraction': 1.0, 'scaling_ok': True,
             'reference_send_count': 1000 + index * 5 if source == 'teleop' else 0,
             'heartbeat_send_count': 500 + index * 2,
             'last_reference_sent_monotonic': now - 0.006 if source == 'teleop' else None,
@@ -137,7 +152,87 @@ def create_admittance_preview(scenario='teleop-joint', settings=None):
             'heartbeat_send_max_lateness_s': 0.001, 'heartbeat_deadline_miss_count': 0,
             'processing_duration_s': 0.0012, 'processing_max_duration_s': 0.0024,
             'rtde_processing_duration_s': 0.0008, 'primary_processing_duration_s': 0.0002,
+            'packet_prepare_duration_s': 0.00003, 'packet_prepare_max_duration_s': 0.00008,
+            'send_duration_s': 0.00002, 'send_max_duration_s': 0.00006,
+            'receive_duration_s': 0.00004, 'receive_max_duration_s': 0.00008,
+            'decode_duration_s': 0.00010, 'decode_max_duration_s': 0.00015,
+            'log_submit_duration_s': 0.00001, 'log_submit_max_duration_s': 0.00004,
+            'last_wake_monotonic_s': now - 0.002,
+            'wake_deadline_monotonic_s': now - 0.0021,
+            'wake_lateness_s': 0.0001, 'wake_max_lateness_s': 0.0007,
+            'rtde_buffered_bytes': 0, 'rtde_buffered_max_bytes': 1024,
+            'state_timestamp_interval_s': 0.002, 'state_host_interval_s': 0.0021,
+            'state_progress_lag_s': 0.0, 'state_progress_max_lag_s': 0.0015,
+            'state_last_progress_monotonic_s': now - 0.004,
+            'state_progress_rate': 0.95, 'state_progress_window_host_s': 1.0,
+            'state_progress_window_robot_s': 0.95,
+            'rtde_socket_drained': True, 'rtde_last_drained_monotonic_s': now - 0.004,
+            'rtde_drain_count': 1000 + index * 5,
+            'rtde_backlog_duration_s': 0.0, 'rtde_backlog_max_duration_s': 0.003,
+            'communication_process_pid': 4242, 'process_worker_failed': False,
+            'process_status_published_monotonic_s': now - 0.006,
+            'process_status_received_monotonic_s': now - 0.004,
+            'process_status_age_s': 0.006, 'process_bridge_dropped_count': 0,
+            'host_timing': {
+                'processing': {
+                    'count': 1000 + index * 5, 'last_wall_s': 0.0012, 'last_cpu_s': 0.0008,
+                    'max_wall_s': 0.0024, 'max_cpu_s': 0.0015, 'max_wall_cpu_s': 0.0013,
+                    'last_started_monotonic_s': now - 0.002,
+                    'last_finished_monotonic_s': now - 0.0008,
+                    'max_wall_started_monotonic_s': now - 1.0,
+                    'max_wall_finished_monotonic_s': now - 0.9976,
+                },
+            },
+            'next_heartbeat_deadline_monotonic_s': now + 0.01,
+            'next_reference_deadline_monotonic_s': now + 0.004 if source == 'teleop' else None,
+            'diagnostic': None,
         }
+        sample_time = config['DIAGNOSTIC_SETTLE_S'] + config['ADMITTANCE_BIAS_DURATION_S'] + elapsed
+        sequence = 1000 + index * 12
+        frame = 2000 + index * 25
+        identity = {
+            'run_id': 7, 'page_seq': index * 3 + 2, 'model_sample_seq': sequence,
+            'snapshot_time_s': sample_time, 'phase': 2,
+            'received_monotonic_s': now - 0.004, 'robot_timestamp_s': status['timestamp'],
+        }
+        execution = {
+            **identity, 'generated_seq': sequence + 1, 'submitted_seq': sequence + 1,
+            'adopted_seq': sequence, 'frame': frame, 'based_on_seq': sequence - 1,
+            'start_frame': frame, 'end_frame': frame + 1, 'gap_count': 0, 'limit_reason': 0,
+            'servoj_start_interval_s': 0.002, 'servoj_max_interval_s': 0.002,
+            'q_cmd': final, 'qd_cmd': actual_qd, 'q_nom': nominal, 'delta_q': delta_q,
+        }
+        timing = {
+            **identity, 'page_seq': index * 3 + 1, 'snapshot_time_s': sample_time - 0.008,
+            'received_monotonic_s': now - 0.012,
+            'generated_seq': sequence - 2, 'submitted_seq': sequence - 2,
+            'adopted_seq': sequence - 3, 'frame': frame - 4, 'based_on_seq': sequence - 4,
+            'start_frame': frame - 4, 'end_frame': frame - 3, 'gap_count': 0, 'limit_reason': 0,
+            'sample_time_s': sample_time - 0.012, 'generated_time_s': sample_time - 0.010,
+            'submitted_time_s': sample_time - 0.010, 'adopted_time_s': sample_time - 0.008,
+            'target_age_s': 0.002, 'target_max_age_s': 0.004,
+            'dt_model_actual_s': 0.004, 'dt_model_max_s': 0.004,
+            'servoj_start_interval_s': 0.002, 'servoj_max_interval_s': 0.002,
+            'dt_base_s': 0.002, 'dt_model_design_s': 0.004,
+            'bias_std_nm': [0.015] * 6, 'bias_sample_count': 125, 'bias_ready': True,
+            'compute_duration_s': 0.002, 'compute_max_duration_s': 0.002,
+            'servoj_duration_s': 0.002, 'servoj_duration_max_s': 0.002,
+            'publish_duration_s': 0.0001, 'publish_max_duration_s': 0.0002,
+        }
+        load = {
+            **identity, 'page_seq': index * 3, 'model_sample_seq': sequence - 4,
+            'snapshot_time_s': sample_time - 0.016, 'received_monotonic_s': now - 0.020,
+            'sample_time_s': sample_time - 0.018, 'generated_seq': sequence - 4,
+            'submitted_seq': sequence - 4, 'limit_reason': 0,
+            'tau_raw_nm': [0.12, -0.08, 0.06, 0.02, -0.01, 0.01],
+            'bias_nm': [0.10, -0.07, 0.05, 0.02, -0.01, 0.01],
+            'filtered_nm': [0.02, -0.01, 0.01, 0.0, 0.0, 0.0], 'drive': status['drive'],
+            'dt_model_actual_s': 0.004, 'dt_model_max_s': 0.004,
+            'compute_duration_s': 0.002, 'bias_sample_count': 125, 'bias_ready': True,
+            'load_duration_s': 0.00004, 'publish_duration_s': 0.0001,
+        }
+        status.update(telemetry_layout=3, page_type='execution', page_seq=identity['page_seq'],
+                      continuous={'execution': execution, 'timing': timing}, load=load)
         udp = {'command': SimpleNamespace(mode=1, q_arm=[value + 0.0015 for value in master],
                                            q_gripper=[0.4, 0.2, 0.3]),
                'frame_count': 1001 + index * 5, 'received_monotonic': now - 0.003,
@@ -155,14 +250,24 @@ def create_admittance_preview(scenario='teleop-joint', settings=None):
         'enabled': True, 'active': True,
         'path': '演示日志/admittance_run7.jsonl（仅展示，不创建文件）',
         'record_count': 1737, 'dropped_count': 0, 'pending_count': 0, 'error': None,
+        'logger_timing': {
+            'schema_version': 1, 'producer': {}, 'writer': {},
+            'queue_observed_high_watermark': 4,
+            'queue_age': {'count': 1737, 'last_s': 0.0004, 'max_s': 0.0024,
+                          'max_seq': 1002, 'max_kind': 'state',
+                          'max_dequeued_monotonic_s': now - 1.0,
+                          'last_dequeued_monotonic_s': now - 0.0004},
+        },
     }
     window.update_context({'robot_ready': True, 'occupied': True, 'master_fresh': True,
                            'synced': source == 'teleop', 'phase': status['phase_name'], 'run_id': 7,
                            'robot_address': '192.0.2.20（演示地址）',
                            'controller_joint_limits': config['JOINT_POSITION_LIMIT_RAD'],
+                           'diagnostic': status['diagnostic'],
                            'debug_log_status': debug_log_status,
                            'run_metadata': {'run_id': 7, 'reference_source': source, 'space': space,
-                                            'schema_version': 2, 'backend': 'urscript', 'model': 'mass_damper_spring',
+                                            'schema_version': 3, 'backend': 'urscript',
+                                            'model': config['DIAGNOSTIC_MODE'] if diagnostic or preset else 'mass_damper_spring',
                                             'reference_behavior': 'moving_reference' if source == 'teleop' else 'fixed_anchor',
                                             'source_codes': {1: 'teleop', 2: 'free', 3: 'fixed'},
                                             'robot_configuration': configuration, 'start_time': '演示数据',
@@ -172,8 +277,13 @@ def create_admittance_preview(scenario='teleop-joint', settings=None):
     window.ui.comboBox_PlotSignal.setCurrentIndex(3 if space == 'joint' else 4)
     window._refresh_plot()
     window.ui.label_OperationHint.setText('离线演示：不连接设备、不创建日志文件。' + window.ui.label_OperationHint.text())
-    window.append_log('离线演示数据：' + ('遥操作导纳' if source == 'teleop' else '定点柔顺（撤力回位）') + ' / ' + ('关节空间' if space == 'joint' else '末端空间'))
-    window.append_log('演示趋势：0.5 s 开始受力，3 s 撤力后偏移回零；日志开关仅切换演示状态。')
+    window.append_log('离线演示数据：' + ('J3 保持诊断' if diagnostic else ('预设单轴微动' if preset else ('遥操作导纳' if source == 'teleop' else '定点柔顺（撤力回位）'))) + ' / ' + ('关节空间' if space == 'joint' else '末端空间'))
+    window.append_log('演示趋势：目标始终保持启动锚点，力矩不驱动目标。' if diagnostic else
+                      ('演示趋势：单轴按预设余弦微动，外力不参与生成；生成与采用身份独立显示。' if preset else
+                       '演示趋势：0.5 s 开始受力，3 s 撤力后偏移回零；日志开关仅切换演示状态。'))
+    if diagnostic or preset:
+        window.ui.tabWidget_Monitor.setCurrentWidget(window.ui.tab_Diagnostics)
+        QtCore.QTimer.singleShot(0, lambda: window.ui.scrollArea_Monitor.ensureWidgetVisible(window.ui.tabWidget_Monitor))
 
     def toggle_preview_logging(enabled):
         debug_log_status['enabled'] = enabled
@@ -193,14 +303,23 @@ def create_admittance_preview(scenario='teleop-joint', settings=None):
 
     window.logging_toggled.connect(toggle_preview_logging)
     window.stop_requested.connect(stop_preview)
+
+    def preview_operator_event(event, note):
+        from admittance_window import OPERATOR_EVENTS
+
+        window.operator_event_result(f'演示人工事件“{OPERATOR_EVENTS[event]}”：未创建或保存日志。备注：{note or "空白，请补充位置与方向"}')
+        if event == 'stop_requested':
+            stop_preview()
+
+    window.operator_event_requested.connect(preview_operator_event)
     return window
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='URControl 离线界面预览，不连接设备')
     parser.add_argument('--admittance', action='store_true', help='预览独立导纳窗口')
-    parser.add_argument('--scenario', choices=('teleop-joint', 'teleop-cartesian', 'fixed-joint', 'fixed-cartesian'),
-                        default='teleop-joint', help='固定演示场景')
+    parser.add_argument('--scenario', choices=('teleop-joint', 'teleop-cartesian', 'fixed-joint', 'fixed-cartesian', 'diagnostic-joint', 'preset-joint'),
+                        default='diagnostic-joint', help='固定演示场景；未开放场景仅可离线显示')
     args = parser.parse_args()
     configure_high_dpi()
     app = QtWidgets.QApplication(sys.argv)

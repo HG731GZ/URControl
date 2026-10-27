@@ -145,6 +145,19 @@
      </layout>
     </item>
     <item>
+     <widget class="QLabel" name="label_DiagnosticMode">
+      <property name="text">
+       <string>保持诊断：等待配置</string>
+      </property>
+      <property name="wordWrap">
+       <bool>true</bool>
+      </property>
+      <property name="styleSheet">
+       <string>color: #8a4100; background: #fff1d6; padding: 5px;</string>
+      </property>
+     </widget>
+    </item>
+    <item>
      <widget class="QSplitter" name="splitter_Main">
       <property name="orientation">
        <enum>Qt::Horizontal</enum>
@@ -2593,7 +2606,7 @@ rx / ry / rz：M 为 kg·m²，D 为 N·m·s/rad，K 为 N·m/rad，载荷与死
          <item>
           <widget class="QLabel" name="label_TargetTitle">
            <property name="text">
-            <string>关节目标对照：主端已采用 → 名义参考 → 导纳最终目标 → 实际反馈</string>
+            <string>关节目标对照：主端已采用 → 名义参考 → 执行已采用 → 实际反馈</string>
            </property>
           </widget>
          </item>
@@ -2631,7 +2644,7 @@ rx / ry / rz：M 为 kg·m²，D 为 N·m·s/rad，K 为 N·m/rad，载荷与死
            </column>
            <column>
             <property name="text">
-             <string>导纳最终目标</string>
+             <string>执行已采用</string>
             </property>
            </column>
            <column>
@@ -2641,7 +2654,7 @@ rx / ry / rz：M 为 kg·m²，D 为 N·m·s/rad，K 为 N·m/rad，载荷与死
            </column>
            <column>
             <property name="text">
-             <string>跟踪误差</string>
+             <string>采用/反馈差（异步）</string>
             </property>
            </column>
            <property name="minimumSize">
@@ -2661,7 +2674,7 @@ rx / ry / rz：M 为 kg·m²，D 为 N·m·s/rad，K 为 N·m/rad，载荷与死
          <item>
           <widget class="QLabel" name="label_SourceTime">
            <property name="text">
-            <string>来源与时间：等待数据；跟踪误差为最终目标减实际关节角。</string>
+            <string>来源与时间：等待数据；生成目标不表示执行采用；采用/反馈差为独立执行页与实时反馈的异步差值。</string>
            </property>
            <property name="wordWrap">
             <bool>true</bool>
@@ -2725,7 +2738,7 @@ rx / ry / rz：M 为 kg·m²，D 为 N·m·s/rad，K 为 N·m/rad，载荷与死
                </column>
                <column>
                 <property name="text">
-                 <string>最终 · 模型估算</string>
+                 <string>执行采用 · 模型估算</string>
                 </property>
                </column>
                <column>
@@ -2902,7 +2915,17 @@ rx / ry / rz：M 为 kg·m²，D 为 N·m·s/rad，K 为 N·m/rad，载荷与死
              <item>
               <widget class="QLabel" name="label_DiagnosticExplanation">
                <property name="text">
-                <string>心跳诊断分别显示主机发送间隔和机器人回显、年龄、最大观察间隔；回显不代表单向网络延迟。</string>
+                <string>诊断区分别显示模型生成/提交、执行采用及两类周期。主机通信分段显示参考快照、字段填充、序列化与发送耗时，统计在发送后归并。墙钟与线程 CPU 的差包含等待和调度，不能单独归因为网络延迟。遥测页保留独立身份。</string>
+               </property>
+               <property name="wordWrap">
+                <bool>true</bool>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QLabel" name="label_HostBudgetSummary">
+               <property name="text">
+                <string>主机通信预算：等待本轮数据。</string>
                </property>
                <property name="wordWrap">
                 <bool>true</bool>
@@ -2911,6 +2934,9 @@ rx / ry / rz：M 为 kg·m²，D 为 N·m·s/rad，K 为 N·m/rad，载荷与死
              </item>
              <item>
               <widget class="QTableWidget" name="tableWidget_Diagnostics">
+               <property name="toolTip">
+                <string>拖动表头可调整列宽；悬停单元格查看完整数值和说明。</string>
+               </property>
                <property name="editTriggers">
                 <set>QAbstractItemView::NoEditTriggers</set>
                </property>
@@ -2926,6 +2952,12 @@ rx / ry / rz：M 为 kg·m²，D 为 N·m·s/rad，K 为 N·m/rad，载荷与死
                <property name="rowCount">
                 <number>0</number>
                </property>
+               <attribute name="horizontalHeaderDefaultSectionSize">
+                <number>280</number>
+               </attribute>
+               <attribute name="horizontalHeaderMinimumSectionSize">
+                <number>100</number>
+               </attribute>
                <column>
                 <property name="text">
                  <string>项目</string>
@@ -3133,7 +3165,7 @@ rx / ry / rz：M 为 kg·m²，D 为 N·m·s/rad，K 为 N·m/rad，载荷与死
          <string>记录调试日志</string>
         </property>
         <property name="toolTip">
-         <string>每次启动应用默认开启，运行中可切换。独立于主窗口采集按钮，隐藏窗口后继续记录。按实际接收的原始 RTDE 帧记录，接收配置为 100 Hz，不保证覆盖每个 500 Hz 控制周期。</string>
+         <string>每次启动应用默认开启，运行中可切换。独立于主窗口采集按钮，隐藏窗口后继续记录。按实际接收的原始 RTDE 帧记录；普通模式及保持诊断使用各自配置的接收频率，不保证覆盖每个机器人周期。</string>
         </property>
         <property name="checked">
          <bool>true</bool>
@@ -3154,6 +3186,65 @@ rx / ry / rz：M 为 kg·m²，D 为 N·m·s/rad，K 为 N·m/rad，载荷与死
        </widget>
       </item>
      </layout>
+    </item>
+    <item>
+     <layout class="QHBoxLayout" name="horizontalLayout_OperatorEvents" stretch="0,0,0,0,0,1">
+      <item>
+       <widget class="QLabel" name="label_OperatorEventTitle">
+        <property name="text">
+         <string>人工事件</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="pushButton_EventForceStart">
+        <property name="text">
+         <string>施力开始</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="pushButton_EventReleased">
+        <property name="text">
+         <string>完全松手</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="pushButton_EventBuzzing">
+        <property name="text">
+         <string>听到嗡鸣</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="pushButton_EventStop">
+        <property name="text">
+         <string>请求停止</string>
+        </property>
+        <property name="toolTip">
+         <string>记录人工停止事件，并使用现有导纳停止入口。</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLineEdit" name="lineEdit_OperatorEventNote">
+        <property name="placeholderText">
+         <string>位置与方向备注，例如：腕部，基座 +x 方向；允许空白</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <widget class="QLabel" name="label_OperatorEventStatus">
+      <property name="text">
+       <string>本轮运行且日志开启时可记录；请补充接触位置与施力方向。事件仅关联最近收到的机器人样本，不代表同周期。</string>
+      </property>
+      <property name="wordWrap">
+       <bool>true</bool>
+      </property>
+     </widget>
     </item>
     <item>
      <widget class="QPlainTextEdit" name="plainTextEdit_AdmittanceLog">
@@ -3236,7 +3327,7 @@ rx / ry / rz：M 为 kg·m²，D 为 N·m·s/rad，K 为 N·m/rad，载荷与死
     <item>
      <widget class="QLabel" name="label_OperationHint">
       <property name="text">
-       <string>关闭窗口仅隐藏，运动与已开启的日志继续。日志记录实际 RTDE 接收帧（配置 100 Hz），独立于主窗口采集按钮。停止与全局停止使用同一控制入口。</string>
+       <string>关闭窗口仅隐藏，运动与已开启的日志继续。日志记录实际收到的 RTDE 帧，独立于主窗口采集按钮。停止与全局停止使用同一控制入口。</string>
       </property>
       <property name="wordWrap">
        <bool>true</bool>
