@@ -7,7 +7,7 @@ import time
 
 import numpy as np
 
-from UR_Utils import admittance_config
+from UR_Utils import admittance_config, admittance_telemetry
 from UR_Utils.ur_pose_math import matrix_to_rotvec, rotvec_to_matrix
 
 
@@ -549,9 +549,10 @@ class AdmittanceMonitor:
                       "reference_send_hz": "参考实测发送速率", "heartbeat_send_hz": "心跳实测发送速率", "cycle_count_hz": "机器人周期计数速率"}
         for key, label in rate_names.items():
             rows["diagnostic_rows"].append([label, _text(snapshot["rates"][key]), "Hz；计数差 / 主机时间差，不证明闭环性能"])
-        state_hz_key = "DIAGNOSTIC_STATE_HZ" if diagnostic_mode != "admittance" else "ADMITTANCE_STATE_HZ"
-        for key, label in (("TELEOP_REFERENCE_HZ", "参考配置频率"), (state_hz_key, "状态订阅配置频率"), ("ADMITTANCE_HEARTBEAT_HZ", "心跳配置频率")):
-            rows["diagnostic_rows"].append([label, _text(cfg[key]), "Hz；配置值"])
+        for label, frequency in (("参考配置频率", cfg["TELEOP_REFERENCE_HZ"]),
+                                 ("状态订阅配置频率", admittance_telemetry.state_frequency(cfg)),
+                                 ("心跳配置频率", cfg["ADMITTANCE_HEARTBEAT_HZ"])):
+            rows["diagnostic_rows"].append([label, _text(frequency), "Hz；配置值"])
         rows["diagnostic_rows"].extend([
             ["显示 / 绘图 / 采集目标频率", "20 / 10 / 20 Hz", "独立定时器；非闭环频率"],
             ["q_des / 末端候选位姿", "机器人未上报", "不由不同时间样本反推"],
@@ -601,13 +602,14 @@ class AdmittanceMonitor:
             ("publish_max_duration_s", "最大遥测发布耗时", "s；本轮最大值"),
             ("bias_std_nm", "六轴偏置标准差", "N·m；独立计时页"),
             ("bias_sample_count", "偏置样本数", "实际取样数"),
-            ("bias_ready", "偏置已完成", "本轮固定偏置"),
+            ("bias_ready", "偏置已完成", "启动基线已冻结"),
         )), ("载荷页", diag["load"], (
             ("sample_time_s", "载荷采样时刻", "s；脚本计时原点"),
             ("generated_seq", "模型生成序号", "载荷页自身身份"),
             ("submitted_seq", "模型提交序号", "载荷页自身身份"),
-            ("tau_raw_nm", "六轴原始力矩", "N·m；冻结载荷页"),
-            ("bias_nm", "六轴固定偏置", "N·m；冻结载荷页"),
+            ("tau_raw_nm" if diag["telemetry_layout"] == 3 else "input_raw_nm",
+             "六轴原始输入", "N·m；来源见载荷页，映射输入不等同于补偿关节力矩"),
+            ("bias_nm", "六轴输入偏置", "N·m；法兰来源为固定 wrench 的当前 Jᵀ 投影"),
             ("filtered_nm", "六轴滤波载荷", "N·m；冻结载荷页"),
             ("drive", "六轴死区后驱动力", "N·m；诊断模式不驱动运动"),
             ("dt_model_actual_s", "模型实际采样间隔", "s；载荷页自身采样"),
@@ -619,6 +621,10 @@ class AdmittanceMonitor:
             continuous_rows.append([title + "身份", identity, "该页全部字段来自同一冻结对象"])
             if page is None:
                 continue
+            if title == "载荷页":
+                source = "joint_torque" if diag["telemetry_layout"] == 3 else page["load_source"]
+                continuous_rows.append(["载荷页 · 输入来源", source,
+                                        "joint_torque：补偿关节力矩；flange_wrench：法兰末端载荷经 Jᵀ 映射"])
             continuous_rows.append([title + "快照时刻 / 接收年龄",
                                     f"{page['snapshot_time_s']:.6f} s / {_text(_age(snapshot['now'], page['received_monotonic_s']))} s",
                                     "脚本时间 / 主机时间；不将接收年龄当采样年龄"])

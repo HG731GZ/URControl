@@ -14,7 +14,8 @@ import rtde.rtde as rtde_module
 
 from UR_Utils import admittance_config, admittance_telemetry
 from UR_Utils.admittance_transport import (
-    AdmittanceRTDE, AdmittanceScriptClient, clock_sample, clock_interval, elapsed_sample,
+    AdmittanceRTDE, AdmittanceScriptClient, AdmittanceDashboardStop,
+    clock_sample, clock_interval, elapsed_sample,
 )
 
 
@@ -32,6 +33,7 @@ EXIT_REASONS = {
     13: "启动锚点确认超时", 14: "目标片段耗尽或模型停止推进",
     15: "模型计算超预算", 16: "连续伺服出现帧缺口",
     17: "速度缩放发生变化", 18: "目标交接身份无效",
+    19: "受限运动实际速度超限", 20: "受限运动实际位置超出包络",
 }
 
 
@@ -45,6 +47,8 @@ def idle_admittance_status() -> dict:
         "timestamp": None, "runtime_state": None, "actual_q": None,
         "actual_qd": None, "actual_TCP_pose": None, "safety_status_bits": None,
         "robot_mode": None, "safety_mode": None, "robot_status_bits": None,
+        "controller_interruption": None, "stop_deadline_monotonic_s": None,
+        "dashboard_stop_requested": False,
         "speed_scaling": None, "target_speed_fraction": None,
         "actual_TCP_speed": None, "actual_TCP_force": None, "actual_current": None,
         "joint_temperatures": None, "target_q": None, "target_qd": None,
@@ -125,11 +129,18 @@ class URAdmittanceController:
         self._lock = threading.Lock()
         self._stop_requested = threading.Event() if stop_event is None else stop_event
         self._stop_logged = False
+        self._stop_deadline = None
+        self._stop_after_timestamp = None
         self._finished = threading.Event()
         self._wake = threading.Event()
         self._thread = None
         self._connection = None
         self._script_client = None
+        self._dashboard_stop = None
+        self._dashboard_stop_attempted = False
+        self._dashboard_stop_accepted = False
+        self._controller_interruption = None
+        self._runtime_running_seen = False
         self._script_error_received = False
         self._uploaded = False
         self._worker_failed = False
@@ -176,6 +187,11 @@ class URAdmittanceController:
             "units": admittance_config.units(reference_source, space, config=self.parameters),
             "telemetry_schema": admittance_telemetry.log_schema(self.parameters, space),
         }
+        if self.parameters["DIAGNOSTIC_MODE"] == "fixed_joint_hold":
+            controller_context["fixed_hold_actual_limits"] = {
+                "max_qd_rad_s": self.parameters["SINGLE_AXIS_ACTUAL_MAX_QD_RAD_S"],
+                "margin_rad": self.parameters["SINGLE_AXIS_ACTUAL_MARGIN_RAD"],
+            }
         if self._log_sink is not None:
             # 固定上下文在关闭日志时也保留，供中途首次开启准确恢复本轮配置及脚本。
             self._log_sink.update_context({
@@ -338,14 +354,22 @@ class URAdmittanceController:
             }, host_monotonic_s=submitted_monotonic, host_time_unix_s=submitted_wall_time)
 
     def request_stop(self) -> None:
-        """停止标志独立于启动锁，偏置采样和上传期间也不会丢失。"""
+        """首次请求锁定总停止期限；重复请求不延长等待，上传期间也保留停止意图。"""
         requested_monotonic = time.monotonic()
         requested_wall_time = time.time()
         self._stop_requested.set()
         self._wake.set()
         with self._state_lock():
+            if self._stop_deadline is None:
+                self._stop_deadline = requested_monotonic + self.parameters["ADMITTANCE_STOP_TIMEOUT_S"]
+                self._stop_after_timestamp = self._status["timestamp"]
+                self._status["stop_deadline_monotonic_s"] = self._stop_deadline
             if self._active:
-                self._status.update(stopping=True, starting=False, running=False)
+                self._status.update(
+                    stopping=True, starting=False, running=False,
+                    phase_name=("控制器中断，正在停止" if self._controller_interruption is not None
+                                else "正在停止，等待程序退出及静止"),
+                )
             log_request = not self._stop_logged
             self._stop_logged = True
             status = self._control_snapshot_locked() if log_request else None
@@ -356,7 +380,7 @@ class URAdmittanceController:
     def stop(self) -> None:
         """等待程序退出和静止反馈；超时保留连接与执行权。"""
         self.request_stop()
-        if not self._finished.wait(self.parameters["ADMITTANCE_STOP_TIMEOUT_S"]):
+        if not self._finished.wait(max(0.0, self._stop_deadline - time.monotonic())):
             message = "导纳停止尚未确认，保留专用连接，禁止恢复其他运动"
             if self.get_status()["last_error"] is None:
                 self._set_error(message)
@@ -393,6 +417,9 @@ class URAdmittanceController:
 
     def _complete(self) -> None:
         """仅在上传前取消，或确认机器人程序退出后释放本轮资源。"""
+        if self._dashboard_stop is not None:
+            self._dashboard_stop.close()
+            self._dashboard_stop = None
         if self._script_client is not None:
             self._script_client.close()
             self._script_client = None
@@ -409,6 +436,53 @@ class URAdmittanceController:
             self._active = False
             self._status.update(complete_flags)
         self._finished.set()
+
+    def _service_stop(self) -> None:
+        """异常暂停立即终止脚本；普通停止先留给唯一 stopj，全部等待共用总期限。"""
+        if not self._stop_requested.is_set():
+            return
+        if self._stop_deadline is None:
+            self.request_stop()
+        now = time.monotonic()
+        if now >= self._stop_deadline:
+            raise TimeoutError("导纳停止超过总期限，尚未确认程序退出及六轴静止，保留控制权等待外部确认")
+        # 正常寄存器停止先执行；最后半秒仅作为明确的程序终止与反馈确认预算。
+        if (self._uploaded and not self._dashboard_stop_attempted
+                and (self._controller_interruption is not None or now >= self._stop_deadline - 0.5)):
+            self._dashboard_stop_attempted = True
+            with self._state_lock():
+                self._status["dashboard_stop_requested"] = True
+            self._record("dashboard_stop_requested", {
+                "cause": ("controller_interrupted" if self._controller_interruption is not None
+                          else "register_stop_unconfirmed"),
+                "deadline_monotonic_s": min(self._stop_deadline, now + 0.25),
+                "status": self.get_status(),
+            })
+            try:
+                self._dashboard_stop = AdmittanceDashboardStop(
+                    self.robot_ip, deadline=min(self._stop_deadline, now + 0.25))
+            except OSError as exc:
+                self._record("dashboard_stop_failed", {"message": str(exc), "status": self.get_status()})
+        if self._dashboard_stop is not None:
+            try:
+                response = self._dashboard_stop.poll()
+            except (OSError, RuntimeError, UnicodeError) as exc:
+                self._record("dashboard_stop_failed", {"message": str(exc), "status": self.get_status()})
+                self._dashboard_stop.close()
+                self._dashboard_stop = None
+            else:
+                if response is not None:
+                    if response == "Stopped":
+                        self._dashboard_stop_accepted = True
+                        # 启动尚未出现运行反馈时，必须先确认终止命令生效，再等待新状态。
+                        with self._state_lock():
+                            self._stop_after_timestamp = self._status["timestamp"]
+                    self._record("dashboard_stop_reply", {
+                        "response": response, "accepted": response == "Stopped",
+                        "greeting": self._dashboard_stop.greeting, "status": self.get_status(),
+                    })
+                    self._dashboard_stop.close()
+                    self._dashboard_stop = None
 
     def _setup_connection(self):
         cfg = self.parameters
@@ -644,6 +718,21 @@ class URAdmittanceController:
         self._last_registers = tuple(ints)
         runtime = int(state.runtime_state)
         timestamp = float(state.timestamp)
+        interruption_message = None
+        if self._uploaded:
+            if runtime == 2:
+                self._runtime_running_seen = True
+            if (self._controller_interruption is None
+                    and (robot["safety_mode"] != 1
+                         or self._runtime_running_seen and runtime in (3, 4, 6))):
+                self._controller_interruption = {
+                    "safety_mode": robot["safety_mode"], "runtime_state": runtime,
+                    "robot_timestamp_s": timestamp, "received_monotonic_s": received_monotonic,
+                }
+                interruption_message = (
+                    "导纳控制器中断，正在终止暂停脚本并等待退出静止确认"
+                    f"（safety_mode={robot['safety_mode']}，runtime_state={runtime}）"
+                )
         host_interval = None
         timestamp_interval = None
         if self._last_state_timestamp is not None:
@@ -692,6 +781,9 @@ class URAdmittanceController:
             self._seen_program = True
         if (lifecycle_valid and ints[10] == 1 and reason == 0
                 and self._diagnostic_anchor is None):
+            if (ints[20] != admittance_telemetry.TELEMETRY_SCHEMA_VERSION
+                    or ints[19] != admittance_telemetry.LOAD_SOURCE_CODES[cfg["JOINT_LOAD_SOURCE"]]):
+                raise RuntimeError("导纳锚点页的输入来源或遥测版本与本轮配置不一致")
             self._diagnostic_anchor = values[:6]
             self._diagnostic_anchor_ack = 1
         derived_valid = lifecycle_valid and self._diagnostic_anchor is not None
@@ -771,7 +863,21 @@ class URAdmittanceController:
                         if self.reference_source == "teleop":
                             self._status.update(q_master=None if entry is None else entry[1].tolist(),
                                                 source_seq=None if entry is None else entry[0])
+            if self._controller_interruption is not None or self._stop_requested.is_set():
+                self._status.update(
+                    controller_interruption=self._controller_interruption,
+                    running=False, starting=False, stopping=True,
+                    phase_name=("控制器中断，正在停止" if self._controller_interruption is not None
+                                else "正在停止，等待程序退出及静止"),
+                )
         self._record_timing("state_publish", elapsed_sample(publish_started))
+        if interruption_message is not None:
+            self._set_error(interruption_message)
+            self.request_stop()
+            self._record("controller_interrupted", {"status": self.get_status()})
+        elif lifecycle_valid and (phase >= 3 or reason != 0) and not self._stop_requested.is_set():
+            # 机器人端定时或故障退出也必须在有限期限内取得主机停止确认。
+            self.request_stop()
         if self._log_sink is not None:
             with self._state_lock():
                 control = self._control_snapshot_locked()
@@ -798,9 +904,8 @@ class URAdmittanceController:
             if lifecycle_valid and reason > 1 and reason != 11 and reason != old_reason:
                 self._record("controller_error", {"message": control["last_error"], "status": control})
 
-    @staticmethod
-    def _decode_page(ints: list[int], values: list[float]) -> dict:
-        """按第三版布局解码一个冻结页，未产生的计时及偏置保留为空。"""
+    def _decode_page(self, ints: list[int], values: list[float]) -> dict:
+        """按第四版布局解码冻结页，来源由已核对锚点的本轮配置确定。"""
         def seconds(value: int) -> Optional[float]:
             """整数时间以微秒传输，负值表示尚无该测量。"""
             return value / 1_000_000 if value >= 0 else None
@@ -813,7 +918,8 @@ class URAdmittanceController:
         if layout == 1:
             page.update(q_anchor=values[:6], dt_base_s=seconds(ints[13]),
                         dt_model_design_s=seconds(ints[14]), bias_sample_count=ints[15],
-                        observation_axis=ints[16], motion_axis=ints[17], diagnostic_mode=ints[18])
+                        observation_axis=ints[16], motion_axis=ints[17], diagnostic_mode=ints[18],
+                        load_source_code=ints[19], telemetry_schema_version=ints[20])
         elif layout == 2:
             bias_ready = bool(ints[22])
             page.update(
@@ -822,7 +928,8 @@ class URAdmittanceController:
                 bias_sample_count=ints[16], generated_seq=ints[17], submitted_seq=ints[18],
                 limit_reason=ints[19], load_duration_s=seconds(ints[20]),
                 publish_duration_s=seconds(ints[21]), bias_ready=bias_ready,
-                tau_raw_nm=values[:6], bias_nm=values[6:12] if bias_ready else None,
+                load_source=self.parameters["JOINT_LOAD_SOURCE"],
+                input_raw_nm=values[:6], bias_nm=values[6:12] if bias_ready else None,
                 filtered_nm=values[12:18] if bias_ready else None,
                 drive=values[18:24] if bias_ready else None,
             )
@@ -871,7 +978,7 @@ class URAdmittanceController:
                     f"（safety_mode={baseline.safety_mode}，要求 NORMAL=1；"
                     f"robot_mode={baseline.robot_mode}，要求 RUNNING=7）"
                 )
-            if max(abs(v) for v in baseline.actual_qd) > cfg["STATIONARY_MAX_QD_RAD_S"]:
+            if max(abs(v) for v in baseline.actual_qd) > admittance_config.stop_speed_limit(cfg):
                 raise RuntimeError("机器人尚未静止，不能开始导纳偏置采样")
             if self.reference_source == "teleop":
                 with self._state_lock():
@@ -885,7 +992,8 @@ class URAdmittanceController:
                 return
             # Primary 会向上传客户端返回编译/运行错误；保留连接并持续读取，
             # 直到停止确认，避免发完即关以及漏掉脚本被控制器拒绝的具体原因。
-            self._script_client = AdmittanceScriptClient(self.robot_ip, port=30001)
+            self._script_client = AdmittanceScriptClient(
+                self.robot_ip, port=30001, timeout=min(1.0, cfg["ADMITTANCE_STOP_TIMEOUT_S"]))
             self._script_client.connect()
             self._service_owner()
             if self._stop_requested.is_set():
@@ -946,14 +1054,20 @@ class URAdmittanceController:
                              or now - upload_time >= cfg["ADMITTANCE_START_TIMEOUT_S"])
                         and state is not None and state.timestamp > stopped_after_timestamp
                     )
-                    if state is not None and (self._seen_program or startup_cancelled) and state.runtime_state == 1:
-                        if max(abs(v) for v in state.actual_qd) <= cfg["STATIONARY_MAX_QD_RAD_S"]:
+                    confirmation_ready = (self._seen_program or self._runtime_running_seen
+                                          or startup_cancelled or self._dashboard_stop_accepted)
+                    fresh_after_stop = (state is not None and (self._stop_after_timestamp is None
+                                        or state.timestamp > self._stop_after_timestamp))
+                    if (state is not None and confirmation_ready and fresh_after_stop
+                            and state.runtime_state == 1):
+                        if max(abs(v) for v in state.actual_qd) <= admittance_config.stop_speed_limit(cfg):
                             with self._state_lock():
                                 unexpected_exit = self._status["phase"] != 4 and self._status["last_error"] is None
                             if unexpected_exit:
                                 self._set_error("导纳程序已被控制器终止，程序退出和机器人静止已确认")
                             self._complete()
                             return
+                    self._service_stop()
                     if not self._stop_requested.is_set():
                         if not self._seen_program and now - upload_time > cfg["ADMITTANCE_START_TIMEOUT_S"]:
                             with self._state_lock():
@@ -1005,10 +1119,15 @@ class URAdmittanceController:
             # 通信异常只记录一次；上传后失去停止确认时保留执行权，不重连或恢复旧程序。
             self._set_error(f"导纳后台错误：{exc}")
             self.request_stop()
+            if self._dashboard_stop is not None:
+                self._dashboard_stop.close()
+                self._dashboard_stop = None
             if not self._uploaded:
                 self._complete()
             else:
                 self._worker_failed = True
+                with self._state_lock():
+                    self._status["phase_name"] = "停止未确认，等待外部确认"
                 self._record("controller_worker_failed", {
                     "status": self.get_status(), "awaiting_external_stop_confirmation": True,
                 })

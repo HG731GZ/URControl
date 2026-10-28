@@ -133,6 +133,10 @@ class AdmittanceWindow(QtWidgets.QMainWindow):
     def debug_logging_enabled(self):
         return self.ui.checkBox_DebugLogging.isChecked()
 
+    def set_release_alert(self, active):
+        """显式显示撤力警示；触发后保持，仅由新轮准备流程传入 False 清除。"""
+        self.ui.label_ReleaseAlert.setVisible(active)
+
     def _debug_logging_toggled(self, enabled):
         self._context["debug_log_status"]["enabled"] = enabled
         self._update_debug_log_status()
@@ -376,7 +380,13 @@ class AdmittanceWindow(QtWidgets.QMainWindow):
             text = (f"预设微动；J{parameters['DIAGNOSTIC_MOTION_AXIS']} 运动，J{diagnostic_axis} 观测，"
                     "外力不驱动目标。")
         else:
-            text = f"质量—阻尼—刚度导纳；J{diagnostic_axis} 为观测轴。"
+            enabled_axes = [index + 1 for index, enabled in enumerate(parameters["JOINT_AXES"]) if enabled]
+            axes_text = "、".join(f"J{axis}" for axis in enabled_axes) or "未选择"
+            text = f"受限单轴导纳；当前启用 {axes_text}，J{diagnostic_axis} 观测。"
+            if enabled_axes not in ([1], [3]):
+                text += " 需只选 J1 或 J3 中的一个轴。"
+            text += (f" 限时 {parameters['DIAGNOSTIC_DURATION_S']:g} 秒，"
+                     f"最大偏移 ±{parameters['SINGLE_AXIS_MAX_OFFSET_RAD']:g} rad。")
         text += f" 伺服 {parameters['SERVO_DT_S'] * 1000:g} ms / 模型 {parameters['MODEL_DT_S'] * 1000:g} ms。"
         if not supported_selection:
             text += " 本轮仅开放定点柔顺与关节空间；遥操作和末端空间尚未验收周期预算。"

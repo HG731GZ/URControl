@@ -410,7 +410,7 @@ class URRTDEController:
                 stopped = (
                     self.rtde_r.getRuntimeState() == 1
                     and max(abs(v) for v in self.rtde_r.getActualQd())
-                    <= backend.parameters["STATIONARY_MAX_QD_RAD_S"]
+                    <= admittance_config.stop_speed_limit(backend.parameters)
                 )
                 if stopped:
                     if stopped_since is None:

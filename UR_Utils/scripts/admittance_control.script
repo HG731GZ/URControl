@@ -5,6 +5,7 @@ def ur_admittance_control():
   global adm_of = ${ADMITTANCE_OUTPUT_FLOAT_BASE}
   global adm_run = read_input_integer_register(adm_i + 6)
   global adm_mode = ${DIAGNOSTIC_MODE_CODE}
+  global adm_load_source = ${JOINT_LOAD_SOURCE_CODE}
   global adm_h = ${SERVO_DT_S}
   global adm_dt = ${MODEL_DT_S}
   global adm_base = get_steptime()
@@ -40,6 +41,15 @@ def ur_admittance_control():
   global adm_max_qd = ${COMMAND_MAX_QD_RAD_S}
   global adm_max_qdd = ${COMMAND_MAX_QDD_RAD_S2}
   global adm_tracking = ${COMMAND_MAX_TRACKING_ERROR_RAD}
+  global adm_motion_actual_lower = [0., 0., 0., 0., 0., 0.]
+  global adm_motion_actual_upper = [0., 0., 0., 0., 0., 0.]
+  global adm_actual_max_qd = ${DIAGNOSTIC_MOTION_ACTUAL_MAX_QD_RAD_S}
+  global adm_actual_margin = ${DIAGNOSTIC_MOTION_ACTUAL_MARGIN_RAD}
+  if adm_mode != 2:
+    # 固定保持加载取证同样限制实际扰动，不能只固定命令而放任实际位置和速度变化。
+    adm_actual_max_qd = ${SINGLE_AXIS_ACTUAL_MAX_QD_RAD_S}
+    adm_actual_margin = ${SINGLE_AXIS_ACTUAL_MARGIN_RAD}
+  end
   global adm_axes = ${JOINT_AXES}
   global adm_mass = ${JOINT_MASS}
   global adm_damping = ${JOINT_DAMPING}
@@ -73,6 +83,16 @@ def ur_admittance_control():
   end
   def adm_clip(x, lo, hi):
     return adm_max(lo, adm_min(x, hi))
+  end
+  def adm_project_wrench(jacobian, wrench):
+    # Jacobian与wrench均使用法兰作用点和基座表达，按列计算六轴J^T W。
+    local joint_load = [0., 0., 0., 0., 0., 0.]
+    local axis = 0
+    while axis < 6:
+      joint_load[axis] = jacobian[0,axis]*wrench[0] + jacobian[1,axis]*wrench[1] + jacobian[2,axis]*wrench[2] + jacobian[3,axis]*wrench[3] + jacobian[4,axis]*wrench[4] + jacobian[5,axis]*wrench[5]
+      axis = axis + 1
+    end
+    return joint_load
   end
   def adm_fail(reason):
     enter_critical
@@ -145,6 +165,8 @@ def ur_admittance_control():
     local bias_started = -1.0
     local mean = adm_zero
     local m2 = adm_zero
+    local wrench_mean = adm_zero
+    local wrench_bias = adm_zero
     local filtered = adm_zero
     local sample_seq = 0
     local model_interval = -1.0
@@ -176,8 +198,20 @@ def ur_admittance_control():
         last_sample = started
         sample_seq = sample_seq + 1
         local load_started = adm_now()
-        local raw = get_joint_torques()
-        local load_duration = adm_now() - load_started
+        local raw = adm_zero
+        if adm_load_source == 0:
+          raw = get_joint_torques()
+        else:
+          local measured_wrench = get_tcp_force()
+          # 官方返回pose格式的六分量载荷，转成数值列表再累计无接触均值。
+          local wrench = [measured_wrench[0], measured_wrench[1], measured_wrench[2], measured_wrench[3], measured_wrench[4], measured_wrench[5]]
+          local jacobian = get_jacobian(tcp=p[0., 0., 0., 0., 0., 0.])
+          raw = adm_project_wrench(jacobian, wrench)
+          if bias_ready:
+            # 固定的是启动wrench，不将启动姿态的关节Nm偏置沿用到变化后的Jacobian。
+            bias = adm_project_wrench(jacobian, wrench_bias)
+          end
+        end
         local drive = adm_zero
         if model_phase == 0 and sample_time - adm_hold_started >= ${DIAGNOSTIC_SETTLE_S} and read_input_integer_register(adm_i + 5) == 1:
           model_phase = 1
@@ -185,6 +219,9 @@ def ur_admittance_control():
         end
         if model_phase == 1:
           bias_count = bias_count + 1
+          if adm_load_source == 1:
+            wrench_mean = wrench_mean + (wrench - wrench_mean) / bias_count
+          end
           local difference = raw - mean
           mean = mean + difference / bias_count
           local k = 0
@@ -193,7 +230,12 @@ def ur_admittance_control():
             k = k + 1
           end
           if started - bias_started >= ${ADMITTANCE_BIAS_DURATION_S}:
-            bias = mean
+            if adm_load_source == 0:
+              bias = mean
+            else:
+              wrench_bias = wrench_mean
+              bias = adm_project_wrench(jacobian, wrench_bias)
+            end
             local deviation = adm_zero
             local k = 0
             while k < 6:
@@ -207,25 +249,43 @@ def ur_admittance_control():
             model_phase = 2
           end
         end
-        local desired = adm_q_anchor
+        # 采样预算包含测力、Jacobian、raw/bias投影及启动偏置更新；全段仍计入模型计算预算。
+        local load_duration = adm_now() - load_started
+        local desired0 = adm_q_anchor
+        local desired1 = adm_q_anchor
+        # 约束码沿用 0 无限制、1 速度或加速度、2 位置边界、4 可行区间失败。
+        # 模型提前裁剪也计入本片段，避免持续限速或贴住边界时执行页误报为零。
+        local limit = 0
         if model_phase == 2:
           filtered = filtered + adm_alpha * (raw - bias - filtered)
           local k = 0
           while k < 6:
             local error = filtered[k] - adm_target[k]
-            if adm_axes[k] == 1:
-              if error > adm_deadband[k]:
-                drive[k] = error - adm_deadband[k]
-              elif error < -adm_deadband[k]:
-                drive[k] = error + adm_deadband[k]
+            # 六轴载荷始终保留；禁用轴的载荷不参与位移积分。
+            if error > adm_deadband[k]:
+              drive[k] = error - adm_deadband[k]
+            elif error < -adm_deadband[k]:
+              drive[k] = error + adm_deadband[k]
+            end
+            if adm_mode == 0 and adm_axes[k] == 1:
+              # 从已承诺末状态更新模型速度，再分别准备两个基础帧期望点。
+              # 两帧不能复用同一终点，否则首帧到位后第二帧会归零并丢失模型速度。
+              local displacement = base.q1[k] - adm_q_anchor[k]
+              local acceleration = (drive[k] - adm_damping[k] * base.v1[k] - adm_stiffness[k] * displacement) / adm_mass[k]
+              local requested_velocity = base.v1[k] + acceleration * adm_dt
+              local velocity = adm_clip(requested_velocity, -adm_speed_max[k], adm_speed_max[k])
+              if velocity != requested_velocity:
+                limit = 1
               end
-              if adm_mode == 0:
-                # 模型从已承诺片段末状态推进，限制后不会积累未执行的虚拟运动。
-                local displacement = base.q1[k] - adm_q_anchor[k]
-                local acceleration = (drive[k] - adm_damping[k] * base.v1[k] - adm_stiffness[k] * displacement) / adm_mass[k]
-                local velocity = adm_clip(base.v1[k] + acceleration * adm_dt, -adm_speed_max[k], adm_speed_max[k])
-                desired[k] = adm_q_anchor[k] + adm_clip(displacement + velocity * adm_dt, -adm_offset_max[k], adm_offset_max[k])
+              local requested_offset0 = displacement + velocity * adm_h
+              local requested_offset1 = displacement + velocity * adm_dt
+              local offset0 = adm_clip(requested_offset0, -adm_offset_max[k], adm_offset_max[k])
+              local offset1 = adm_clip(requested_offset1, -adm_offset_max[k], adm_offset_max[k])
+              if offset0 != requested_offset0 or offset1 != requested_offset1:
+                limit = 2
               end
+              desired0[k] = adm_q_anchor[k] + offset0
+              desired1[k] = adm_q_anchor[k] + offset1
             end
             k = k + 1
           end
@@ -234,15 +294,19 @@ def ur_admittance_control():
         local q1 = base.q1
         local v0 = base.v1
         local v1 = base.v1
-        local limit = 0
         local k = 0
         while k < 6:
           local lower = adm_max(-adm_q_limit[k], adm_q_anchor[k] - adm_offset_max[k])
           local upper = adm_min(adm_q_limit[k], adm_q_anchor[k] + adm_offset_max[k])
           local vmax = adm_max_qd[k]
           local amax = adm_max_qdd[k]
-          local des0 = desired[k]
-          local des1 = desired[k]
+          local des0 = desired0[k]
+          local des1 = desired1[k]
+          if adm_mode == 0 and adm_axes[k] == 0:
+            # 非运动轴的最终命令严格锁定锚点，实际反馈仍检查独立的小包络。
+            lower = adm_q_anchor[k]
+            upper = lower
+          end
           if adm_mode == 2:
             vmax = ${DIAGNOSTIC_MOTION_MAX_QD_RAD_S}
             amax = ${DIAGNOSTIC_MOTION_MAX_QDD_RAD_S2}
@@ -344,7 +408,7 @@ def ur_admittance_control():
     local f2 = adm_zero
     local f3 = adm_zero
     if layout == 1:
-      extra = [floor(stamp*1000000.), floor(adm_base*1000000.), floor(adm_dt*1000000.), sample.bias_count, ${DIAGNOSTIC_AXIS}, ${DIAGNOSTIC_MOTION_AXIS}, adm_mode, 0., 0., 0., 0., floor(stamp*1000000.)]
+      extra = [floor(stamp*1000000.), floor(adm_base*1000000.), floor(adm_dt*1000000.), sample.bias_count, ${DIAGNOSTIC_AXIS}, ${ACTIVE_MOTION_AXIS}, adm_mode, adm_load_source, ${TELEMETRY_SCHEMA_VERSION}, 0., 0., floor(stamp*1000000.)]
     elif layout == 2:
       f0 = sample.raw
       f1 = sample.bias
@@ -440,13 +504,30 @@ def ur_admittance_control():
   local initial_speed = get_actual_joint_speeds()
   local k = 0
   while k < 6:
-    if adm_abs(initial_speed[k]) > ${STATIONARY_MAX_QD_RAD_S}:
+    if adm_abs(initial_speed[k]) > adm_actual_max_qd:
+      adm_fail(19)
+    elif adm_abs(initial_speed[k]) > ${STATIONARY_MAX_QD_RAD_S}:
       adm_fail(10)
     elif adm_abs(adm_q_anchor[k]) > adm_q_limit[k]:
       adm_fail(8)
     end
-    if adm_mode == 2:
+    if adm_mode == 0:
+      adm_offset_max[k] = ${SINGLE_AXIS_MAX_OFFSET_RAD}
+      adm_speed_max[k] = ${SINGLE_AXIS_MAX_QD_RAD_S}
+      adm_max_qd[k] = ${SINGLE_AXIS_MAX_QD_RAD_S}
+      adm_max_qdd[k] = ${SINGLE_AXIS_MAX_QDD_RAD_S2}
+      adm_tracking[k] = ${SINGLE_AXIS_TRACKING_RAD}
+    elif adm_mode == 2:
       adm_tracking[k] = ${DIAGNOSTIC_MOTION_TRACKING_RAD}
+    end
+    # 锚点确定后一次生成绝对包络；实际反馈边界覆盖启动、偏置和运行阶段。
+    adm_motion_actual_lower[k] = adm_q_anchor[k] - adm_actual_margin
+    adm_motion_actual_upper[k] = adm_q_anchor[k] + adm_actual_margin
+    if adm_mode == 0 and adm_axes[k] == 1:
+      adm_motion_actual_lower[k] = adm_motion_actual_lower[k] - ${SINGLE_AXIS_MAX_OFFSET_RAD}
+      adm_motion_actual_upper[k] = adm_motion_actual_upper[k] + ${SINGLE_AXIS_MAX_OFFSET_RAD}
+    elif adm_mode == 2 and k == ${DIAGNOSTIC_MOTION_AXIS} - 1:
+      adm_motion_actual_upper[k] = adm_motion_actual_upper[k] + ${DIAGNOSTIC_MOTION_AMPLITUDE_RAD}
     end
     k = k + 1
   end
@@ -493,7 +574,11 @@ def ur_admittance_control():
     local actual_speed = get_actual_joint_speeds()
     k = 0
     while k < 6:
-      if adm_phase < 2 and adm_abs(actual_speed[k]) > ${STATIONARY_MAX_QD_RAD_S}:
+      if adm_abs(actual_speed[k]) > adm_actual_max_qd:
+        adm_fail(19)
+      elif actual[k] < adm_motion_actual_lower[k] or actual[k] > adm_motion_actual_upper[k]:
+        adm_fail(20)
+      elif adm_phase < 2 and adm_abs(actual_speed[k]) > ${STATIONARY_MAX_QD_RAD_S}:
         adm_fail(10)
       elif adm_abs(q[k] - actual[k]) > adm_tracking[k]:
         adm_fail(7)
@@ -502,7 +587,7 @@ def ur_admittance_control():
     end
     if adm_phase < 2 and started - adm_origin >= ${ADMITTANCE_START_TIMEOUT_S}:
       adm_fail(13)
-    elif adm_phase == 2 and adm_mode != 0 and started - adm_origin - adm_running_time >= ${DIAGNOSTIC_DURATION_S}:
+    elif adm_phase == 2 and started - adm_origin - adm_running_time >= ${DIAGNOSTIC_DURATION_S}:
       adm_fail(11)
     end
     local servo_started = adm_now()

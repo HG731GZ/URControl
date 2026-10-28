@@ -531,9 +531,17 @@ class ResidualSummary:
         }
 
 
-def load_vectors(page):
-    """只用同一载荷冻结页中的六轴量计算残差，不与其他页拼接。"""
-    raw = [numeric_value(value) for value in page["tau_raw_nm"]]
+def load_vectors(page, layout):
+    """按已声明布局区分历史补偿力矩与有来源标记的输入，始终只取同页。"""
+    if layout == 3:
+        raw_key = "tau_raw_nm"
+    elif layout == 4:
+        if page["load_source"] not in ("joint_torque", "flange_wrench"):
+            raise ValueError("第四版载荷页的输入来源未定义")
+        raw_key = "input_raw_nm"
+    else:
+        raise ValueError(f"不支持的连续载荷布局：{layout}")
+    raw = [numeric_value(value) for value in page[raw_key]]
     bias = [numeric_value(value) for value in page["bias_nm"]]
     residual = [None if value is None or offset is None else value - offset
                 for value, offset in zip(raw, bias)]
@@ -554,8 +562,350 @@ def add_residuals(accumulators, vectors, location):
             summary.add(vectors[name][axis], location)
 
 
+def return_criteria_contract(criteria, enabled_axes):
+    """按本轮元数据区分历史精确回位与新版稳定偏移口径，不改写旧约定。"""
+    if criteria is None:
+        return None
+    if "criteria_version" not in criteria:
+        return {
+            "version": 1, "enabled_axes": enabled_axes,
+            "position_limits": [criteria["position_tolerance_rad"]] * 6,
+            "speed_limit": criteria["speed_tolerance_rad_s"],
+            "说明": "历史精确回位约定，仅保留该轮原有位置计数；不能作为当前宽松稳定偏移口径的失败结论。",
+        }
+    if criteria["criteria_version"] != 2:
+        raise ValueError(f"不支持的人工回位约定版本：{criteria['criteria_version']}")
+    if criteria["enabled_axes"] != enabled_axes:
+        raise ValueError("人工回位约定启用轴与本轮实际导纳配置不一致")
+    return {
+        "version": 2, "enabled_axes": enabled_axes,
+        "position_limits": [
+            criteria["enabled_axis_stable_offset_limit_rad"] if axis in enabled_axes
+            else criteria["inactive_axis_position_tolerance_rad"]
+            for axis in range(1, 7)
+        ],
+        "speed_limit": criteria["speed_tolerance_rad_s"],
+        "说明": (
+            "启用轴允许稳定非零偏移，位置限值是本轮稳定偏移的观测参考，不是精密回零要求或自动失败判据；"
+            "非运动轴单独核对位置容差。速度、电流、已采用命令及限幅须结合完整卸载尾窗与现场确认解释；"
+            "运动守卫仍采用本轮控制参数，不因回位口径改变。"
+        ),
+    }
+
+
+class ContactWindowSummary:
+    """按来源接收时间累计人工窗口，载荷仍只使用独立的同一冻结页。"""
+
+    def __init__(self, start, end, anchor, criteria, include_end=False):
+        self.start, self.end = start, end
+        self.include_end = include_end
+        self.anchor, self.criteria = anchor, criteria
+        self.count = 0
+        self.first_received = self.last_received = None
+        self.loads = residual_accumulators()
+        self.load_count = 0
+        self.load_sample_times = NumericSummary()
+        self.offsets = [NumericSummary() for _ in range(6)]
+        self.speeds = [NumericSummary() for _ in range(6)]
+        self.currents = [NumericSummary() for _ in range(6)]
+        self.command_offsets = [NumericSummary() for _ in range(6)]
+        self.command_speeds = [NumericSummary() for _ in range(6)]
+        self.execution_count = 0
+        self.execution_limits = Counter()
+        self.last_execution = None
+        self.position_exceedances = [0] * 6
+        self.speed_exceedances = [0] * 6
+        self.first_feedback = None
+        self.last_feedback = None
+
+    def add(self, record, received, vectors, page_location, execution):
+        """人工标记边界使用左闭右开区间，日志运行末包纳入最后尾窗。"""
+        if not (self.start <= received < self.end
+                or self.include_end and self.start <= received == self.end):
+            return
+        payload = record["payload"]
+        robot = payload["raw"]
+        location = record_location(record, robot["timestamp"])
+        self.count += 1
+        if self.first_received is None:
+            self.first_received = received
+        self.last_received = received
+        offsets, speeds = [], []
+        for axis in range(6):
+            position = numeric_value(robot["actual_q"][axis])
+            reference = None if self.anchor is None else numeric_value(self.anchor[axis])
+            offset = None if position is None or reference is None else position - reference
+            speed = numeric_value(robot["actual_qd"][axis])
+            offsets.append(offset)
+            speeds.append(speed)
+            self.offsets[axis].add(offset, location)
+            self.speeds[axis].add(None if speed is None else abs(speed), location)
+            self.currents[axis].add(robot["actual_current"][axis], location)
+            if self.criteria is not None:
+                self.position_exceedances[axis] += int(
+                    offset is not None and abs(offset) > self.criteria["position_limits"][axis])
+                self.speed_exceedances[axis] += int(
+                    speed is not None and abs(speed) > self.criteria["speed_limit"])
+        self.last_feedback = {**location, "来源接收monotonic_s": received,
+                              "actual_q减锚点_rad": offsets, "actual_qd_rad_s": speeds}
+        if self.first_feedback is None:
+            self.first_feedback = self.last_feedback
+        if execution is not None:
+            self.execution_count += 1
+            self.execution_limits[execution["limit_reason"]] += 1
+            self.last_execution = {**location, "来源接收monotonic_s": received, **execution}
+            for axis in range(6):
+                command = numeric_value(execution["q_cmd"][axis])
+                reference = None if self.anchor is None else numeric_value(self.anchor[axis])
+                self.command_offsets[axis].add(None if command is None or reference is None
+                                               else command - reference, location)
+                self.command_speeds[axis].add(execution["qd_cmd"][axis], location)
+        if vectors is not None:
+            self.load_count += 1
+            add_residuals(self.loads, vectors, page_location)
+            self.load_sample_times.add(payload["control"]["load"]["sample_time_s"], page_location)
+
+    def report(self):
+        """分别描述启用轴稳定偏移和非运动轴约束，不自动决定回位通过。"""
+        if self.criteria is None:
+            criteria_report = {"状态": "未明确约定回位容差，只描述偏移和速度"}
+        else:
+            criteria_report = {
+                "约定版本": self.criteria["version"],
+                "各轴位置观测参考_rad": self.criteria["position_limits"],
+                "各轴速度超出约定参考包数量": self.speed_exceedances,
+                "速度观测参考_rad_s": self.criteria["speed_limit"],
+                "说明": self.criteria["说明"] + "缺测数量见各轴统计；零超限计数不代表窗口完整或自动通过。",
+            }
+            if self.criteria["version"] == 1:
+                criteria_report["历史各轴位置超出容差包数量"] = self.position_exceedances
+            else:
+                enabled_axes = self.criteria["enabled_axes"]
+                criteria_report["启用轴超出稳定偏移观测参考包数量"] = {
+                    f"J{axis}": self.position_exceedances[axis - 1] for axis in enabled_axes}
+                criteria_report["非运动轴位置超出容差包数量"] = {
+                    f"J{axis}": self.position_exceedances[axis - 1]
+                    for axis in range(1, 7) if axis not in enabled_axes}
+        return {
+            "来源接收monotonic窗口_s": None if self.start > self.end else [self.start, self.end],
+            "窗口状态": ("未取得与本次连续正常运行段重叠的窗口"
+                       if self.start > self.end else "仅统计该时间窗口内已取得的正常运行反馈"),
+            "包含窗口右端点": self.include_end,
+            "原始RTDE包数量": self.count,
+            "已取得反馈的首末接收monotonic_s": [self.first_received, self.last_received],
+            "已取得反馈的首末跨度_s": (None if self.first_received is None
+                                       else self.last_received - self.first_received),
+            "独立同页载荷样本数": self.load_count,
+            "载荷机器人sample_time_s": self.load_sample_times.report(),
+            "六轴同页载荷_Nm": {name: [item.report() for item in values]
+                               for name, values in self.loads.items()},
+            "各关节actual_q减锚点有符号范围_rad": [item.report() for item in self.offsets],
+            "各关节窗口内位置摆幅_rad": [None if not item.count else item.maximum - item.minimum
+                                         for item in self.offsets],
+            "各关节首末反馈位置变化_rad": (None if self.first_feedback is None else [
+                None if first is None or last is None else last - first
+                for first, last in zip(self.first_feedback["actual_q减锚点_rad"],
+                                       self.last_feedback["actual_q减锚点_rad"])]),
+            "各关节actual_qd最大绝对值_rad_s": [item.report(maximum_only=True) for item in self.speeds],
+            "各关节actual_current有符号范围_A": [item.report() for item in self.currents],
+            "独立执行页": {
+                "数量": self.execution_count,
+                "各关节已采用q_cmd减锚点有符号范围_rad": [item.report() for item in self.command_offsets],
+                "各关节已采用qd_cmd有符号范围_rad_s": [item.report() for item in self.command_speeds],
+                "限幅原因计数": dict(self.execution_limits), "最后页": self.last_execution,
+                "说明": "只用本窗口首次接收的独立执行页，不能与载荷页或原始反馈硬拼成同步采样。",
+            },
+            "首个已取得反馈": self.first_feedback,
+            "最后已取得反馈": self.last_feedback,
+            "已约定回位容差的观测计数": criteria_report,
+        }
+
+
+def normal_running_state(payload):
+    """冻结的生命周期页不能覆盖原始运行和安全状态。"""
+    return (payload["lifecycle_valid"] and payload["control"]["phase"] == 2
+            and payload["raw"]["runtime_state"] == 2 and payload["raw"]["safety_mode"] == 1)
+
+
+def normal_segment_report(segment):
+    """保留每段正常运行的首末反馈及紧随其后的首次中断。"""
+    return {
+        "来源接收monotonic范围_s": [segment["start"], segment["end"]],
+        "正常运行已观测跨度_s": segment["end"] - segment["start"],
+        "正常运行原始RTDE包数量": segment["count"],
+        "首包": segment["first"], "末包": segment["last"],
+        "首次中断原始状态": segment["interruption"],
+    }
+
+
+def contact_windows_report(run_dir, events, normal_segments, anchor, config,
+                           context, tail_seconds):
+    """提取施力和完全松手标记；仅在同一主机单调时钟上关联接收窗口。"""
+    criteria = context["manual_return_criteria"] if "manual_return_criteria" in context else None
+    enabled_axes = ([index + 1 for index, enabled in enumerate(config["JOINT_AXES"]) if enabled]
+                    if config["DIAGNOSTIC_MODE"] == "admittance" else [])
+    criteria_contract = return_criteria_contract(criteria, enabled_axes)
+    result = {
+        "状态": "未取得成对的施力开始/完全松手人工标记",
+        "允许运动轴": enabled_axes,
+        "回位容差约定": criteria if criteria is not None else {"状态": "未明确提供，不判定回位通过"},
+        "回位约定解释": (criteria_contract["说明"] if criteria_contract is not None
+                         else "未提供显式约定，不套用当前参数或历史容差。"),
+        "现场条件记录": (context["manual_contact_context"] if "manual_contact_context" in context
+                       else {"状态": "本轮未记录独立现场条件；另查人工标记备注"}),
+        "未配对标记": [], "配对窗口": [],
+        "关联说明": (
+            "人工标记是点击处理的近似时间，不能证明已施加或完全撤除外力。"
+            "只用event_monotonic_ns与原始RTDE的payload.host_monotonic_s在同一主机时钟上关联；"
+            "不使用父日志入队时间，不与机器人timestamp或载荷sample_time相减。"
+            "载荷按首次收到独立model_sample_seq的接收时刻归窗，仍有采样至接收的异步误差；"
+            "raw/bias/filtered/drive和raw-bias始终来自同一载荷页。"
+            "窗口仅含lifecycle_valid且phase2、runtime_state=2、safety_mode=1的反馈，"
+            "在施力标记所在连续运行段的首次中断前截止；保护停止后冻结的旧phase2不作卸载或回位证据。"
+            "持续时间、样本数、日志缺口和现场无接触确认须共同查看。"
+        ),
+    }
+    markers = []
+    for event in events:
+        if event["event"] in ("force_start", "released"):
+            timestamp = numeric_value(event["event_monotonic_ns"])
+            if timestamp is None:
+                result["未配对标记"].append({"标记": event, "原因": "未取得人工事件来源单调时间"})
+            else:
+                markers.append({"event": event, "time": timestamp / 1_000_000_000,
+                                "before": None, "after": None})
+    markers.sort(key=lambda marker: marker["time"])
+    pairs = []
+    pending = None
+    previous_release = None
+    for marker in markers:
+        if marker["event"]["event"] == "force_start":
+            baseline_known = pending is None
+            if pending is not None:
+                result["未配对标记"].append({"标记": pending["event"], "原因": "下一次施力标记前没有完全松手标记"})
+            pending = marker
+            marker["baseline_begin"] = previous_release if baseline_known else marker["time"]
+            marker["baseline_known"] = baseline_known
+        elif pending is None:
+            result["未配对标记"].append({"标记": marker["event"], "原因": "前面没有未配对的施力开始标记"})
+            previous_release = marker["time"]
+        else:
+            pairs.append((pending, marker))
+            previous_release = marker["time"]
+            pending = None
+    if pending is not None:
+        result["未配对标记"].append({"标记": pending["event"], "原因": "之后未取得完全松手标记"})
+    if not pairs:
+        return result
+    if not normal_segments:
+        result["状态"] = "已取得人工标记，但未取得NORMAL且RUNNING的phase2来源接收区间，无法关联窗口"
+        return result
+    result["状态"] = "已取得人工标记配对；施力、完全卸载及回位仍需现场确认"
+    release_minimum = 5.0 if criteria is None else criteria["minimum_release_s"]
+    tail_duration = tail_seconds if criteria is None else criteria["tail_duration_s"]
+    collected = []
+    for start, release in pairs:
+        segments_at_start = [segment for segment in normal_segments
+                             if segment["start"] <= start["time"] <= segment["end"]]
+        if not segments_at_start:
+            result["配对窗口"].append({
+                "施力开始标记": start["event"], "完全松手标记": release["event"],
+                "状态": "施力标记不在已观测连续正常运行区间内，基线、加载及卸载窗口不可用",
+            })
+            continue
+        segment = segments_at_start[0]
+        first_received, last_received = segment["start"], segment["end"]
+        following_starts = [marker["time"] for marker in markers
+                            if marker["event"]["event"] == "force_start" and marker["time"] > release["time"]]
+        end = min([last_received, *following_starts])
+        include_end = end == last_received and end not in following_starts
+        baseline_begin = (first_received if start["baseline_begin"] is None
+                          else max(first_received, start["baseline_begin"]))
+        start_in_run = first_received <= start["time"] <= last_received
+        release_in_run = first_received <= release["time"] <= last_received
+        baseline_duration = max(0.0, start["time"] - baseline_begin) if start_in_run else None
+        release_duration = max(0.0, end - release["time"]) if release_in_run else None
+        report = {
+            "施力开始标记": start["event"], "完全松手标记": release["event"],
+            "采用连续正常运行区间": normal_segment_report(segment),
+            "卸载窗口状态": ("已取得同一连续正常运行段内的松手标记"
+                            if release_in_run else "不可用：松手标记在本段首次中断之后，不采用后续冻结phase2反馈"),
+            "施力标记位于已观测运行范围内": start_in_run,
+            "松手标记位于已观测运行范围内": release_in_run,
+            "施力前可用基线时长_s": baseline_duration,
+            "基线时长要求_s": 3.0,
+            "基线标记时长达到要求": None if baseline_duration is None else baseline_duration >= 3.0,
+            "基线标记完整": start["baseline_known"],
+            "卸载后可用运行时长_s": release_duration,
+            "卸载时长要求_s": release_minimum,
+            "卸载标记时长达到要求": None if release_duration is None else release_duration >= release_minimum,
+            "卸载尾窗要求_s": tail_duration,
+            "卸载尾窗标记区间达到要求": (None if release_duration is None
+                                        else release_duration >= tail_duration),
+            "时长说明": "仅用同一连续NORMAL/RUNNING运行段，不跨中断；仍不代表无缺包或现场确实无接触。",
+        }
+        bounds = {"施力前基线": (max(baseline_begin, start["time"] - 3.0), start["time"], False),
+                  "加载段": (start["time"], min(release["time"], last_received),
+                             release["time"] > last_received),
+                  "卸载段": (release["time"], end, include_end and release_in_run),
+                  "卸载尾窗": (max(release["time"], end - tail_duration), end, include_end and release_in_run)}
+        summaries = {name: ContactWindowSummary(left, right, anchor, criteria_contract, include_right)
+                     for name, (left, right, include_right) in bounds.items()}
+        collected.append((report, summaries, start, release))
+    sequences = SequenceSummary()
+    execution_sequences = SequenceSummary()
+    missing_received = 0
+    with (run_dir / "records.jsonl").open(encoding="utf-8") as stream:
+        for line in stream:
+            record = json.loads(line)
+            if record["kind"] != "rtde_state":
+                continue
+            payload = record["payload"]
+            received = numeric_value(payload["host_monotonic_s"] if "host_monotonic_s" in payload else None)
+            if received is None:
+                missing_received += 1
+                continue
+            point = {**record_location(record, payload["raw"]["timestamp"]),
+                     "来源接收monotonic_s": received, "phase": payload["control"]["phase"],
+                     "lifecycle_valid": payload["lifecycle_valid"],
+                     "runtime_state": payload["raw"]["runtime_state"],
+                     "safety_mode": payload["raw"]["safety_mode"]}
+            for marker in markers:
+                if received <= marker["time"]:
+                    if marker["before"] is None or received > marker["before"]["来源接收monotonic_s"]:
+                        marker["before"] = point
+                elif marker["after"] is None or received < marker["after"]["来源接收monotonic_s"]:
+                    marker["after"] = point
+            control = payload["control"]
+            if not normal_running_state(payload):
+                continue
+            vectors = page_location = execution = None
+            if payload["derived_valid"] and control["page_type"] == "load":
+                page = control["load"]
+                if page["phase"] == 2 and sequences.add(page["model_sample_seq"]):
+                    vectors = load_vectors(page, control["telemetry_layout"])
+                    page_location = {**point, "page_seq": page["page_seq"],
+                                     "model_sample_seq": page["model_sample_seq"],
+                                     "sample_time_s": page["sample_time_s"]}
+            elif payload["derived_valid"] and control["page_type"] == "execution":
+                page = control["continuous"]["execution"]
+                if page["phase"] == 2 and execution_sequences.add(page["page_seq"]):
+                    execution = page
+            for _, summaries, _, _ in collected:
+                for summary in summaries.values():
+                    summary.add(record, received, vectors, page_location, execution)
+    result["未取得来源接收时间的原始RTDE数量"] = missing_received
+    for report, summaries, start, release in collected:
+        report["标记前后最近RTDE接收关联"] = {
+            name: {"之前": marker["before"], "之后": marker["after"]}
+            for name, marker in (("施力开始", start), ("完全松手", release))}
+        report.update({name: summary.report() for name, summary in summaries.items()})
+        result["配对窗口"].append(report)
+    return result
+
+
 def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
-    """读取第 3 版冻结页、原始 RTDE 和双端时序，输出描述性证据。"""
+    """读取第 3/4 版遥测冻结页、原始 RTDE 和双端时序，输出描述性证据。"""
     if tail_seconds <= 0:
         raise ValueError("残差尾窗长度必须大于零")
     context = metadata["context"]
@@ -563,7 +913,15 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
     config = (context["controller"]["parameters"] if "controller" in context
               else context["prepared_parameters"])
     mode = config["DIAGNOSTIC_MODE"]
-    motion_axis = config["DIAGNOSTIC_MOTION_AXIS"] - 1
+    telemetry_schema = context["controller"]["telemetry_schema"] if "controller" in context else None
+    telemetry_layout = None if telemetry_schema is None else telemetry_schema["telemetry_schema_version"]
+    if telemetry_layout not in (None, 3, 4):
+        raise ValueError(f"不支持的连续遥测布局：{telemetry_layout}")
+    load_source = ("joint_torque" if telemetry_layout == 3
+                   else config["JOINT_LOAD_SOURCE"] if telemetry_layout == 4 else None)
+    motion_axis = (config["JOINT_AXES"].index(1)
+                   if mode == "admittance" and "SINGLE_AXIS_MAX_OFFSET_RAD" in config
+                   else config["DIAGNOSTIC_MOTION_AXIS"] - 1)
     if motion_windows is None:
         motion_windows = [(1.0, 3.0), (5.0, 7.0)] if mode == "preset_joint_motion" else []
     for start, end in motion_windows:
@@ -571,6 +929,8 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
             raise ValueError("运动窗口必须满足 0 ≤ 起点 < 终点")
     windows = [{"start": start, "end": end, "count": 0, "zero": 0,
                 "positive": 0, "negative": 0, "missing": 0,
+                "actual_zero": 0, "actual_positive": 0, "actual_negative": 0,
+                "actual_sign_changes": 0, "previous_actual_sign": None,
                 "target": NumericSummary(), "actual": NumericSummary(),
                 "current": NumericSummary(), "speed_scaling": NumericSummary(),
                 "target_speed_fraction": NumericSummary()}
@@ -581,6 +941,11 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
                   ("model_sample_seq", "generated_seq", "submitted_seq", "adopted_seq", "frame")}
     running_load_sequences = SequenceSummary()
     first_running = last_running = previous_running = None
+    normal_segments = []
+    current_normal_segment = None
+    raw_state_transitions = []
+    previous_raw_state = None
+    abnormal_phase2_count = 0
     timestamp_intervals = NumericSummary()
     raw_timestamp_gaps = 0
     raw_missing_frames = 0
@@ -591,6 +956,49 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
     command_offsets = [NumericSummary() for _ in range(6)]
     command_speeds = [NumericSummary() for _ in range(6)]
     actual_offsets = [NumericSummary() for _ in range(6)]
+    signed_actual_offsets = [NumericSummary() for _ in range(6)]
+    same_packet_tracking = [NumericSummary() for _ in range(6)]
+    actual_motion_limits = None
+    if (mode == "preset_joint_motion"
+            and "DIAGNOSTIC_MOTION_ACTUAL_MAX_QD_RAD_S" in config
+            and "DIAGNOSTIC_MOTION_ACTUAL_MARGIN_RAD" in config):
+        margin = config["DIAGNOSTIC_MOTION_ACTUAL_MARGIN_RAD"]
+        actual_motion_limits = {
+            "模式": mode,
+            "实际速度上限_rad_s": config["DIAGNOSTIC_MOTION_ACTUAL_MAX_QD_RAD_S"],
+            "轨迹外包络裕量_rad": margin,
+            "各轴相对锚点实际位置包络_rad": [
+                [-margin, margin + (config["DIAGNOSTIC_MOTION_AMPLITUDE_RAD"] if axis == motion_axis else 0)]
+                for axis in range(6)],
+        }
+    elif mode == "admittance" and "SINGLE_AXIS_ACTUAL_MAX_QD_RAD_S" in config:
+        margin = config["SINGLE_AXIS_ACTUAL_MARGIN_RAD"]
+        extents = [margin + (config["SINGLE_AXIS_MAX_OFFSET_RAD"] if axis == motion_axis else 0)
+                   for axis in range(6)]
+        actual_motion_limits = {
+            "模式": mode, "允许运动轴": motion_axis + 1,
+            "实际速度上限_rad_s": config["SINGLE_AXIS_ACTUAL_MAX_QD_RAD_S"],
+            "轨迹外包络裕量_rad": margin,
+            "各轴相对锚点实际位置包络_rad": [[-extent, extent] for extent in extents],
+            "命令偏移上限_rad": config["SINGLE_AXIS_MAX_OFFSET_RAD"],
+            "命令速度上限_rad_s": config["SINGLE_AXIS_MAX_QD_RAD_S"],
+            "命令加速度上限_rad_s2": config["SINGLE_AXIS_MAX_QDD_RAD_S2"],
+            "跟踪偏差上限_rad": config["SINGLE_AXIS_TRACKING_RAD"],
+            "停止确认速度上限_rad_s": config["SINGLE_AXIS_STOP_MAX_QD_RAD_S"],
+        }
+    elif (mode == "fixed_joint_hold" and "controller" in context
+          and "fixed_hold_actual_limits" in context["controller"]):
+        limits = context["controller"]["fixed_hold_actual_limits"]
+        margin = limits["margin_rad"]
+        actual_motion_limits = {
+            "模式": mode, "允许运动轴": [],
+            "约束来源": "本轮context.controller.fixed_hold_actual_limits显式契约",
+            "实际速度上限_rad_s": limits["max_qd_rad_s"],
+            "轨迹外包络裕量_rad": margin,
+            "各轴相对锚点实际位置包络_rad": [[-margin, margin] for _ in range(6)],
+        }
+    speed_violations = [0] * 6
+    envelope_violations = [0] * 6
     robot_speeds = [NumericSummary() for _ in range(6)]
     robot_currents = [NumericSummary() for _ in range(6)]
     residuals = residual_accumulators()
@@ -616,8 +1024,15 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
     observed_heartbeat_sends = NumericSummary()
     previous_heartbeat_send = None
     host_budget = HostBudgetSummary()
-    expected_rtde_interval = 1.0 / config[
-        "ADMITTANCE_STATE_HZ" if mode == "admittance" else "DIAGNOSTIC_STATE_HZ"]
+    if "rtde" in context:
+        state_frequency = context["rtde"]["state_frequency_hz"]
+        frequency_source = "本轮RTDE连接实际协商记录"
+    else:
+        frequency_key = ("ADMITTANCE_STATE_HZ" if mode == "admittance"
+                         and "SINGLE_AXIS_MAX_OFFSET_RAD" not in config else "DIAGNOSTIC_STATE_HZ")
+        state_frequency = config[frequency_key]
+        frequency_source = "本轮未取得连接协商记录，按保存参数推定"
+    expected_rtde_interval = 1.0 / state_frequency
     with (run_dir / "records.jsonl").open(encoding="utf-8") as stream:
         for line_number, line in enumerate(stream, 1):
             try:
@@ -660,6 +1075,30 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
             control, robot = payload["control"], payload["raw"]
             timestamp = numeric_value(robot["timestamp"])
             location = record_location(record, timestamp)
+            received = numeric_value(payload["host_monotonic_s"] if "host_monotonic_s" in payload else None)
+            raw_state = (robot["runtime_state"], robot["safety_mode"])
+            state_point = {**location, "来源接收monotonic_s": received,
+                           "runtime_state": robot["runtime_state"], "safety_mode": robot["safety_mode"],
+                           "lifecycle_valid": payload["lifecycle_valid"], "phase": control["phase"]}
+            if raw_state != previous_raw_state:
+                raw_state_transitions.append(state_point)
+                previous_raw_state = raw_state
+            is_normal_running = normal_running_state(payload)
+            if is_normal_running and received is not None:
+                if current_normal_segment is None:
+                    current_normal_segment = {
+                        "start": received, "end": received, "count": 0,
+                        "first": state_point, "last": state_point, "interruption": None,
+                    }
+                    normal_segments.append(current_normal_segment)
+                current_normal_segment.update(end=received, last=state_point)
+                current_normal_segment["count"] += 1
+            elif current_normal_segment is not None:
+                current_normal_segment["interruption"] = state_point
+                current_normal_segment = None
+            if (payload["lifecycle_valid"] and control["phase"] == 2
+                    and (robot["runtime_state"] != 2 or robot["safety_mode"] != 1)):
+                abnormal_phase2_count += 1
             for name, summary in host_timings.items():
                 summary.add(control[name], location)
             if not payload["lifecycle_valid"]:
@@ -701,7 +1140,17 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
                                 window["positive"] += int(target > 0.0)
                                 window["negative"] += int(target < 0.0)
                             window["target"].add(target, location)
-                            window["actual"].add(robot["actual_qd"][motion_axis], location)
+                            actual_speed = numeric_value(robot["actual_qd"][motion_axis])
+                            window["actual"].add(actual_speed, location)
+                            if actual_speed is not None:
+                                window["actual_zero"] += int(actual_speed == 0)
+                                window["actual_positive"] += int(actual_speed > 0)
+                                window["actual_negative"] += int(actual_speed < 0)
+                                if actual_speed != 0:
+                                    sign = 1 if actual_speed > 0 else -1
+                                    previous = window["previous_actual_sign"]
+                                    window["actual_sign_changes"] += int(previous is not None and sign != previous)
+                                    window["previous_actual_sign"] = sign
                             window["current"].add(robot["actual_current"][motion_axis], location)
                             for name in ("speed_scaling", "target_speed_fraction"):
                                 window[name].add(robot[name], location)
@@ -712,15 +1161,24 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
                     reference = None if anchor is None else numeric_value(anchor[axis])
                     actual_offsets[axis].add(None if actual is None or reference is None
                                              else abs(actual - reference), location)
+                    offset = None if actual is None or reference is None else actual - reference
+                    signed_actual_offsets[axis].add(offset, location)
+                    target = numeric_value(robot["target_q"][axis])
+                    same_packet_tracking[axis].add(None if actual is None or target is None
+                                                   else abs(target - actual), location)
                     speed = numeric_value(robot["actual_qd"][axis])
+                    if actual_motion_limits:
+                        lower, upper = actual_motion_limits["各轴相对锚点实际位置包络_rad"][axis]
+                        speed_violations[axis] += int(speed is not None and abs(speed) > actual_motion_limits["实际速度上限_rad_s"])
+                        envelope_violations[axis] += int(offset is not None and not lower <= offset <= upper)
                     current = numeric_value(robot["actual_current"][axis])
                     robot_speeds[axis].add(None if speed is None else abs(speed), location)
                     robot_currents[axis].add(None if current is None else abs(current), location)
             if not payload["derived_valid"]:
                 continue
             derived_count += 1
-            if control["telemetry_layout"] != 3:
-                raise ValueError(f"记录 {record['seq']} 的连续遥测布局不是 3")
+            if control["telemetry_layout"] != telemetry_layout:
+                raise ValueError(f"记录 {record['seq']} 的连续遥测布局与本轮元数据不一致")
             page_type = control["page_type"]
             page_types[page_type] += 1
             if not page_sequences[page_type].add(control["page_seq"]):
@@ -754,9 +1212,11 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
                 for name, summary in servo_timings.items():
                     summary.add(page[name], page_location)
             elif page_type == "load" and page["phase"] == 2:
+                if telemetry_layout == 4 and page["load_source"] != load_source:
+                    raise ValueError(f"记录 {record['seq']} 的输入来源与本轮配置不一致")
                 if not running_load_sequences.add(page["model_sample_seq"]):
                     continue
-                vectors = load_vectors(page)
+                vectors = load_vectors(page, telemetry_layout)
                 add_residuals(residuals, vectors, page_location)
                 sample_time = numeric_value(page["sample_time_s"])
                 if sample_time is not None:
@@ -771,11 +1231,13 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
         "实际主机环境": context["host_environment"],
         "机器人连接环境": context["rtde"] if "rtde" in context else None,
         "场景": {"reference_source": context["reference_source"], "space": context["space"],
-                 "diagnostic_mode": mode, "motion_axis": motion_axis + 1},
+                 "diagnostic_mode": mode, "motion_axis": motion_axis + 1,
+                 "telemetry_layout": telemetry_layout, "load_source": load_source},
         "记录数量": {"实际读取": sum(kinds.values()), "metadata记录数量": metadata["record_count"],
                      "按kind": dict(kinds)},
         "RTDE": {"总数": kinds["rtde_state"], "lifecycle_valid数量": lifecycle_count,
                  "derived_valid数量": derived_count, "有效阶段数量": dict(phases),
+                 "统计使用状态频率_Hz": state_frequency, "状态频率来源": frequency_source,
                  "有效冻结页类型数量": dict(page_types)},
         "phase2运行": {
             "原始RTDE包数量": running_count, "首个机器人timestamp_s": first_running,
@@ -784,7 +1246,15 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
             "相邻已记录RTDE间隔_s": timestamp_intervals.report(),
             "非正timestamp间隔数量": nonpositive_intervals,
             "已记录RTDE缺口次数": raw_timestamp_gaps, "按配置帧长估算缺少帧数": raw_missing_frames,
+            "旧phase2但控制器不运行或非NORMAL包数量": abnormal_phase2_count,
+            "阶段口径": "本节保留lifecycle_valid且phase2原始统计，可能包含保护停止后冻结的旧phase2；不能当作正常运行或卸载回位窗口。",
             "缺口说明": "RTDE/主机/日志观测缺口与机器人执行器 gap_count 分开；不能由前者断言伺服断帧或网络丢包。",
+        },
+        "原始运行安全状态": {
+            "状态转移": raw_state_transitions,
+            "正常运行连续区间": [normal_segment_report(segment) for segment in normal_segments],
+            "正常运行原始RTDE包数量": sum(segment["count"] for segment in normal_segments),
+            "定义": "同时满足lifecycle_valid、phase2、runtime_state=2和safety_mode=1；任一条件中断即分段，禁止跨保护停止或暂停拼接窗口。",
         },
         "连续伺服身份": {
             "各页发布序号": {name: item.report() for name, item in page_sequences.items()},
@@ -802,29 +1272,44 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
             "target_qd精确为零数量": window["zero"],
             "target_qd正值数量": window["positive"], "target_qd负值数量": window["negative"],
             "target_qd缺测数量": window["missing"],
+            "actual_qd精确为零数量": window["actual_zero"],
+            "actual_qd正值数量": window["actual_positive"], "actual_qd负值数量": window["actual_negative"],
+            "actual_qd相邻非零值符号变化次数": window["actual_sign_changes"],
             "target_qd_rad_s": window["target"].report(), "actual_qd_rad_s": window["actual"].report(),
             "actual_current_A": window["current"].report(),
             "speed_scaling": window["speed_scaling"].report(),
             "target_speed_fraction": window["target_speed_fraction"].report(),
         } for window in windows],
-        "微动窗口说明": "窗口按 [起点,终点) 取原始 RTDE，包含有效生命周期下尚未取得完整冻结页的包。零速度计数只在所列运动窗口解释，不用于固定保持或转折处。",
+        "微动窗口说明": "窗口按 [起点,终点) 取原始 RTDE，包含有效生命周期下尚未取得完整冻结页的包。提前停止会截断窗口，也可能包含阶段尚未更新的停止过渡包；须结合包数和停止事件解释，不能将其零速计为连续运动缺陷。零速度计数不用于固定保持或转折处。",
         "phase2锚点和运动": {
             "q_start_rad": anchor, "锚点变化记录数": anchor_changes,
             "各关节已采用q_cmd相对锚点最大绝对值_rad": [item.report(maximum_only=True) for item in command_offsets],
             "各关节已采用qd_cmd最大绝对值_rad_s": [item.report(maximum_only=True) for item in command_speeds],
             "各关节actual_q相对锚点最大绝对值_rad": [item.report(maximum_only=True) for item in actual_offsets],
+            "各关节actual_q相对锚点有符号范围_rad": [item.report() for item in signed_actual_offsets],
+            "各关节同包target_q与actual_q最大绝对差_rad": [item.report(maximum_only=True) for item in same_packet_tracking],
             "各关节actual_qd最大绝对值_rad_s": [item.report(maximum_only=True) for item in robot_speeds],
             "各关节actual_current最大绝对值_A": [item.report(maximum_only=True) for item in robot_currents],
-            "观测覆盖说明": "q_cmd/qd_cmd极值来自已收到的独立执行页，不声称覆盖每个伺服帧；actual_q/actual_qd/actual_current来自有效生命周期的原始RTDE包。",
+            "观测覆盖说明": "q_cmd/qd_cmd极值来自已收到的独立执行页，不声称覆盖每个伺服帧；actual_q/actual_qd/actual_current来自有效生命周期且phase2的原始RTDE包，可能含原始状态已异常但phase2冻结的反馈；正常运行区间另列。",
+            "跟踪误差口径": "使用同一原始RTDE包的target_q与actual_q，不把异步缓存执行页q_cmd拼接到当前反馈；与脚本提交前的逐帧跟踪判断时刻不同。",
+            "本轮运动实际反馈边界": ({
+                **actual_motion_limits,
+                "各轴实际速度超限包数量": speed_violations,
+                "各轴实际位置越界包数量": envelope_violations,
+                "说明": "只统计phase2已取得的原始反馈；启动/停止须另查全阶段，不替代机器人逐帧停止检查。",
+            } if actual_motion_limits else {"状态": "该历史日志未显式声明适用于本模式的独立实际反馈边界；不从现有SINGLE_AXIS参数推定旧固定保持已有守卫"}),
         },
         "六轴载荷_Nm": {
+            "输入来源": load_source,
+            "偏置含义": ("启动期固定法兰 wrench 的当前 Jᵀ 投影；同页 raw-bias 为当前 Jᵀ(W-W₀)，仅适用于本轮末端接触候选"
+                         if load_source == "flange_wrench" else "启动期固定补偿关节力矩均值"),
             "独立运行载荷model_sample_seq": running_load_sequences.report(),
             "完整运行段": {name: [item.report() for item in values] for name, values in residuals.items()},
             "尾窗长度_s": tail_seconds,
             "尾窗实际首末sample_time_s": None if not tail else [tail[0][0], tail[-1][0]],
             "尾窗独立样本数": len(tail),
             "尾窗": {name: [item.report() for item in values] for name, values in tail_residuals.items()},
-            "解释": "只按当前载荷页且 phase=2 的 model_sample_seq 去重；raw-bias来自同页。尾窗以最后已收到运行载荷的采样时刻结束，不外推停止后残差。",
+            "解释": "只按当前载荷页且phase=2的model_sample_seq去重；raw-bias来自同页。尾窗以最后独立载荷采样时刻结束，可能早于原始日志末尾；phase2冻结不表示持续正常运行。本节不外推保护停止后残差或回位，正常加载卸载证据只见人工窗口。",
         },
         "主机与心跳": {
             "已记录心跳发送间隔_s": observed_heartbeat_sends.report(),
@@ -833,6 +1318,9 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
         },
         "主机通信与日志预算": host_budget.report(metadata),
         "人工事件": operator_events, "停止及生命周期事件": stop_events,
+        "人工加载卸载窗口": contact_windows_report(
+            run_dir, operator_events, normal_segments,
+            anchor, config, context, tail_seconds),
         "速度缩放握手和变化": scaling_events,
         "最后有效生命周期状态": last_lifecycle,
         "日志缺口及停记": {"缺口事件": gap_events, "开关事件": logging_events,
@@ -848,8 +1336,8 @@ def main():
     parser = argparse.ArgumentParser(description="只读分析导纳日志；不连接设备、不修改日志、不自动判定通过或失败。")
     parser.add_argument("run_dir", type=Path, help="包含 metadata.json 和 records.jsonl 的单轮日志目录")
     parser.add_argument("--motion-window", type=float, nargs=2, action="append", metavar=("START", "END"),
-                        help="第 3 版日志的原始 RTDE 运动窗口，单位秒，可重复；默认微动取 1～3 与 5～7 秒")
-    parser.add_argument("--tail-seconds", type=float, default=3.0, help="第 3 版六轴残差尾窗秒数，默认 3")
+                        help="日志 schema 3（遥测布局 3/4）的原始 RTDE 运动窗口，单位秒，可重复；默认微动取 1～3 与 5～7 秒")
+    parser.add_argument("--tail-seconds", type=float, default=3.0, help="日志 schema 3（遥测布局 3/4）的六轴残差尾窗秒数，默认 3")
     args = parser.parse_args()
     print(json.dumps(analyze(args.run_dir, motion_windows=args.motion_window, tail_seconds=args.tail_seconds),
                      ensure_ascii=False, indent=2, allow_nan=False))

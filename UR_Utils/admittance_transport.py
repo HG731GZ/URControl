@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 from importlib.metadata import version
 import select
 import socket
@@ -288,3 +289,70 @@ class AdmittanceScriptClient(URScriptClient):
             error = f"URScript 错误（第 {line} 行，第 {column} 列）：{message}"
         del buffer[:size]
         return error
+
+
+class AdmittanceDashboardStop:
+    """暂停或故障时只提交一次 Dashboard stop，各阶段共用绝对期限。"""
+
+    def __init__(self, robot_ip: str, *, deadline: float):
+        self.deadline = deadline
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._sock.setblocking(False)
+        self._stage = "connecting"
+        self._buffer = bytearray()
+        self._sent_bytes = 0
+        self.greeting = None
+        try:
+            result = self._sock.connect_ex((robot_ip, 29999))
+        except OSError:
+            self.close()
+            raise
+        if result not in (0, errno.EINPROGRESS, errno.EWOULDBLOCK, errno.EALREADY):
+            self.close()
+            raise OSError(result, "导纳 Dashboard stop 连接失败")
+
+    def close(self) -> None:
+        """停止请求完成或失败后关闭专用短连接，不重试或恢复程序。"""
+        self._sock.close()
+
+    def poll(self) -> str | None:
+        """每次最多一次非阻塞收发；回复只作命令证据，不表示机器人已静止。"""
+        if time.monotonic() >= self.deadline:
+            raise TimeoutError("导纳 Dashboard stop 超过绝对期限")
+        if self._stage == "connecting":
+            _, writable, exceptional = select.select([], [self._sock], [self._sock], 0)
+            if not writable and not exceptional:
+                return None
+            error = self._sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+            if error:
+                raise OSError(error, "导纳 Dashboard stop 连接失败")
+            self._stage = "greeting"
+        if self._stage == "sending":
+            if not select.select([], [self._sock], [], 0)[1]:
+                return None
+            count = self._sock.send(b"stop\n"[self._sent_bytes:])
+            if count == 0:
+                raise ConnectionError("导纳 Dashboard stop 发送返回零字节")
+            self._sent_bytes += count
+            if self._sent_bytes == 5:
+                self._stage = "reply"
+            return None
+        if b"\n" not in self._buffer:
+            if not select.select([self._sock], [], [], 0)[0]:
+                return None
+            if len(self._buffer) >= 4096:
+                raise RuntimeError("导纳 Dashboard stop 回复超过单行容量")
+            data = self._sock.recv(4096 - len(self._buffer))
+            if not data:
+                raise ConnectionError("导纳 Dashboard stop 连接已关闭")
+            self._buffer.extend(data)
+        if b"\n" not in self._buffer:
+            return None
+        line, _, remaining = self._buffer.partition(b"\n")
+        self._buffer = bytearray(remaining)
+        response = line.rstrip(b"\r").decode("utf-8")
+        if self._stage == "greeting":
+            self.greeting = response
+            self._stage = "sending"
+            return None
+        return response

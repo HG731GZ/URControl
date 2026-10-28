@@ -28,7 +28,8 @@ ROBOT_FIELDS = (
 )
 
 _TYPE_BYTES = {"DOUBLE": 8, "UINT32": 4, "INT32": 4, "VECTOR6D": 48, "VECTOR3D": 24}
-TELEMETRY_SCHEMA_VERSION = 3
+TELEMETRY_SCHEMA_VERSION = 4
+LOAD_SOURCE_CODES = {"joint_torque": 0, "flange_wrench": 1}
 PAGE_NAMES = {1: "anchor", 2: "load", 3: "execution", 4: "timing"}
 _COMMON_INT_FIELDS = (
     "phase", "exit_reason", "adopted_source_seq", "model_sample_seq", "reference_source",
@@ -37,7 +38,7 @@ _COMMON_INT_FIELDS = (
 )
 _PAGE_INT_FIELDS = {
     1: ("snapshot_time_us", "dt_base_us", "dt_model_design_us", "bias_sample_count",
-        "observation_axis", "motion_axis", "diagnostic_mode", "reserved", "reserved",
+        "observation_axis", "motion_axis", "diagnostic_mode", "load_source_code", "telemetry_schema_version",
         "reserved", "reserved", "snapshot_time_us"),
     2: ("sample_time_us", "dt_model_actual_us", "dt_model_max_us", "compute_duration_us",
         "bias_sample_count", "generated_seq", "submitted_seq", "limit_reason",
@@ -64,9 +65,8 @@ def output_int_count(config: dict) -> int:
 
 
 def state_frequency(config: dict) -> float:
-    """诊断使用专属频率，普通导纳使用明确配置的状态频率。"""
-    return (config["ADMITTANCE_STATE_HZ"] if config["DIAGNOSTIC_MODE"] == "admittance"
-            else config["DIAGNOSTIC_STATE_HZ"])
+    """保持、微动及受限单轴导纳均保留高频原始状态，核对逐帧运动。"""
+    return config["DIAGNOSTIC_STATE_HZ"]
 
 
 def output_recipe(config: dict) -> tuple[list[str], list[str]]:
@@ -100,8 +100,16 @@ def robot_sample(state) -> dict:
     return result
 
 
+def load_source_description(source: str) -> str:
+    """明确当前输入的测量点与含义，映射载荷不冒充补偿关节力矩。"""
+    return {
+        "joint_torque": "get_joint_torques 补偿关节力矩，减去启动期固定关节偏置",
+        "flange_wrench": "法兰点基座表达的 get_tcp_force，经当前法兰 Jᵀ 映射；减去当前 Jᵀ 对启动期固定 wrench 均值的投影，仅用于末端接触",
+    }[source]
+
+
 def log_schema(config: dict, space: str) -> dict:
-    """记录第三版完整冻结页布局，禁止把不同页拼成同一模型或执行样本。"""
+    """记录第四版输入来源和完整冻结页，不混用历史补偿力矩字段。"""
     int_base = config["ADMITTANCE_OUTPUT_INT_BASE"]
     float_base = config["ADMITTANCE_OUTPUT_FLOAT_BASE"]
     registers = {f"output_int_register_{int_base + index}": name
@@ -114,12 +122,17 @@ def log_schema(config: dict, space: str) -> dict:
         block, axis = divmod(index, 6)
         registers[f"output_double_register_{float_base + index}"] = {
             "anchor": f"q_anchor[{axis}]" if block == 0 else "未使用",
-            "load": f"{('tau_raw_nm', 'bias_nm', 'filtered_nm', 'drive')[block]}[{axis}]",
+            "load": f"{('input_raw_nm', 'bias_nm', 'filtered_nm', 'drive')[block]}[{axis}]",
             "execution": f"{('q_cmd', 'qd_cmd', 'q_nom', 'delta_q')[block]}[{axis}]",
             "timing": TIMING_FLOAT_FIELDS[index],
         }
     return {
         "telemetry_schema_version": TELEMETRY_SCHEMA_VERSION,
+        "load_source": {
+            "name": config["JOINT_LOAD_SOURCE"],
+            "code": LOAD_SOURCE_CODES[config["JOINT_LOAD_SOURCE"]],
+            "description": load_source_description(config["JOINT_LOAD_SOURCE"]),
+        },
         "layout": "continuous_servo_frozen_pages",
         "robot_fields": {name: {"rtde_type": field_type, "unit": unit, "description": description}
                          for name, field_type, unit, description in ROBOT_FIELDS},
@@ -136,10 +149,10 @@ def log_schema(config: dict, space: str) -> dict:
         "page_identity": "每页有 run_id、page_seq、model_sample_seq、snapshot_time_s 和到达关联时间；缓存保留各自身份，不跨页拼成同步样本",
         "continuous.execution": "最近完整执行页；q_cmd/qd_cmd 为执行器已采用命令，生成和提交身份不代表已经执行",
         "continuous.timing": "最近完整计时页；最大间隔、缺口计数由执行器累计，发布丢页不会清零",
-        "load": "最近完整六轴载荷页；raw/bias/filtered/drive 同页冻结，偏置未完成时 bias/filtered/drive 为 None",
+        "load": "最近完整六轴载荷页；input_raw_nm/bias_nm/filtered_nm/drive 同页冻结，每页明确 load_source；偏置未完成时后三项为 None。布局3的 tau_raw_nm 仅代表历史补偿关节力矩",
         "q_start": "本轮固定锚点，只在完整锚点页确认一次，不因页面切换改变",
         "q_cmd": "仅当前执行页有效；其他类型页清空顶层命令，展示历史采用值需读取带身份的 continuous.execution",
-        "drive": "仅当前载荷页且偏置已完成时有效；保持及预设微动仍计算载荷，但不以外力驱动轨迹",
+        "drive": "仅当前载荷页且偏置已完成时有效；六轴均保留死区后的载荷，只有启用轴在受限单轴导纳中积分；保持及预设微动不以外力驱动轨迹",
         "time_encoding": "整数 _us 为相对脚本起点或间隔的微秒，浮点 _s 为秒；未获得的负计时解码为 None；bias_std_nm 是六轴总体标准差",
         "host_monotonic_s": "主机单调时间，用于对齐接收、发送和控制诊断",
         "host_time_unix_s": "主机 Unix 时间，用于与外部日志对齐",
