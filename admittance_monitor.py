@@ -610,6 +610,8 @@ class AdmittanceMonitor:
             ["主机缩放许可", _text(diag["scaling_ok"]), "由实际缩放反馈写入；变化后进入停止流程"],
             ["遥测布局 / 当前页", f"{_text(diag['telemetry_layout'])} / {_text(diag['page_type'])} / {_text(diag['page_seq'])}", "原始包身份；下列缓存页分别保留自身身份"],
             ["伺服 / 模型设计周期", f"{cfg['SERVO_DT_S']:g} / {cfg['MODEL_DT_S']:g} s", "配置时基；实际间隔另列，不以平均值代替最大值"],
+            ["伺服启动间隔：观测 / 退出", f"{cfg['SERVO_DT_S'] * 1000:g} / {cfg['SERVO_START_MAX_INTERVAL_S'] * 1000:g} ms",
+             f"两者均保留 {cfg['TIMING_TOLERANCE_S'] * 1e6:g} μs 计时容差；模型预算、片段耗尽独立退出"],
         ]
         page_groups = (("执行页", diag["continuous"]["execution"], (
             ("generated_seq", "模型生成序号", "生成不表示执行采用"),
@@ -619,7 +621,7 @@ class AdmittanceMonitor:
             ("based_on_seq", "依据的已接受身份", "片段生成所依据的命令状态"),
             ("start_frame", "片段起始帧", "适用帧范围"),
             ("end_frame", "片段截止帧", "过期片段不补发"),
-            ("gap_count", "伺服帧缺口累计数", "本轮执行器累计值；不是 RTDE 丢包数"),
+            ("gap_count", "伺服启动间隔观测超期累计数", "超过设计周期加容差累计；仅超过退出间隔停止，不是 RTDE 丢包数"),
             ("limit_reason", "命令约束原因", "执行页所带约束码"),
             ("servoj_start_interval_s", "最近伺服开始间隔", "s；执行器相邻调用起点差"),
             ("servoj_max_interval_s", "本轮最大伺服开始间隔", "s；执行器累计最大值"),

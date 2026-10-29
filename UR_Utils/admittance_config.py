@@ -14,6 +14,16 @@ from UR_Utils.admittance_trajectory import profile_parameters
 # 其余滤波、限幅、伺服、通信和启动停止参数在本文件修改；修改后重启程序生效。
 # 界面恢复默认仅重置上述 13 项，不会覆盖本文件；每轮仍传递并记录完整配置。
 # 通信频率、心跳、超时和启动条件仅在本文件调整。
+# 本次 J1 人工入口调用下面的 j1_contact_config()，不是直接使用文件顶部的默认值：
+#   正常让位边界：j1_contact_config() 直接取启用轴实际位置守卫的 80%，无需另设比例变量。
+#   命令速度/加速度、跟踪误差，以及需要独立设定边界时：修改该函数中的对应覆盖值。
+#   六轴实际速度/位置守卫：该候选继承下面 SINGLE_AXIS_*ACTUAL_* 两组参数。
+#   J1 死区及 M/D/K：由 j1_no_contact_config() 显式设置，再由接触候选继承。
+#   边界提示观测带、到达确认时间、保持计时：在 admittance_contact_manual.py 的
+#   ContactSession.__init__ 中调整；它们只管理现场提示，不改变机器人运动边界。
+#   当前提示条件为：采用命令距同侧边界不超过 0.0002 rad，实际反馈不超过 0.001 rad，
+#   连续满足 0.2 s，且两类来源接收年龄均不超过 0.2 s，再提示保持 5 s；这些不是停止阈值。
+# 每轮配置在启动时固定；修改文件后重新打开入口并启动新一轮，正在运行的一轮不会热更新。
 TELEOP_REFERENCE_HZ = 100.0
 ADMITTANCE_STATE_HZ = 100.0
 # 类型、观测轴和预设运动轴独立；默认保持，不因切换观测轴开放运动。
@@ -29,31 +39,62 @@ DIAGNOSTIC_MOTION_TAIL_HOLD_S = 10.0
 DIAGNOSTIC_MOTION_MAX_QD_RAD_S = 0.003
 DIAGNOSTIC_MOTION_MAX_QDD_RAD_S2 = 0.02
 DIAGNOSTIC_MOTION_TRACKING_RAD = 0.005
-# 第二版实际守卫：位置参数表示启动锚点两侧的界限，不再叠加命令行程。
+# 实际守卫的解释版本，不是用于调节强弱的阈值。
+# 第二版直接使用 abs(actual_q - q_start) 的位置界限；q_start 是本轮启动时捕获的实际关节角。
+# 参数名保留 MARGIN，但不表示“命令边界之外再加一段裕量”：0.5 就是相对锚点 ±0.5 rad，
+# 不能与命令让位范围相加。实际越界触发原因 20 的停止流程。
 ACTUAL_GUARD_VERSION = 2
+# 以下 DIAGNOSTIC_MOTION_*ACTUAL_* 仅用于预设无接触轨迹；人工接触使用后面的 SINGLE_AXIS_*。
+# MAX_QD 检查实际速度，单位 rad/s，超过后触发原因 19；MARGIN 检查实际位置，单位 rad。
+# 不含 NON_MOTION 的一组用于预设运动轴，含 NON_MOTION 的一组用于其余五轴。
 DIAGNOSTIC_MOTION_ACTUAL_MAX_QD_RAD_S = 0.1
 DIAGNOSTIC_MOTION_ACTUAL_MARGIN_RAD = 0.5
 DIAGNOSTIC_MOTION_NON_MOTION_ACTUAL_MAX_QD_RAD_S = 0.1
 DIAGNOSTIC_MOTION_NON_MOTION_ACTUAL_MARGIN_RAD = 0.5
 # 微动停止确认须低于运行速度量级，不沿用普通流程的 0.01 rad/s 静止阈值。
 DIAGNOSTIC_MOTION_STOP_MAX_QD_RAD_S = 0.0001
-# 第六步仅开放 J1 或 J3 的单轴接触联调，使用独立的小范围约束。
+# 固定关节单轴导纳仅开放 J1 或 J3。这里是软件默认值，J1 人工联调会在
+# j1_contact_config() 中覆盖命令行程、速度、加速度和跟踪阈值，详见该函数旁的说明。
+# 正常命令让位上限，单位 rad：最终 q_cmd 相对 q_start 限制在 ±此值，并提前按剩余距离减速。
+# 正常到达边界后继续限位保持，不因达到此值单独退出；不调整锚点，也不自动卸载。
+# 它限制发送目标，不保证 actual_q 与目标完全重合，更不是接触力上限。
 SINGLE_AXIS_MAX_OFFSET_RAD = 0.004
+# 单轴命令速度上限，单位 rad/s；用于生成目标，不是实际速度的故障阈值。
 SINGLE_AXIS_MAX_QD_RAD_S = 0.0015
+# 单轴命令加速度上限，单位 rad/s²；约束相邻目标速度变化，并参与边界前的减速距离计算。
 SINGLE_AXIS_MAX_QDD_RAD_S2 = 0.02
+# 六轴逐帧跟踪误差上限，单位 rad：提交伺服命令前，比较待提交 q 与当帧 actual_q。
+# 任一轴绝对差超过此值，触发原因 7 的停止流程；禁用导纳的轴同样检查。
+# 它以“当前命令”为中心，实际位置守卫以“本轮启动锚点”为中心，两者独立生效。
+# 例如命令已保持在 q_start + 0.40，实际再向外偏离超过 0.005 rad，就会触发跟踪停止，
+# 不必等到实际位置达到 q_start + 0.50；界面异步命令差和日志同包 target_q 差不等同于此检查时刻。
 SINGLE_AXIS_TRACKING_RAD = 0.005
+# 启用导纳轴的实际速度故障阈值，单位 rad/s；超过后触发原因 19，不是正常命令限速。
 SINGLE_AXIS_ACTUAL_MAX_QD_RAD_S = 0.1
+# 启用导纳轴的实际位置故障阈值，单位 rad；第二版为相对 q_start ±此值，越界触发原因 20。
+# 当前 0.5 rad 约为 28.65°，是实际反馈包络，不表示正常手推行程扩大到 ±0.5 rad。
+# J1 人工候选的命令边界默认由此值乘 0.8 得到；修改后重新打开入口，边界随之重新计算。
 SINGLE_AXIS_ACTUAL_MARGIN_RAD = 0.5
+# 非运动轴的实际速度故障阈值，单位 rad/s；其命令仍锁定启动锚点，超过此值触发原因 19。
 SINGLE_AXIS_NON_MOTION_ACTUAL_MAX_QD_RAD_S = 0.1
+# 非运动轴的实际位置故障阈值，单位 rad；相对各自启动锚点独立检查，越界触发原因 20。
+# 当前 J1 与 J2～J6 都是 ±0.5 rad；要统一修改六轴，须同时修改上面运动轴和此处非运动轴的值。
+# 固定保持模式没有启用的运动轴，因此六轴均使用这组 NON_MOTION 实际守卫。
+# 实际守卫在捕获锚点后的启动、偏置和运行阶段生效；它们是本项目的软件检查。
 SINGLE_AXIS_NON_MOTION_ACTUAL_MARGIN_RAD = 0.5
+# 停止确认速度，单位 rad/s：须程序已退出且六轴新鲜反馈均不超过此值，才确认本轮已停止。
+# 它不参与正常限速，也不是“速度低于此值就自动停止”。
 SINGLE_AXIS_STOP_MAX_QD_RAD_S = 0.0001
 DIAGNOSTIC_STATE_HZ = 500.0
 DIAGNOSTIC_SETTLE_S = 1.0
 DIAGNOSTIC_DURATION_S = 15.0
-# 有限片段包含两个基础帧；计算超预算、片段耗尽与执行缺帧分别停止，采样起点间隔仅观测。
+# 有限片段包含两个基础帧；模型超预算和片段耗尽仍独立停止，采样起点间隔仅观测。
 SERVO_DT_S = 0.002
 MODEL_DT_S = 0.004
 TIMING_TOLERANCE_S = 0.000001
+# 第二版伺服间隔约定：超过设计周期累计告警，超过独立上限才退出；不补跑延迟帧。
+SERVO_INTERVAL_POLICY_VERSION = 2
+SERVO_START_MAX_INTERVAL_S = 0.004
 TELEMETRY_PERIOD_S = 0.008
 ADMITTANCE_HEARTBEAT_HZ = 50.0
 # 暂保留原通信阈值，等待双端实际间隔和停止距离联调后协调。
@@ -149,6 +190,8 @@ def j1_no_contact_config():
         "DIAGNOSTIC_AXIS": 1,
         "DIAGNOSTIC_MOTION_AXIS": 1,
         "DIAGNOSTIC_MOTION_PROFILE": "bidirectional_trapezoid",
+        # 无接触筛选轨迹的单侧幅度，单位 rad；保留已有 ±0.10 rad 候选，不随接触边界扩大。
+        # 该轨迹只描述已有候选，不作为当前 ±0.40 rad 接触范围的覆盖结论。
         "DIAGNOSTIC_MOTION_AMPLITUDE_RAD": .10,
         "DIAGNOSTIC_MOTION_MAX_QD_RAD_S": .03,
         "DIAGNOSTIC_MOTION_MAX_QDD_RAD_S2": .2,
@@ -168,15 +211,33 @@ def j1_no_contact_config():
 
 
 def j1_contact_config():
-    """显式选择实机三轮筛选后确认的 J1 单次手推候选，不改变软件默认保持。"""
+    """构造 J1 人工联调的实际参数，单次、手推和边界保持入口共用。
+
+    先继承无接触候选，再用本函数覆盖运行模式和接触命令约束。
+    命令边界直接取 SINGLE_AXIS_ACTUAL_MARGIN_RAD 的 80%，当前为 ±0.40 rad。
+    需要独立设定边界或修改 0.03 rad/s 命令速度时，应修改下面的字典；
+    只改文件顶部同名默认值会被这里覆盖，不能改变该入口的实际参数。
+    实际速度与位置守卫没有在此覆盖，继承 SINGLE_AXIS_*ACTUAL_* 两组默认值。
+    边界保持的到达检测、保持倒计时另见 admittance_contact_manual.py，不参与控制计算。
+    """
     values = j1_no_contact_config()
     values.update({
         "DIAGNOSTIC_MODE": "admittance",
         "DIAGNOSTIC_MOTION_PROFILE": "cosine",
+        # 整轮运行时长，单位 s；到时按原因 11 正常停止，人工阶段安排应留足撤力后的观察时间。
         "DIAGNOSTIC_DURATION_S": 60.,
-        "SINGLE_AXIS_MAX_OFFSET_RAD": .10,
+        # 正常让位边界，单位 rad：直接取本轮启用轴实际位置守卫的 80%，不另设比例变量。
+        # 当前 0.8 × 0.5 = 0.40，即 q_cmd 相对启动锚点 ±0.40 rad，约 ±22.92°。
+        # 每次构造候选重新计算；修改 SINGLE_AXIS_ACTUAL_MARGIN_RAD 后，边界自动跟随。
+        # 如需独立设定，把下面的表达式直接改成具体值（如 0.10），即可解除与守卫的联动。
+        # 到边界继续限位保持；actual_q 可有跟踪偏差，实际位置守卫和 0.005 rad 跟踪检查独立生效。
+        # 边界与守卫间的 20% 间隔不是允许额外推动的行程，也不是力保护。
+        "SINGLE_AXIS_MAX_OFFSET_RAD": 0.8 * values["SINGLE_AXIS_ACTUAL_MARGIN_RAD"],
+        # 本轮命令速度上限，单位 rad/s；actual_qd 仍按继承的 0.1 rad/s 实际守卫独立检查。
         "SINGLE_AXIS_MAX_QD_RAD_S": .03,
+        # 本轮命令加速度上限，单位 rad/s²；接近当前命令边界时仍按此值限制减速过程。
         "SINGLE_AXIS_MAX_QDD_RAD_S2": .2,
+        # 本轮六轴提交前跟踪误差上限，单位 rad；abs(q - actual_q) > 0.005 时停止，原因 7。
         "SINGLE_AXIS_TRACKING_RAD": .005,
     })
     return validate_run_config("fixed", "joint", config=values)
@@ -195,6 +256,21 @@ def actual_guard_limits(config):
         speeds[axis] = config[f"{prefix}_ACTUAL_MAX_QD_RAD_S"]
         margins[axis] = config[f"{prefix}_ACTUAL_MARGIN_RAD"]
     return speeds, margins
+
+
+def servo_interval_contract(config):
+    """记录本轮伺服间隔口径；旧日志保留超过设计周期即退出的历史约定。"""
+    version = config.get("SERVO_INTERVAL_POLICY_VERSION", 1)
+    if version not in (1, 2):
+        raise ValueError(f"不支持的伺服间隔约定版本：{version}")
+    return {
+        "version": version, "warning_s": config["SERVO_DT_S"],
+        "exit_s": config["SERVO_START_MAX_INTERVAL_S"] if version == 2 else config["SERVO_DT_S"],
+        "comparison_tolerance_s": config["TIMING_TOLERANCE_S"],
+        "counter_definition": "gap_count 为超过设计周期加计时容差的累计次数，不是 RTDE 丢包数",
+        "behavior": ("超过观测间隔累计告警，超过退出间隔停止；不补跑、不重置模型、不改变片段身份和模型预算"
+                     if version == 2 else "历史约定：任一伺服启动间隔超过设计周期加容差即退出"),
+    }
 
 
 def stop_speed_limit(config):
@@ -256,6 +332,9 @@ def validate_config(config=None):
         elif name == "ACTUAL_GUARD_VERSION":
             if type(value) is not int or value != 2:
                 raise ValueError("新运行仅支持第二版实际守卫，位置参数直接相对启动锚点")
+        elif name == "SERVO_INTERVAL_POLICY_VERSION":
+            if type(value) is not int or value != 2:
+                raise ValueError("新运行仅支持第二版伺服间隔观测和退出约定")
         elif name == "DIAGNOSTIC_MODE":
             if value not in ("fixed_joint_hold", "preset_joint_motion", "admittance"):
                 raise ValueError("DIAGNOSTIC_MODE 必须为 fixed_joint_hold、preset_joint_motion 或 admittance")
@@ -288,6 +367,8 @@ def validate_config(config=None):
 
     if values["SERVO_DT_S"] != 0.002 or values["MODEL_DT_S"] != 2 * values["SERVO_DT_S"]:
         raise ValueError("本阶段明确采用 2 ms 伺服、4 ms 模型与两帧片段")
+    if not values["SERVO_DT_S"] <= values["SERVO_START_MAX_INTERVAL_S"] <= 2 * values["SERVO_DT_S"]:
+        raise ValueError("本阶段伺服启动间隔退出上限必须在一个至两个设计周期之间")
     if values["DIAGNOSTIC_MOTION_AMPLITUDE_RAD"] > min(values["JOINT_MAX_OFFSET_RAD"]):
         raise ValueError("预设微动幅度不能超过关节偏移边界")
     if values["DIAGNOSTIC_MOTION_PROFILE"] == "bidirectional_trapezoid":

@@ -632,6 +632,7 @@ class ContactWindowSummary:
         self.load_count = 0
         self.load_sample_times = NumericSummary()
         self.offsets = [NumericSummary() for _ in range(6)]
+        self.offset_sums = [0.] * 6
         self.speeds = [NumericSummary() for _ in range(6)]
         self.currents = [NumericSummary() for _ in range(6)]
         self.command_offsets = [NumericSummary() for _ in range(6)]
@@ -643,6 +644,8 @@ class ContactWindowSummary:
         self.speed_exceedances = [0] * 6
         self.first_feedback = None
         self.last_feedback = None
+        self.first_robot_timestamp = self.last_robot_timestamp = None
+        self.robot_intervals = NumericSummary()
 
     def add(self, record, received, vectors, page_location, execution):
         """人工标记边界使用左闭右开区间，日志运行末包纳入最后尾窗。"""
@@ -656,6 +659,13 @@ class ContactWindowSummary:
         if self.first_received is None:
             self.first_received = received
         self.last_received = received
+        timestamp = numeric_value(robot["timestamp"])
+        if timestamp is not None:
+            if self.first_robot_timestamp is None:
+                self.first_robot_timestamp = timestamp
+            if self.last_robot_timestamp is not None:
+                self.robot_intervals.add(timestamp - self.last_robot_timestamp, location)
+            self.last_robot_timestamp = timestamp
         offsets, speeds = [], []
         for axis in range(6):
             position = numeric_value(robot["actual_q"][axis])
@@ -665,6 +675,8 @@ class ContactWindowSummary:
             offsets.append(offset)
             speeds.append(speed)
             self.offsets[axis].add(offset, location)
+            if offset is not None:
+                self.offset_sums[axis] += offset
             self.speeds[axis].add(None if speed is None else abs(speed), location)
             self.currents[axis].add(robot["actual_current"][axis], location)
             if self.criteria is not None:
@@ -721,11 +733,15 @@ class ContactWindowSummary:
             "已取得反馈的首末接收monotonic_s": [self.first_received, self.last_received],
             "已取得反馈的首末跨度_s": (None if self.first_received is None
                                        else self.last_received - self.first_received),
+            "机器人时间首末_s": [self.first_robot_timestamp, self.last_robot_timestamp],
+            "相邻原始反馈机器人时间间隔_s": self.robot_intervals.report(),
             "独立同页载荷样本数": self.load_count,
             "载荷机器人sample_time_s": self.load_sample_times.report(),
             "六轴同页载荷_Nm": {name: [item.report() for item in values]
                                for name, values in self.loads.items()},
             "各关节actual_q减锚点有符号范围_rad": [item.report() for item in self.offsets],
+            "各关节平均偏移_rad": [None if not item.count else total / item.count
+                                  for total, item in zip(self.offset_sums, self.offsets)],
             "各关节窗口内位置摆幅_rad": [None if not item.count else item.maximum - item.minimum
                                          for item in self.offsets],
             "各关节首末反馈位置变化_rad": (None if self.first_feedback is None else [
@@ -769,6 +785,7 @@ def contact_windows_report(run_dir, events, normal_segments, anchor, config,
     """提取施力和完全松手标记；仅在同一主机单调时钟上关联接收窗口。"""
     criteria = context["manual_return_criteria"] if "manual_return_criteria" in context else None
     observation = context.get("manual_release_observation")
+    hold_observation = context.get("manual_hold_observation")
     enabled_axes = ([index + 1 for index, enabled in enumerate(config["JOINT_AXES"]) if enabled]
                     if config["DIAGNOSTIC_MODE"] == "admittance" else [])
     criteria_contract = (return_criteria_contract(criteria, enabled_axes)
@@ -780,6 +797,7 @@ def contact_windows_report(run_dir, events, normal_segments, anchor, config,
         "回位约定解释": (criteria_contract["说明"] if criteria_contract is not None
                          else "未提供显式约定，不套用当前参数或历史容差。"),
         "撤力观察约定": observation,
+        "持续受载观察约定": hold_observation,
         "现场条件记录": (context["manual_contact_context"] if "manual_contact_context" in context
                        else {"状态": "本轮未记录独立现场条件；另查人工标记备注"}),
         "未配对标记": [], "配对窗口": [],
@@ -796,7 +814,7 @@ def contact_windows_report(run_dir, events, normal_segments, anchor, config,
     }
     markers = []
     for event in events:
-        if event["event"] in ("force_start", "released"):
+        if event["event"] in ("force_start", "hold_start", "released"):
             timestamp = numeric_value(event["event_monotonic_ns"])
             if timestamp is None:
                 result["未配对标记"].append({"标记": event, "原因": "未取得人工事件来源单调时间"})
@@ -815,6 +833,12 @@ def contact_windows_report(run_dir, events, normal_segments, anchor, config,
             pending = marker
             marker["baseline_begin"] = previous_release if baseline_known else marker["time"]
             marker["baseline_known"] = baseline_known
+            marker["holds"] = []
+        elif marker["event"]["event"] == "hold_start":
+            if pending is None:
+                result["未配对标记"].append({"标记": marker["event"], "原因": "保持受载标记前没有未配对的施力开始"})
+            else:
+                pending["holds"].append(marker)
         elif pending is None:
             result["未配对标记"].append({"标记": marker["event"], "原因": "前面没有未配对的施力开始标记"})
             previous_release = marker["time"]
@@ -882,6 +906,29 @@ def contact_windows_report(run_dir, events, normal_segments, anchor, config,
                              release["time"] > last_received),
                   "卸载段": (release["time"], end, include_end and release_in_run),
                   "卸载尾窗": (max(release["time"], end - tail_duration), end, include_end and release_in_run)}
+        if hold_observation is not None:
+            holds = start["holds"]
+            hold_in_run = (len(holds) == 1 and first_received <= holds[0]["time"] < last_received
+                           and start["time"] < holds[0]["time"] < release["time"])
+            hold_end = min(release["time"], last_received)
+            hold_duration = hold_end - holds[0]["time"] if hold_in_run else None
+            report["持续受载"] = {
+                "开始保持标记": [marker["event"] for marker in holds],
+                "状态": ("同一连续正常运行段内的保持区间，仅为人工标记证据" if hold_in_run
+                         else "保持标记缺失、重复或不在本段施力至松手区间，不能作为持续受载证据"),
+                "保持开始标记有效": hold_in_run,
+                "保持后完整松手标记有效": hold_in_run and release_in_run,
+                "中断前可用保持时长_s": hold_duration,
+                "保持时长要求_s": hold_observation["minimum_hold_s"],
+                "保持标记时长达到要求": (hold_duration >= hold_observation["minimum_hold_s"]
+                                       if hold_in_run and release_in_run else False),
+                "说明": "标记时长不证明实际持续受载或稳定通过；需同时查看载荷、漂移、摆幅、速度、记录缺口及现场确认。",
+            }
+            if hold_in_run:
+                include_hold_end = not release_in_run
+                bounds["保持受载段"] = (holds[0]["time"], hold_end, include_hold_end)
+                bounds["保持受载尾窗"] = (max(holds[0]["time"], hold_end - hold_observation["tail_duration_s"]),
+                                             hold_end, include_hold_end)
         summaries = {name: ContactWindowSummary(left, right, anchor, criteria_contract, include_right)
                      for name, (left, right, include_right) in bounds.items()}
         collected.append((report, summaries, start, release))
@@ -932,13 +979,132 @@ def contact_windows_report(run_dir, events, normal_segments, anchor, config,
         report["标记前后最近RTDE接收关联"] = {
             name: {"之前": marker["before"], "之后": marker["after"]}
             for name, marker in (("施力开始", start), ("完全松手", release))}
+        report["保持标记前后最近RTDE接收关联"] = [
+            {"之前": marker["before"], "之后": marker["after"]} for marker in start["holds"]]
         report.update({name: summary.report() for name, summary in summaries.items()})
         result["配对窗口"].append(report)
     return result
 
 
+def timed_push_windows_report(run_dir, events, normal_segments, anchor, context):
+    """自动引导窗口按程序提示划分，不能据此宣称现场已施力或完全松手。"""
+    observation = context.get("manual_timed_push_observation")
+    if observation is None:
+        return {"状态": "本轮未启用自动引导手推"}
+    result = {
+        "约定": observation, "自动阶段事件": events,
+        "现场确认": "需另查事后现场反馈，确认按提示施力，并在撤力提示后 5 秒内完全松手、此后持续无接触",
+        "解释": "所有边界是程序提示时刻，不是人工动作；不得改写为实际接触或松手标记。仅统计同一连续正常运行段。",
+    }
+    names = ("push_window_started", "release_cue", "observation_window_started")
+    grouped = {name: [event for event in events if event["event"] == name] for name in names}
+    if any(len(grouped[name]) != 1 for name in names):
+        return {**result, "状态": "自动阶段事件不完整或重复，不能形成完整计划窗口"}
+    start, release, observe = [grouped[name][0]["event_monotonic_ns"] / 1e9 for name in names]
+    segments = [segment for segment in normal_segments
+                if segment["start"] <= start < release < observe < segment["end"]]
+    if len(segments) != 1 or anchor is None:
+        return {**result, "状态": "阶段事件不属于同一连续正常运行段或缺少锚点，计划窗口不可用"}
+    segment = segments[0]
+    end = segment["end"]
+    bounds = {
+        "计划施力前基线": (max(segment["start"], start - observation["baseline_s"]), start, False),
+        "计划连续手推段": (start, release, False),
+        "撤力提示宽限段": (release, observe, False),
+        "计划无接触观察段": (observe, end, True),
+        "计划观察尾窗": (max(observe, end - observation["tail_duration_s"]), end, True),
+    }
+    boundary = observation.get("boundary_hold")
+    hold_start = None
+    if boundary is not None:
+        arrivals = [event for event in events if event["event"] == "boundary_hold_started"]
+        boundary_result = {"状态": "没有有效边界保持起点，不能评价边界保持", "到达提示事件": arrivals}
+        if len(arrivals) == 1:
+            stamp = arrivals[0]["event_monotonic_ns"] / 1e9
+            side = arrivals[0]["boundary_side"]
+            if start < stamp < release and side in (-1, 1):
+                hold_start = stamp
+                bounds.update({
+                    "计划接近边界段": (start, hold_start, False),
+                    "边界保持提示段": (hold_start, release, False),
+                    "边界保持提示尾窗": (max(hold_start, release - boundary["hold_tail_s"]), release, False),
+                })
+                boundary_result.update({
+                    "状态": "已取得边界保持提示窗口；实际接触仍须现场确认，停留和载荷分别统计",
+                    "边界方向": side, "保持提示跨度_s": release - hold_start,
+                    "实际反馈总包数": 0, "实际反馈在边界观测带内包数": 0,
+                    "实际反馈在边界观测带内最长连续已记录跨度_s": 0.,
+                    "独立采用命令页数": 0, "采用命令在边界观测带内页数": 0,
+                    "独立载荷样本数": 0, "有效力矩指向边界外样本数": 0,
+                    "说明": "位置、命令和载荷分别统计，不硬拼异步页。连续停留按机器人时间，遇到大于 1.5 个原始反馈周期的缺口中断；观测带不是新增运动容差或接触力保护。",
+                })
+        result["边界保持观测"] = boundary_result
+    boundary_run_start = previous_boundary_timestamp = None
+    summaries = {name: ContactWindowSummary(left, right, anchor, None, include_right)
+                 for name, (left, right, include_right) in bounds.items()}
+    load_sequences, execution_sequences = SequenceSummary(), SequenceSummary()
+    with (run_dir / "records.jsonl").open(encoding="utf-8") as stream:
+        for line in stream:
+            record = json.loads(line)
+            if record["kind"] != "rtde_state" or not normal_running_state(record["payload"]):
+                continue
+            payload = record["payload"]
+            received = payload["host_monotonic_s"]
+            control = payload["control"]
+            vectors = page_location = execution = None
+            if payload["derived_valid"] and control["page_type"] == "load":
+                page = control["load"]
+                if page["phase"] == 2 and load_sequences.add(page["model_sample_seq"]):
+                    vectors = load_vectors(page, control["telemetry_layout"])
+                    page_location = {**record_location(record, payload["raw"]["timestamp"]),
+                                     "来源接收monotonic_s": received, "page_seq": page["page_seq"],
+                                     "model_sample_seq": page["model_sample_seq"], "sample_time_s": page["sample_time_s"]}
+            elif payload["derived_valid"] and control["page_type"] == "execution":
+                page = control["continuous"]["execution"]
+                if page["phase"] == 2 and execution_sequences.add(page["page_seq"]):
+                    execution = page
+            for summary in summaries.values():
+                summary.add(record, received, vectors, page_location, execution)
+            if hold_start is not None and hold_start <= received < release:
+                robot = payload["raw"]
+                stamp = robot["timestamp"]
+                limit = side * boundary["command_limit_rad"]
+                actual_offset = robot["actual_q"][0] - anchor[0]
+                boundary_result["实际反馈总包数"] += 1
+                if abs(actual_offset - limit) <= boundary["actual_band_rad"]:
+                    boundary_result["实际反馈在边界观测带内包数"] += 1
+                    if (boundary_run_start is None or previous_boundary_timestamp is None
+                            or not 0 < stamp - previous_boundary_timestamp <= 1.5 * boundary["raw_feedback_period_s"]):
+                        boundary_run_start = stamp
+                    boundary_result["实际反馈在边界观测带内最长连续已记录跨度_s"] = max(
+                        boundary_result["实际反馈在边界观测带内最长连续已记录跨度_s"], stamp - boundary_run_start)
+                else:
+                    boundary_run_start = None
+                previous_boundary_timestamp = stamp
+                if execution is not None:
+                    boundary_result["独立采用命令页数"] += 1
+                    command_offset = execution["q_cmd"][0] - anchor[0]
+                    boundary_result["采用命令在边界观测带内页数"] += int(
+                        abs(command_offset - limit) <= boundary["command_band_rad"])
+                if vectors is not None:
+                    boundary_result["独立载荷样本数"] += 1
+                    boundary_result["有效力矩指向边界外样本数"] += int(side * vectors["drive"][0] > 0.)
+    result.update({
+        "状态": "已取得完整计划窗口；真实动作及稳定性仍需现场确认与数据评价",
+        "采用连续正常运行区间": normal_segment_report(segment),
+        "手推提示窗口时长_s": release - start,
+        "撤力提示至计划观察间隔_s": observe - release,
+        "计划观察有效时长_s": end - observe,
+        "计划观察时长达到要求": end - observe >= observation["minimum_observation_s"],
+        "窗口": {name: summary.report() for name, summary in summaries.items()},
+    })
+    return result
+
+
 def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
     """读取第 3/4/5 版遥测冻结页、原始 RTDE 和双端时序，输出描述性证据。"""
+    from UR_Utils.admittance_config import servo_interval_contract
+
     if tail_seconds <= 0:
         raise ValueError("残差尾窗长度必须大于零")
     context = metadata["context"]
@@ -1106,6 +1272,7 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
     observed_servo_gaps = NumericSummary()
     last_execution = last_timing = last_lifecycle = None
     operator_events, stop_events, gap_events, logging_events = [], [], [], []
+    protocol_events = []
     scaling_events = []
     observed_heartbeat_sends = NumericSummary()
     previous_heartbeat_send = None
@@ -1137,6 +1304,8 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
                 previous_heartbeat_send = sent
             elif kind == "operator_event":
                 operator_events.append({"记录序号": record["seq"], **payload})
+            elif kind == "manual_protocol_event":
+                protocol_events.append({"记录序号": record["seq"], **payload})
             elif kind == "log_gap":
                 gap_events.append({"记录序号": record["seq"], **payload})
             elif kind == "logging_enabled":
@@ -1347,6 +1516,7 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
             "各页发布序号": {name: item.report() for name, item in page_sequences.items()},
             "观测生成提交采用身份": {name: item.report() for name, item in identities.items()},
             "执行器累计帧缺口": observed_servo_gaps.report(maximum_only=True),
+            "伺服启动间隔约定": servo_interval_contract(config),
             "最后执行页": last_execution, "最后计时页": last_timing,
             "限幅原因页计数": dict(limit_reasons),
             "解释": "不同页独立冻结；这里只统计收到的身份。页序号或模型序号缺失不代表生产者漏算；不同冻结页的身份倒退也不等于执行器倒退。q_cmd/qd_cmd仅取当前执行页。",
@@ -1408,6 +1578,8 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
         "人工加载卸载窗口": contact_windows_report(
             run_dir, operator_events, normal_segments,
             anchor, config, context, tail_seconds),
+        "自动引导手推窗口": timed_push_windows_report(
+            run_dir, protocol_events, normal_segments, anchor, context),
         "速度缩放握手和变化": scaling_events,
         "最后有效生命周期状态": last_lifecycle,
         "日志缺口及停记": {"缺口事件": gap_events, "开关事件": logging_events,
@@ -1420,6 +1592,7 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
 
 def analyze_j1_no_contact(run_dir):
     """严格核对首阶段单轮证据；抽样载荷页永远不能补充逐周期统计的缺失。"""
+    from UR_Utils.admittance_config import servo_interval_contract
     from UR_Utils.admittance_trajectory import profile_parameters
 
     run_dir = Path(run_dir).resolve()
@@ -1464,6 +1637,12 @@ def analyze_j1_no_contact(run_dir):
             "DIAGNOSTIC_MOTION_NON_MOTION_ACTUAL_MAX_QD_RAD_S": .1,
             "DIAGNOSTIC_MOTION_NON_MOTION_ACTUAL_MARGIN_RAD": .5,
         })
+    if "SERVO_INTERVAL_POLICY_VERSION" in config:
+        expected.update({"SERVO_INTERVAL_POLICY_VERSION": 2, "SERVO_START_MAX_INTERVAL_S": .004})
+    servo_contract = servo_interval_contract(config)
+    if (servo_contract["version"] == 2
+            and controller.get("servo_interval_contract") != servo_contract):
+        error("本轮伺服间隔约定与生效配置不一致或缺失")
     mismatches = {key: {"期望": value, "实际": config.get(key)}
                   for key, value in expected.items() if config.get(key) != value}
     for key, value in (("JOINT_DEADBAND_NM", 10.), ("JOINT_MASS", 6.),
@@ -1515,6 +1694,8 @@ def analyze_j1_no_contact(run_dir):
     stats_pages, final_stats = 0, None
     previous_stats = None
     statistics_values_by_page = {}
+    servo_warning_counts = NumericSummary()
+    servo_max_intervals = NumericSummary()
     saw_nonzero = False
     anchor = None
     bias = None
@@ -1673,6 +1854,21 @@ def analyze_j1_no_contact(run_dir):
             if type(page_seq) is not int or page_seq <= 0:
                 error(f"{page_type} 页缺少正整数页身份")
                 continue
+            if page_type in ("execution", "timing"):
+                warning_count = page.get("gap_count")
+                maximum_interval = page.get("servoj_max_interval_s")
+                if type(warning_count) is not int or warning_count < 0 or not finite(maximum_interval):
+                    error("执行或计时页缺少有效的伺服间隔累计观测")
+                else:
+                    servo_warning_counts.add(warning_count)
+                    servo_max_intervals.add(maximum_interval)
+                    if maximum_interval > servo_contract["exit_s"] + servo_contract["comparison_tolerance_s"]:
+                        fail("执行器记录到超过本轮退出上限的伺服启动间隔")
+                    if servo_contract["version"] == 1 and warning_count > 0:
+                        fail("执行器记录到伺服帧缺口")
+                    if (warning_count == 0 and maximum_interval
+                            > servo_contract["warning_s"] + servo_contract["comparison_tolerance_s"]):
+                        error("伺服间隔最大值与观测超期累计计数矛盾")
             if page_type == "statistics":
                 # 冻结页重复传输允许到达时间不同，统计载荷本身必须不变。
                 values = {key: value for key, value in page.items()
@@ -1758,8 +1954,6 @@ def analyze_j1_no_contact(run_dir):
                         error("有效运行中的偏置样本数改变")
                     bias_ready_count = count
                     bias_standard_deviation = page.get("bias_std_nm")
-                if page.get("gap_count", 0) > 0:
-                    fail("执行器记录到伺服帧缺口")
             elif page_type == "load" and page.get("phase") == 2:
                 if page.get("load_source") != "joint_torque":
                     error("本轮载荷来源不是已选关节力矩通道")
@@ -1770,8 +1964,6 @@ def analyze_j1_no_contact(run_dir):
                 else:
                     bias = page["bias_nm"]
             elif page_type == "execution" and page.get("phase") == 2:
-                if page.get("gap_count", 0) > 0:
-                    fail("执行器记录到伺服帧缺口")
                 limit_reasons[page.get("limit_reason")] += 1
                 if anchor is None or not vector(page.get("q_cmd")) or not vector(page.get("qd_cmd")):
                     error("执行页缺少有限命令或本轮锚点")
@@ -1897,6 +2089,12 @@ def analyze_j1_no_contact(run_dir):
         "实际生效参数": config, "首候选参数差异": mismatches, "离散轨迹": plan,
         "主机发送检查": {key: send_report[key] for key in (
             "单包发送观测超期", "单包发送失败", "发送计时与期限约定", "已记录心跳发送间隔_s")},
+        "机器人伺服间隔检查": {
+            "本轮约定": servo_contract,
+            "观测超期累计次数": servo_warning_counts.report(maximum_only=True),
+            "最大启动间隔_s": servo_max_intervals.report(maximum_only=True),
+            "说明": "旧日志仍按原退出上限解释；新版观测超期不单独否决，超过本轮退出上限、异常退出及证据不完整仍不通过。",
+        },
         "起始姿态_rad": anchor,
         "本轮原始机器人配置": robot_configuration,
         "独立偏置": {"观测到本轮采样": bias_sampling_seen, "样本数": bias_ready_count,

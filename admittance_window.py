@@ -11,7 +11,7 @@ from ui_admittance_window import Ui_AdmittanceWindow
 
 
 OPERATOR_EVENTS = {
-    "force_start": "施力开始", "released": "完全松手",
+    "force_start": "施力开始", "hold_start": "开始保持受载", "released": "完全松手",
     "buzzing": "听到嗡鸣", "stop_requested": "请求停止",
 }
 
@@ -81,7 +81,7 @@ class AdmittanceWindow(QtWidgets.QMainWindow):
         self.ui.pushButton_StopAdmittance.clicked.connect(self.stop_requested.emit)
         self.ui.pushButton_SyncMaster.clicked.connect(self.sync_requested.emit)
         self.ui.checkBox_DebugLogging.toggled.connect(self._debug_logging_toggled)
-        for name, event in (("ForceStart", "force_start"), ("Released", "released"),
+        for name, event in (("ForceStart", "force_start"), ("HoldStart", "hold_start"), ("Released", "released"),
                             ("Buzzing", "buzzing"), ("Stop", "stop_requested")):
             getattr(self.ui, "pushButton_Event" + name).clicked.connect(
                 lambda _, key=event: self.operator_event_requested.emit(
@@ -429,7 +429,7 @@ class AdmittanceWindow(QtWidgets.QMainWindow):
         self.ui.label_DebugLogStatus.setToolTip(text)
         events_enabled = (self._context["occupied"] and self._context["run_id"] is not None
                           and status["enabled"] and status["active"] and status["error"] is None)
-        for name in ("ForceStart", "Released", "Buzzing", "Stop"):
+        for name in ("ForceStart", "HoldStart", "Released", "Buzzing", "Stop"):
             getattr(self.ui, "pushButton_Event" + name).setEnabled(events_enabled)
 
     def operator_event_result(self, text):

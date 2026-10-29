@@ -713,6 +713,9 @@ def ur_admittance_control():
       adm_servo_max = adm_max(adm_servo_max, adm_servo_interval)
       if adm_servo_interval > adm_h + ${TIMING_TOLERANCE_S}:
         adm_gaps = adm_gaps + 1
+      end
+      # 观测超期保留累计值；仅独立退出上限触发停止，帧号仍只前进一次。
+      if adm_servo_interval > ${SERVO_START_MAX_INTERVAL_S} + ${TIMING_TOLERANCE_S}:
         adm_fail(16)
       end
     end

@@ -30,7 +30,7 @@ EXIT_REASONS = {
     7: "关节跟踪误差过大", 8: "超出运动范围", 9: "关节目标不连续",
     10: "偏置采样期间机器人移动", 11: "诊断定时结束", 12: "诊断周期超预算",
     13: "启动锚点确认超时", 14: "目标片段耗尽或模型停止推进",
-    15: "模型计算超预算", 16: "连续伺服出现帧缺口",
+    15: "模型计算超预算", 16: "伺服启动间隔超限或基础步长不符",
     17: "速度缩放发生变化", 18: "目标交接身份无效",
     19: "受限运动实际速度超限", 20: "受限运动实际位置超出包络",
     21: "载荷或模型统计存在非有限或无效数值",
@@ -198,6 +198,7 @@ class URAdmittanceController:
             "max_qd_rad_s": actual_speeds, "margin_rad": actual_margins,
             "scope": "六轴实际反馈守卫，启动、偏置及运行阶段均生效；位置参数为相对启动锚点的正负界限，不叠加命令行程",
         }
+        controller_context["servo_interval_contract"] = admittance_config.servo_interval_contract(self.parameters)
         if self._log_sink is not None:
             # 固定上下文在关闭日志时也保留，供中途首次开启准确恢复本轮配置及脚本。
             self._log_sink.update_context({
