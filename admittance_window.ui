@@ -109,6 +109,65 @@
      </layout>
     </item>
     <item>
+     <layout class="QHBoxLayout" name="horizontalLayout_OperatorEvents" stretch="0,0,0,0,0,1">
+      <item>
+       <widget class="QLabel" name="label_OperatorEventTitle">
+        <property name="text">
+         <string>人工事件</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="pushButton_EventForceStart">
+        <property name="text">
+         <string>施力开始</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="pushButton_EventReleased">
+        <property name="text">
+         <string>完全松手</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="pushButton_EventBuzzing">
+        <property name="text">
+         <string>听到嗡鸣</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="pushButton_EventStop">
+        <property name="text">
+         <string>请求停止</string>
+        </property>
+        <property name="toolTip">
+         <string>记录人工停止事件，并使用现有导纳停止入口。</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLineEdit" name="lineEdit_OperatorEventNote">
+        <property name="placeholderText">
+         <string>位置与方向备注，例如：腕部，基座 +x 方向；允许空白</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <widget class="QLabel" name="label_OperatorEventStatus">
+      <property name="text">
+       <string>本轮运行且日志开启时可记录；请补充接触位置与施力方向。事件仅关联最近收到的机器人样本，不代表同周期。</string>
+      </property>
+      <property name="wordWrap">
+       <bool>true</bool>
+      </property>
+     </widget>
+    </item>
+    <item>
      <widget class="QScrollArea" name="scrollArea_MainContent">
       <property name="frameShape">
        <enum>QFrame::NoFrame</enum>
@@ -3295,65 +3354,6 @@
            </widget>
           </item>
          </layout>
-        </item>
-        <item>
-         <layout class="QHBoxLayout" name="horizontalLayout_OperatorEvents" stretch="0,0,0,0,0,1">
-          <item>
-           <widget class="QLabel" name="label_OperatorEventTitle">
-            <property name="text">
-             <string>人工事件</string>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QPushButton" name="pushButton_EventForceStart">
-            <property name="text">
-             <string>施力开始</string>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QPushButton" name="pushButton_EventReleased">
-            <property name="text">
-             <string>完全松手</string>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QPushButton" name="pushButton_EventBuzzing">
-            <property name="text">
-             <string>听到嗡鸣</string>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QPushButton" name="pushButton_EventStop">
-            <property name="text">
-             <string>请求停止</string>
-            </property>
-            <property name="toolTip">
-             <string>记录人工停止事件，并使用现有导纳停止入口。</string>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QLineEdit" name="lineEdit_OperatorEventNote">
-            <property name="placeholderText">
-             <string>位置与方向备注，例如：腕部，基座 +x 方向；允许空白</string>
-            </property>
-           </widget>
-          </item>
-         </layout>
-        </item>
-        <item>
-         <widget class="QLabel" name="label_OperatorEventStatus">
-          <property name="text">
-           <string>本轮运行且日志开启时可记录；请补充接触位置与施力方向。事件仅关联最近收到的机器人样本，不代表同周期。</string>
-          </property>
-          <property name="wordWrap">
-           <bool>true</bool>
-          </property>
-         </widget>
         </item>
         <item>
          <widget class="QPlainTextEdit" name="plainTextEdit_AdmittanceLog">

@@ -193,9 +193,10 @@ class URAdmittanceController:
         }
         actual_speeds, actual_margins = admittance_config.actual_guard_limits(self.parameters)
         controller_context["actual_guard_limits"] = {
+            "version": self.parameters["ACTUAL_GUARD_VERSION"],
             "axis_order": ["J1", "J2", "J3", "J4", "J5", "J6"],
             "max_qd_rad_s": actual_speeds, "margin_rad": actual_margins,
-            "scope": "六轴实际反馈守卫，启动、偏置及运行阶段均生效；裕量加在各轴命令范围两侧",
+            "scope": "六轴实际反馈守卫，启动、偏置及运行阶段均生效；位置参数为相对启动锚点的正负界限，不叠加命令行程",
         }
         if self._log_sink is not None:
             # 固定上下文在关闭日志时也保留，供中途首次开启准确恢复本轮配置及脚本。

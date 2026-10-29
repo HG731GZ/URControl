@@ -517,12 +517,15 @@ class AdmittanceMonitor:
             prefix = "DIAGNOSTIC_MOTION" if preset_motion else "SINGLE_AXIS"
             extent = cfg["DIAGNOSTIC_MOTION_AMPLITUDE_RAD"] if preset_motion else cfg["SINGLE_AXIS_MAX_OFFSET_RAD"]
             symmetric = not preset_motion or cfg["DIAGNOSTIC_MOTION_PROFILE"] == "bidirectional_trapezoid"
-            envelopes = [[-margins[axis] - (extent if symmetric and axis in moving_axes else 0.),
-                          margins[axis] + (extent if axis in moving_axes else 0.)] for axis in range(6)]
+            anchored_guard = cfg.get("ACTUAL_GUARD_VERSION") == 2
+            envelopes = ([[-margin, margin] for margin in margins] if anchored_guard else
+                         [[-margins[axis] - (extent if symmetric and axis in moving_axes else 0.),
+                           margins[axis] + (extent if axis in moving_axes else 0.)] for axis in range(6)])
             rows["admittance_rows"].extend([
                 ["允许运动轴", ", ".join(f"J{axis + 1}" for axis in moving_axes) or "无（固定保持）", "其余轴命令保持各自固定锚点"],
                 ["各轴实际速度守卫 J1–J6", _text(speeds), "rad/s；运动轴与非运动轴独立，不是命令速度"],
-                ["各轴实际位置裕量 J1–J6", _text(margins), "rad；独立于命令与实际的跟踪偏差"],
+                ["各轴实际锚点偏移上限 J1–J6" if anchored_guard else "各轴实际轨迹外裕量 J1–J6",
+                 _text(margins), "rad；独立于命令与实际的跟踪偏差"],
                 ["各轴实际位置包络 J1–J6", "; ".join(f"J{axis + 1}: [{_text(bounds[0])}, {_text(bounds[1])}]" for axis, bounds in enumerate(envelopes)), "rad；相对本轮固定锚点"],
                 ["各轴命令跟踪阈值", _text(cfg["COMMAND_MAX_TRACKING_ERROR_RAD"] if hold_diagnostic else cfg[prefix + "_TRACKING_RAD"]), "rad；六轴逐帧检查，异步展示差不作该守卫判定"],
             ])

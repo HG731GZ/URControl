@@ -29,11 +29,12 @@ DIAGNOSTIC_MOTION_TAIL_HOLD_S = 10.0
 DIAGNOSTIC_MOTION_MAX_QD_RAD_S = 0.003
 DIAGNOSTIC_MOTION_MAX_QDD_RAD_S2 = 0.02
 DIAGNOSTIC_MOTION_TRACKING_RAD = 0.005
-# 微动实际反馈独立约束：运动轴允许轨迹两侧各一段裕量，其余轴仅允许锚点两侧裕量。
-DIAGNOSTIC_MOTION_ACTUAL_MAX_QD_RAD_S = 0.003
-DIAGNOSTIC_MOTION_ACTUAL_MARGIN_RAD = 0.001
-DIAGNOSTIC_MOTION_NON_MOTION_ACTUAL_MAX_QD_RAD_S = 0.003
-DIAGNOSTIC_MOTION_NON_MOTION_ACTUAL_MARGIN_RAD = 0.001
+# 第二版实际守卫：位置参数表示启动锚点两侧的界限，不再叠加命令行程。
+ACTUAL_GUARD_VERSION = 2
+DIAGNOSTIC_MOTION_ACTUAL_MAX_QD_RAD_S = 0.1
+DIAGNOSTIC_MOTION_ACTUAL_MARGIN_RAD = 0.5
+DIAGNOSTIC_MOTION_NON_MOTION_ACTUAL_MAX_QD_RAD_S = 0.1
+DIAGNOSTIC_MOTION_NON_MOTION_ACTUAL_MARGIN_RAD = 0.5
 # 微动停止确认须低于运行速度量级，不沿用普通流程的 0.01 rad/s 静止阈值。
 DIAGNOSTIC_MOTION_STOP_MAX_QD_RAD_S = 0.0001
 # 第六步仅开放 J1 或 J3 的单轴接触联调，使用独立的小范围约束。
@@ -41,10 +42,10 @@ SINGLE_AXIS_MAX_OFFSET_RAD = 0.004
 SINGLE_AXIS_MAX_QD_RAD_S = 0.0015
 SINGLE_AXIS_MAX_QDD_RAD_S2 = 0.02
 SINGLE_AXIS_TRACKING_RAD = 0.005
-SINGLE_AXIS_ACTUAL_MAX_QD_RAD_S = 0.003
-SINGLE_AXIS_ACTUAL_MARGIN_RAD = 0.001
-SINGLE_AXIS_NON_MOTION_ACTUAL_MAX_QD_RAD_S = 0.003
-SINGLE_AXIS_NON_MOTION_ACTUAL_MARGIN_RAD = 0.001
+SINGLE_AXIS_ACTUAL_MAX_QD_RAD_S = 0.1
+SINGLE_AXIS_ACTUAL_MARGIN_RAD = 0.5
+SINGLE_AXIS_NON_MOTION_ACTUAL_MAX_QD_RAD_S = 0.1
+SINGLE_AXIS_NON_MOTION_ACTUAL_MARGIN_RAD = 0.5
 SINGLE_AXIS_STOP_MAX_QD_RAD_S = 0.0001
 DIAGNOSTIC_STATE_HZ = 500.0
 DIAGNOSTIC_SETTLE_S = 1.0
@@ -141,7 +142,7 @@ def snapshot():
 
 
 def j1_no_contact_config():
-    """显式选择讨论稿中的 J1 无接触筛选候选；不改变默认或接触模式参数。"""
+    """显式选择 J1 无接触轨迹和载荷候选，实际守卫继承当前统一参数。"""
     values = snapshot()
     values.update({
         "DIAGNOSTIC_MODE": "preset_joint_motion",
@@ -152,10 +153,6 @@ def j1_no_contact_config():
         "DIAGNOSTIC_MOTION_MAX_QD_RAD_S": .03,
         "DIAGNOSTIC_MOTION_MAX_QDD_RAD_S2": .2,
         "DIAGNOSTIC_MOTION_TRACKING_RAD": .005,
-        "DIAGNOSTIC_MOTION_ACTUAL_MAX_QD_RAD_S": .06,
-        "DIAGNOSTIC_MOTION_ACTUAL_MARGIN_RAD": .001,
-        "DIAGNOSTIC_MOTION_NON_MOTION_ACTUAL_MAX_QD_RAD_S": .003,
-        "DIAGNOSTIC_MOTION_NON_MOTION_ACTUAL_MARGIN_RAD": .001,
         "DIAGNOSTIC_MOTION_NODE_HOLD_S": 2.,
         "DIAGNOSTIC_MOTION_TAIL_HOLD_S": 10.,
         "JOINT_LOAD_SOURCE": "joint_torque",
@@ -170,8 +167,23 @@ def j1_no_contact_config():
     return validate_run_config("fixed", "joint", config=values)
 
 
+def j1_contact_config():
+    """显式选择实机三轮筛选后确认的 J1 单次手推候选，不改变软件默认保持。"""
+    values = j1_no_contact_config()
+    values.update({
+        "DIAGNOSTIC_MODE": "admittance",
+        "DIAGNOSTIC_MOTION_PROFILE": "cosine",
+        "DIAGNOSTIC_DURATION_S": 60.,
+        "SINGLE_AXIS_MAX_OFFSET_RAD": .10,
+        "SINGLE_AXIS_MAX_QD_RAD_S": .03,
+        "SINGLE_AXIS_MAX_QDD_RAD_S2": .2,
+        "SINGLE_AXIS_TRACKING_RAD": .005,
+    })
+    return validate_run_config("fixed", "joint", config=values)
+
+
 def actual_guard_limits(config):
-    """返回与脚本一致的六轴实际速度和位置裕量；保持模式没有运动轴。"""
+    """返回六轴实际速度和位置参数；第二版位置参数直接相对锚点，保持模式没有运动轴。"""
     preset = config["DIAGNOSTIC_MODE"] == "preset_joint_motion"
     prefix = "DIAGNOSTIC_MOTION" if preset else "SINGLE_AXIS"
     speeds = [config[f"{prefix}_NON_MOTION_ACTUAL_MAX_QD_RAD_S"]] * 6
@@ -241,6 +253,9 @@ def validate_config(config=None):
         if name in ("DIAGNOSTIC_AXIS", "DIAGNOSTIC_MOTION_AXIS"):
             if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 6:
                 raise ValueError(f"{name} 必须为 1 至 6；运行类型由 DIAGNOSTIC_MODE 决定")
+        elif name == "ACTUAL_GUARD_VERSION":
+            if type(value) is not int or value != 2:
+                raise ValueError("新运行仅支持第二版实际守卫，位置参数直接相对启动锚点")
         elif name == "DIAGNOSTIC_MODE":
             if value not in ("fixed_joint_hold", "preset_joint_motion", "admittance"):
                 raise ValueError("DIAGNOSTIC_MODE 必须为 fixed_joint_hold、preset_joint_motion 或 admittance")

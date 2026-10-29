@@ -768,6 +768,7 @@ def contact_windows_report(run_dir, events, normal_segments, anchor, config,
                            context, tail_seconds):
     """提取施力和完全松手标记；仅在同一主机单调时钟上关联接收窗口。"""
     criteria = context["manual_return_criteria"] if "manual_return_criteria" in context else None
+    observation = context.get("manual_release_observation")
     enabled_axes = ([index + 1 for index, enabled in enumerate(config["JOINT_AXES"]) if enabled]
                     if config["DIAGNOSTIC_MODE"] == "admittance" else [])
     criteria_contract = (return_criteria_contract(criteria, enabled_axes)
@@ -778,6 +779,7 @@ def contact_windows_report(run_dir, events, normal_segments, anchor, config,
         "回位容差约定": criteria if criteria is not None else {"状态": "未明确提供，不判定回位通过"},
         "回位约定解释": (criteria_contract["说明"] if criteria_contract is not None
                          else "未提供显式约定，不套用当前参数或历史容差。"),
+        "撤力观察约定": observation,
         "现场条件记录": (context["manual_contact_context"] if "manual_contact_context" in context
                        else {"状态": "本轮未记录独立现场条件；另查人工标记备注"}),
         "未配对标记": [], "配对窗口": [],
@@ -830,6 +832,10 @@ def contact_windows_report(run_dir, events, normal_segments, anchor, config,
     result["状态"] = "已取得人工标记配对；施力、完全卸载及回位仍需现场确认"
     release_minimum = 5.0 if criteria is None else criteria["minimum_release_s"]
     tail_duration = tail_seconds if criteria is None else criteria["tail_duration_s"]
+    if observation is not None:
+        # 观察时长与可接受稳定偏移分别约定，不能为了检查 20 秒尾段而虚构回位容差。
+        release_minimum = observation["minimum_release_s"]
+        tail_duration = observation["tail_duration_s"]
     collected = []
     for start, release in pairs:
         segments_at_start = [segment for segment in normal_segments
@@ -986,7 +992,28 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
     signed_actual_offsets = [NumericSummary() for _ in range(6)]
     same_packet_tracking = [NumericSummary() for _ in range(6)]
     actual_motion_limits = None
-    if (mode == "preset_joint_motion"
+    if config.get("ACTUAL_GUARD_VERSION") == 2:
+        from UR_Utils.admittance_config import actual_guard_limits
+
+        speeds, margins = actual_guard_limits(config)
+        actual_motion_limits = {
+            "模式": mode, "实际守卫版本": 2,
+            "约束来源": "本轮参数显式声明第二版守卫，位置界限直接相对启动锚点",
+            "实际速度上限_rad_s": max(speeds),
+            "各轴实际速度上限_rad_s": speeds,
+            "各轴相对锚点实际偏移上限_rad": margins,
+            "各轴相对锚点实际位置包络_rad": [[-margin, margin] for margin in margins],
+        }
+        if mode == "admittance":
+            actual_motion_limits.update({
+                "允许运动轴": motion_axis + 1,
+                "命令偏移上限_rad": config["SINGLE_AXIS_MAX_OFFSET_RAD"],
+                "命令速度上限_rad_s": config["SINGLE_AXIS_MAX_QD_RAD_S"],
+                "命令加速度上限_rad_s2": config["SINGLE_AXIS_MAX_QDD_RAD_S2"],
+                "跟踪偏差上限_rad": config["SINGLE_AXIS_TRACKING_RAD"],
+                "停止确认速度上限_rad_s": config["SINGLE_AXIS_STOP_MAX_QD_RAD_S"],
+            })
+    elif (mode == "preset_joint_motion"
             and "DIAGNOSTIC_MOTION_ACTUAL_MAX_QD_RAD_S" in config
             and "DIAGNOSTIC_MOTION_ACTUAL_MARGIN_RAD" in config):
         margin = config["DIAGNOSTIC_MOTION_ACTUAL_MARGIN_RAD"]
@@ -1428,6 +1455,15 @@ def analyze_j1_no_contact(run_dir):
         "JOINT_LOAD_SOURCE": "joint_torque", "JOINT_AXES": [1, 0, 0, 0, 0, 0],
         "JOINT_TARGET_TORQUE_NM": [0.] * 6,
     }
+    # 历史筛选保留原候选口径；新版守卫单独核对，三轮汇总仍要求完整配置一致。
+    if "ACTUAL_GUARD_VERSION" in config:
+        expected.update({
+            "ACTUAL_GUARD_VERSION": 2,
+            "DIAGNOSTIC_MOTION_ACTUAL_MAX_QD_RAD_S": .1,
+            "DIAGNOSTIC_MOTION_ACTUAL_MARGIN_RAD": .5,
+            "DIAGNOSTIC_MOTION_NON_MOTION_ACTUAL_MAX_QD_RAD_S": .1,
+            "DIAGNOSTIC_MOTION_NON_MOTION_ACTUAL_MARGIN_RAD": .5,
+        })
     mismatches = {key: {"期望": value, "实际": config.get(key)}
                   for key, value in expected.items() if config.get(key) != value}
     for key, value in (("JOINT_DEADBAND_NM", 10.), ("JOINT_MASS", 6.),
@@ -1505,7 +1541,8 @@ def analyze_j1_no_contact(run_dir):
         config.get("DIAGNOSTIC_MOTION_NON_MOTION_ACTUAL_MAX_QD_RAD_S")] * 5
     margins = [config.get("DIAGNOSTIC_MOTION_ACTUAL_MARGIN_RAD")] + [
         config.get("DIAGNOSTIC_MOTION_NON_MOTION_ACTUAL_MARGIN_RAD")] * 5
-    extents = [None if not finite(margin) else margin + (.1 if axis == 0 else 0.)
+    extents = [None if not finite(margin) else margin + (
+                   .1 if axis == 0 and config.get("ACTUAL_GUARD_VERSION") != 2 else 0.)
                for axis, margin in enumerate(margins)]
     limit_reasons = Counter()
     exit_reasons = Counter()

@@ -366,7 +366,7 @@ def ur_admittance_control():
           local des0 = desired0[k]
           local des1 = desired1[k]
           if adm_mode == 0 and adm_axes[k] == 0:
-            # 非运动轴的最终命令严格锁定锚点，实际反馈仍检查独立的小包络。
+            # 非运动轴的最终命令严格锁定锚点，实际反馈仍检查独立的位置守卫。
             lower = adm_q_anchor[k]
             upper = lower
           end
@@ -628,20 +628,13 @@ def ur_admittance_control():
     elif adm_mode == 2:
       adm_tracking[k] = ${DIAGNOSTIC_MOTION_TRACKING_RAD}
     end
-    # 锚点确定后一次生成绝对包络；实际反馈边界覆盖启动、偏置和运行阶段。
+    # 第二版位置守卫直接相对启动锚点，不叠加命令行程；覆盖启动、偏置和运行阶段。
     adm_motion_actual_lower[k] = adm_q_anchor[k] - adm_actual_margin[k]
     adm_motion_actual_upper[k] = adm_q_anchor[k] + adm_actual_margin[k]
-    if adm_mode == 0 and adm_axes[k] == 1:
-      adm_motion_actual_lower[k] = adm_motion_actual_lower[k] - ${SINGLE_AXIS_MAX_OFFSET_RAD}
-      adm_motion_actual_upper[k] = adm_motion_actual_upper[k] + ${SINGLE_AXIS_MAX_OFFSET_RAD}
-    elif adm_mode == 2 and k == ${DIAGNOSTIC_MOTION_AXIS} - 1:
-      adm_motion_actual_upper[k] = adm_motion_actual_upper[k] + ${DIAGNOSTIC_MOTION_AMPLITUDE_RAD}
-      if adm_profile == 1:
-        adm_motion_actual_lower[k] = adm_motion_actual_lower[k] - ${DIAGNOSTIC_MOTION_AMPLITUDE_RAD}
-        # 新筛选须能覆盖整段正负行程，不能把绝对关节范围裁掉的一段仍标作轨迹完成。
-        if adm_q_anchor[k] - ${DIAGNOSTIC_MOTION_AMPLITUDE_RAD} < -adm_q_limit[k] or adm_q_anchor[k] + ${DIAGNOSTIC_MOTION_AMPLITUDE_RAD} > adm_q_limit[k]:
-          adm_fail(8)
-        end
+    if adm_mode == 2 and k == ${DIAGNOSTIC_MOTION_AXIS} - 1 and adm_profile == 1:
+      # 新筛选须能覆盖整段正负行程，不能把绝对关节范围裁掉的一段仍标作轨迹完成。
+      if adm_q_anchor[k] - ${DIAGNOSTIC_MOTION_AMPLITUDE_RAD} < -adm_q_limit[k] or adm_q_anchor[k] + ${DIAGNOSTIC_MOTION_AMPLITUDE_RAD} > adm_q_limit[k]:
+        adm_fail(8)
       end
     end
     k = k + 1
