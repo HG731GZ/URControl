@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import gc
 import multiprocessing as mp
 import os
 import pickle
@@ -140,6 +141,7 @@ def _process_main(arguments, event_writer, status_slot, reference_slot, stop_eve
     sink.update_context({"communication_process": {
         "pid": os.getpid(), "parent_pid": os.getppid(), "start_method": "spawn",
         "python_executable": sys.executable, "status_period_s": STATUS_PERIOD_S,
+        "automatic_gc_enabled": gc.isenabled(),
         "bridge_lease_s": BRIDGE_LEASE_S, "bridge_queue_capacity": BRIDGE_QUEUE_CAPACITY,
     }})
     reference_sequence = 0

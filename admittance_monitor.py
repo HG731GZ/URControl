@@ -34,6 +34,7 @@ TIMING_FIELDS = (
     ("packet_prepare_max_duration_s", "主机最大报文准备耗时", "s；本轮最大值"),
     ("send_duration_s", "主机最近发送耗时", "s；实际发送调用"),
     ("send_max_duration_s", "主机最大发送耗时", "s；本轮最大值"),
+    ("send_warning_count", "单包发送观测超期次数", "次；组包至发送返回超过本轮观测阈值，不等于发送失败"),
     ("receive_duration_s", "主机最近接收耗时", "s；单次缓冲接收调用"),
     ("receive_max_duration_s", "主机最大接收耗时", "s；本轮最大值"),
     ("decode_duration_s", "主机最近状态解析耗时", "s；状态解析及事件提交"),
@@ -362,6 +363,9 @@ class AdmittanceMonitor:
                            telemetry_layout=status["telemetry_layout"], page_type=status["page_type"],
                            page_seq=status["page_seq"], speed_scaling=status["speed_scaling"],
                            target_speed_fraction=status["target_speed_fraction"], scaling_ok=status["scaling_ok"])
+        diagnostics["statistics"] = deepcopy(status.get("statistics"))
+        diagnostics["statistics_final_received"] = status.get("statistics_final_received", False)
+        diagnostics["statistics_validation_errors"] = deepcopy(status.get("statistics_validation_errors", []))
         snapshot = {
             "phase": status["phase_name"], "freshness": STATE_TEXT[live_state] +
                 ("" if live_age is None else f" / 年龄 {live_age:.3f} s"),
@@ -488,7 +492,7 @@ class AdmittanceMonitor:
         rows["admittance_rows"].extend([
             ["柔顺坐标", cfg["CART_FRAME"], "tool_start 为启动时固定工具方向，中心在当前 TCP"],
             ["控制模型", "固定关节保持诊断（不积分）" if hold_diagnostic else
-             ("预设单轴微动（外力不驱动）" if preset_motion else "质量—阻尼—刚度"),
+             ("预设单轴无接触运动（外力不驱动）" if preset_motion else "质量—阻尼—刚度"),
              "六轴目标保持启动锚点；所选轴仅观测" if hold_diagnostic else
              (f"J{cfg['DIAGNOSTIC_MOTION_AXIS']} 预设轨迹；J{cfg['DIAGNOSTIC_AXIS']} 观测" if preset_motion else
               ("固定启动参考，撤力回位" if fixed else "随主端移动的名义参考"))],
@@ -498,6 +502,45 @@ class AdmittanceMonitor:
             ["目标载荷", _text(cfg["JOINT_TARGET_TORQUE_NM"] if snapshot["space"] == "joint" else cfg["CART_TARGET_WRENCH"]), "定点柔顺必须全为 0；关节 N·m，末端 N/N·m" if fixed else "关节 N·m；末端平移 N、转动 N·m"],
             ["连续死区", _text(cfg["JOINT_DEADBAND_NM"] if snapshot["space"] == "joint" else cfg["CART_DEADBAND"]), "原始载荷与导纳驱动力含义不同"],
         ])
+        if "ADMITTANCE_RTDE_SEND_TIMEOUT_S" in cfg:
+            rows["admittance_rows"].extend([
+                ["主机单包观测 / 退出期限",
+                 f"{cfg['ADMITTANCE_RTDE_SEND_WARNING_S'] * 1000:g} / {cfg['ADMITTANCE_RTDE_SEND_TIMEOUT_S'] * 1000:g} ms",
+                 "组包与发送共用期限；观测超期累计，退出期限超期终止"],
+            ])
+        # 显示实际生效配置：运动轴与固定轴的守卫分别列出，避免把 J1 放宽量误认为六轴共用。
+        if "SINGLE_AXIS_NON_MOTION_ACTUAL_MAX_QD_RAD_S" in cfg:
+            speeds, margins = admittance_config.actual_guard_limits(cfg)
+            moving_axes = ([cfg["DIAGNOSTIC_MOTION_AXIS"] - 1] if preset_motion else
+                           [axis for axis, enabled in enumerate(cfg["JOINT_AXES"])
+                            if enabled and not hold_diagnostic])
+            prefix = "DIAGNOSTIC_MOTION" if preset_motion else "SINGLE_AXIS"
+            extent = cfg["DIAGNOSTIC_MOTION_AMPLITUDE_RAD"] if preset_motion else cfg["SINGLE_AXIS_MAX_OFFSET_RAD"]
+            symmetric = not preset_motion or cfg["DIAGNOSTIC_MOTION_PROFILE"] == "bidirectional_trapezoid"
+            envelopes = [[-margins[axis] - (extent if symmetric and axis in moving_axes else 0.),
+                          margins[axis] + (extent if axis in moving_axes else 0.)] for axis in range(6)]
+            rows["admittance_rows"].extend([
+                ["允许运动轴", ", ".join(f"J{axis + 1}" for axis in moving_axes) or "无（固定保持）", "其余轴命令保持各自固定锚点"],
+                ["各轴实际速度守卫 J1–J6", _text(speeds), "rad/s；运动轴与非运动轴独立，不是命令速度"],
+                ["各轴实际位置裕量 J1–J6", _text(margins), "rad；独立于命令与实际的跟踪偏差"],
+                ["各轴实际位置包络 J1–J6", "; ".join(f"J{axis + 1}: [{_text(bounds[0])}, {_text(bounds[1])}]" for axis, bounds in enumerate(envelopes)), "rad；相对本轮固定锚点"],
+                ["各轴命令跟踪阈值", _text(cfg["COMMAND_MAX_TRACKING_ERROR_RAD"] if hold_diagnostic else cfg[prefix + "_TRACKING_RAD"]), "rad；六轴逐帧检查，异步展示差不作该守卫判定"],
+            ])
+            if moving_axes:
+                rows["admittance_rows"].append([
+                    "运动轴命令行程 / 速度 / 加速度",
+                    f"{extent:g} rad / {cfg[prefix + '_MAX_QD_RAD_S']:g} rad/s / {cfg[prefix + '_MAX_QDD_RAD_S2']:g} rad/s²",
+                    "相对固定锚点；实际反馈守卫使用上方独立阈值"])
+        if preset_motion and cfg.get("DIAGNOSTIC_MOTION_PROFILE") == "bidirectional_trapezoid":
+            from UR_Utils.admittance_trajectory import profile_parameters
+            plan = profile_parameters(cfg)
+            rows["admittance_rows"].extend([
+                ["双向无接触轨迹", f"0 → +{cfg['DIAGNOSTIC_MOTION_AMPLITUDE_RAD']:g} → 0 → −{cfg['DIAGNOSTIC_MOTION_AMPLITUDE_RAD']:g} → 0 rad", "各段零速起止；外载荷不生成命令"],
+                ["节点 / 末尾静止", f"{cfg['DIAGNOSTIC_MOTION_NODE_HOLD_S']:g} / {cfg['DIAGNOSTIC_MOTION_TAIL_HOLD_S']:g} s", "首节点及中间节点分别停留；末尾尾段另计"],
+                ["离散有效运行时长", f"{plan['duration_s']:g} s", "含逐帧限幅收敛段；启动保持、偏置与停止确认另计"],
+                ["无接触输入判据", "J1 非零 drive 周期数 = 0 且峰值 = 0", "机器人逐模型周期累计；载荷页抽样不能代替完整统计"],
+                ["重复与结论边界", "同候选独立运行三轮，每轮重采偏置", "URSim 不能验证真实残差、接触让位或撤力趋稳"],
+            ])
         configuration = snapshot["configuration"]
         for key, label, unit in (("tcp_offset", "本轮 TCP 偏置", "m、旋转向量 rad"),
                                  ("payload", "负载质量", "kg"), ("payload_cog", "负载质心", "m"),
@@ -630,6 +673,20 @@ class AdmittanceMonitor:
                                     "脚本时间 / 主机时间；不将接收年龄当采样年龄"])
             for key, label, explanation in fields:
                 continuous_rows.append([title + " · " + label, _text(page[key]), explanation])
+        statistics = diag.get("statistics")
+        if statistics is None:
+            continuous_rows.append(["J1 逐模型周期统计", "尚未取得", "缺统计或旧日志不得按零 drive 通过"])
+        else:
+            continuous_rows.extend([
+                ["统计身份", f"运行 {_text(statistics.get('run_id'))} / 配置 {_text(statistics.get('config_id'))} / 版本 {_text(statistics.get('statistics_schema_version'))}", "与本轮参数记录对应，页间独立冻结"],
+                ["统计采样序号 / 有效周期数", f"{_text(statistics.get('start_sample_seq'))} ～ {_text(statistics.get('end_sample_seq'))} / {_text(statistics.get('valid_cycle_count'))}", "偏置完成后开始，覆盖有效模型周期"],
+                ["J1 滤波残差范围", f"{_text(statistics.get('filtered_min_nm'))} ～ {_text(statistics.get('filtered_max_nm'))} N·m", "死区前；来自逐周期累计极值"],
+                ["J1 非零 drive 周期数 / 峰值", f"{_text(statistics.get('nonzero_drive_count'))} / {_text(statistics.get('max_abs_drive_nm'))} N·m", "任一非零锁定本轮输入不通过，不自动调整死区"],
+                ["J1 首次非零序号 / 时刻", f"{_text(statistics.get('first_nonzero_sample_seq'))} / {_text(statistics.get('first_nonzero_time_s'))} s", "无首次非零时保留未提供，不补零"],
+                ["轨迹完成 / 最终统计 / 覆盖完整", f"{_text(statistics.get('trajectory_complete'))} / {_text(statistics.get('final'))} / {_text(statistics.get('complete'))}", "三者独立核对；中间零值不能作为验收结论"],
+                ["失效周期 / 统计校验错误", f"{_text(statistics.get('invalid_cycle_count'))} / {_text(diag.get('statistics_validation_errors'))}", "异常数据不按零处理；完整日志报告还检查运动与状态"],
+                ["已收到有效终态统计", _text(diag.get("statistics_final_received")), "停止确认不等同于轨迹完成或统计通过"],
+            ])
         rows["diagnostic_rows"] = continuous_rows + rows["diagnostic_rows"]
         if diag["realtime"] is not None:
             real = diag["realtime"]

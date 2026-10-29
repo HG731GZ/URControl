@@ -4,7 +4,9 @@ def ur_admittance_control():
   global adm_oi = ${ADMITTANCE_OUTPUT_INT_BASE}
   global adm_of = ${ADMITTANCE_OUTPUT_FLOAT_BASE}
   global adm_run = read_input_integer_register(adm_i + 6)
+  global adm_config_id = ${CONFIG_ID}
   global adm_mode = ${DIAGNOSTIC_MODE_CODE}
+  global adm_profile = ${DIAGNOSTIC_MOTION_PROFILE_CODE}
   global adm_load_source = ${JOINT_LOAD_SOURCE_CODE}
   global adm_h = ${SERVO_DT_S}
   global adm_dt = ${MODEL_DT_S}
@@ -31,6 +33,7 @@ def ur_admittance_control():
   global adm_age_max = 0.0
   global adm_limit = 0
   global adm_running_time = -1.0
+  global adm_running_frame = -1
   global adm_zero = [0., 0., 0., 0., 0., 0.]
   global adm_q_anchor = get_actual_joint_positions()
   global adm_q_cmd = adm_q_anchor
@@ -43,13 +46,9 @@ def ur_admittance_control():
   global adm_tracking = ${COMMAND_MAX_TRACKING_ERROR_RAD}
   global adm_motion_actual_lower = [0., 0., 0., 0., 0., 0.]
   global adm_motion_actual_upper = [0., 0., 0., 0., 0., 0.]
-  global adm_actual_max_qd = ${DIAGNOSTIC_MOTION_ACTUAL_MAX_QD_RAD_S}
-  global adm_actual_margin = ${DIAGNOSTIC_MOTION_ACTUAL_MARGIN_RAD}
-  if adm_mode != 2:
-    # 固定保持加载取证同样限制实际扰动，不能只固定命令而放任实际位置和速度变化。
-    adm_actual_max_qd = ${SINGLE_AXIS_ACTUAL_MAX_QD_RAD_S}
-    adm_actual_margin = ${SINGLE_AXIS_ACTUAL_MARGIN_RAD}
-  end
+  # 主机按运行模式分开渲染运动轴和其余轴，启动、偏置及运行使用同一组实际守卫。
+  global adm_actual_max_qd = ${ACTUAL_MAX_QD_BY_AXIS}
+  global adm_actual_margin = ${ACTUAL_MARGIN_BY_AXIS}
   global adm_axes = ${JOINT_AXES}
   global adm_mass = ${JOINT_MASS}
   global adm_damping = ${JOINT_DAMPING}
@@ -83,6 +82,49 @@ def ur_admittance_control():
   end
   def adm_clip(x, lo, hi):
     return adm_max(lo, adm_min(x, hi))
+  end
+  def adm_finite(x):
+    # NaN 与自身不相等；无穷减自身也不等于零，不能由死区比较回落为零 drive。
+    return x == x and x - x == 0.
+  end
+  def adm_preset_offset(frame):
+    # 各阶段帧数在 Python 端量化并渲染，四段都以零速度起止。
+    if frame <= 0 or frame >= ${TRAJECTORY_TOTAL_FRAMES}:
+      return 0.
+    end
+    local block = ${TRAJECTORY_HOLD_FRAMES} + ${TRAJECTORY_MOVE_FRAMES}
+    local leg = floor(frame / block)
+    if leg >= 4:
+      return 0.
+    end
+    local start = 0.
+    local direction = 1.
+    if leg == 1:
+      start = ${DIAGNOSTIC_MOTION_AMPLITUDE_RAD}
+      direction = -1.
+    elif leg == 2:
+      direction = -1.
+    elif leg == 3:
+      start = -${DIAGNOSTIC_MOTION_AMPLITUDE_RAD}
+    end
+    local move_frame = frame - leg * block - ${TRAJECTORY_HOLD_FRAMES}
+    if move_frame <= 0:
+      return start
+    end
+    if move_frame >= ${TRAJECTORY_TRAPEZOID_FRAMES}:
+      return start + direction * ${DIAGNOSTIC_MOTION_AMPLITUDE_RAD}
+    end
+    local t = move_frame * adm_h
+    local distance = 0.
+    if t < ${TRAJECTORY_RAMP_S}:
+      distance = 0.5 * ${TRAJECTORY_ACCELERATION_RAD_S2} * t * t
+    elif t < ${TRAJECTORY_RAMP_S} + ${TRAJECTORY_CRUISE_S}:
+      distance = 0.5 * ${TRAJECTORY_PEAK_SPEED_RAD_S} * ${TRAJECTORY_RAMP_S} + ${TRAJECTORY_PEAK_SPEED_RAD_S} * (t - ${TRAJECTORY_RAMP_S})
+    else:
+      local remaining = (${TRAJECTORY_TRAPEZOID_FRAMES} - move_frame) * adm_h
+      distance = ${DIAGNOSTIC_MOTION_AMPLITUDE_RAD} - 0.5 * ${TRAJECTORY_ACCELERATION_RAD_S2} * remaining * remaining
+    end
+    return start + direction * distance
   end
   def adm_project_wrench(jacobian, wrench):
     # Jacobian与wrench均使用法兰作用点和基座表达，按列计算六轴J^T W。
@@ -158,6 +200,8 @@ def ur_admittance_control():
 
   # 每个载荷对象只在整次采样完成后替换，序号、偏置和计时不分开暴露。
   global adm_load_snapshot = struct(seq=0, sample_time=0., raw=adm_zero, bias=adm_zero, filtered=adm_zero, drive=adm_zero, bias_std=adm_bias_std, bias_count=0, bias_ready=False, model_interval=-1., model_max=0., compute=0., compute_max=0., load_duration=0., generated_seq=0, submitted_seq=0, generated_time=0., submitted_time=0., limit=0)
+  # 仅累计有效运行段，每次模型完整计算后随该采样快照一起提交。中间页永不冒充终态。
+  global adm_statistics = struct(start_seq=-1, end_seq=-1, valid_count=0, nonzero_count=0, first_nonzero_seq=-1, invalid_count=0, trajectory_complete=0, final=0, complete=0, start_time=-1., end_time=-1., filtered_min=0., filtered_max=0., max_drive=0., first_nonzero_time=-1.)
 
   thread adm_model():
     local last_base = -1
@@ -181,6 +225,7 @@ def ur_admittance_control():
     local running_frame = 0
     local submitted_seq = 0
     local submitted_time = 0.0
+    local statistics = adm_statistics
     while adm_reason == 0:
       enter_critical
       local base = adm_current
@@ -199,6 +244,7 @@ def ur_admittance_control():
         sample_seq = sample_seq + 1
         local load_started = adm_now()
         local raw = adm_zero
+        local valid_load = True
         if adm_load_source == 0:
           raw = get_joint_torques()
         else:
@@ -211,6 +257,19 @@ def ur_admittance_control():
             # 固定的是启动wrench，不将启动姿态的关节Nm偏置沿用到变化后的Jacobian。
             bias = adm_project_wrench(jacobian, wrench_bias)
           end
+        end
+        local measured_raw = raw
+        local checked_axis = 0
+        while checked_axis < 6:
+          if not adm_finite(raw[checked_axis]) or not adm_finite(bias[checked_axis]):
+            valid_load = False
+          end
+          checked_axis = checked_axis + 1
+        end
+        if not valid_load:
+          # 禁止无效数值进入滤波与积分；本轮记录无效并按故障停止，不把替换值记成有效零。
+          adm_fail(21)
+          raw = adm_zero
         end
         local drive = adm_zero
         if model_phase == 0 and sample_time - adm_hold_started >= ${DIAGNOSTIC_SETTLE_S} and read_input_integer_register(adm_i + 5) == 1:
@@ -267,7 +326,11 @@ def ur_admittance_control():
             elif error < -adm_deadband[k]:
               drive[k] = error + adm_deadband[k]
             end
-            if adm_mode == 0 and adm_axes[k] == 1:
+            if not adm_finite(filtered[k]) or not adm_finite(drive[k]):
+              valid_load = False
+              adm_fail(21)
+            end
+            if valid_load and adm_mode == 0 and adm_axes[k] == 1:
               # 从已承诺末状态更新模型速度，再分别准备两个基础帧期望点。
               # 两帧不能复用同一终点，否则首帧到位后第二帧会归零并丢失模型速度。
               local displacement = base.q1[k] - adm_q_anchor[k]
@@ -314,14 +377,22 @@ def ur_admittance_control():
             upper = lower
             if k == ${DIAGNOSTIC_MOTION_AXIS} - 1:
               upper = adm_min(adm_q_limit[k], lower + ${DIAGNOSTIC_MOTION_AMPLITUDE_RAD})
+              if adm_profile == 1:
+                lower = adm_max(-adm_q_limit[k], adm_q_anchor[k] - ${DIAGNOSTIC_MOTION_AMPLITUDE_RAD})
+              end
               if model_phase == 2:
-                local t0 = (base.last + 1 - running_frame) * adm_h
-                local t1 = t0 + adm_h
-                if t0 >= 0. and t0 < ${DIAGNOSTIC_MOTION_PERIOD_S}:
-                  des0 = lower + 0.5 * ${DIAGNOSTIC_MOTION_AMPLITUDE_RAD} * (1. - cos(6.283185307179586 * t0 / ${DIAGNOSTIC_MOTION_PERIOD_S}))
-                end
-                if t1 >= 0. and t1 < ${DIAGNOSTIC_MOTION_PERIOD_S}:
-                  des1 = lower + 0.5 * ${DIAGNOSTIC_MOTION_AMPLITUDE_RAD} * (1. - cos(6.283185307179586 * t1 / ${DIAGNOSTIC_MOTION_PERIOD_S}))
+                if adm_profile == 1:
+                  des0 = adm_q_anchor[k] + adm_preset_offset(base.last + 1 - running_frame)
+                  des1 = adm_q_anchor[k] + adm_preset_offset(base.last + 2 - running_frame)
+                else:
+                  local t0 = (base.last + 1 - running_frame) * adm_h
+                  local t1 = t0 + adm_h
+                  if t0 >= 0. and t0 < ${DIAGNOSTIC_MOTION_PERIOD_S}:
+                    des0 = lower + 0.5 * ${DIAGNOSTIC_MOTION_AMPLITUDE_RAD} * (1. - cos(6.283185307179586 * t0 / ${DIAGNOSTIC_MOTION_PERIOD_S}))
+                  end
+                  if t1 >= 0. and t1 < ${DIAGNOSTIC_MOTION_PERIOD_S}:
+                    des1 = lower + 0.5 * ${DIAGNOSTIC_MOTION_AMPLITUDE_RAD} * (1. - cos(6.283185307179586 * t1 / ${DIAGNOSTIC_MOTION_PERIOD_S}))
+                  end
                 end
               end
             end
@@ -342,7 +413,36 @@ def ur_admittance_control():
         end
         local generated_time = adm_now() - adm_origin
         local segment = struct(run_id=adm_run, seq=base.seq+1, based_on=base.seq, sample_time=sample_time, generated_time=generated_time, submitted_time=generated_time, first=base.last+1, last=base.last+2, q0=q0, q1=q1, v0=v0, v1=v1, limit=limit)
-        local sample = struct(seq=sample_seq, sample_time=sample_time, raw=raw, bias=bias, filtered=filtered, drive=drive, bias_std=bias_std, bias_count=bias_count, bias_ready=bias_ready, model_interval=model_interval, model_max=model_max, compute=0., compute_max=compute_max, load_duration=load_duration, generated_seq=segment.seq, submitted_seq=submitted_seq, generated_time=generated_time, submitted_time=submitted_time, limit=limit)
+        local sample = struct(seq=sample_seq, sample_time=sample_time, raw=measured_raw, bias=bias, filtered=filtered, drive=drive, bias_std=bias_std, bias_count=bias_count, bias_ready=bias_ready, model_interval=model_interval, model_max=model_max, compute=0., compute_max=compute_max, load_duration=load_duration, generated_seq=segment.seq, submitted_seq=submitted_seq, generated_time=generated_time, submitted_time=submitted_time, limit=limit)
+        if model_phase == 2:
+          if statistics.start_seq < 0:
+            statistics.start_seq = sample_seq
+            statistics.start_time = sample_time
+          end
+          statistics.end_seq = sample_seq
+          statistics.end_time = sample_time
+          if valid_load:
+            if statistics.valid_count == 0:
+              statistics.filtered_min = filtered[0]
+              statistics.filtered_max = filtered[0]
+            else:
+              statistics.filtered_min = adm_min(statistics.filtered_min, filtered[0])
+              statistics.filtered_max = adm_max(statistics.filtered_max, filtered[0])
+            end
+            statistics.valid_count = statistics.valid_count + 1
+            statistics.max_drive = adm_max(statistics.max_drive, adm_abs(drive[0]))
+            if drive[0] != 0.:
+              statistics.nonzero_count = statistics.nonzero_count + 1
+              if statistics.first_nonzero_seq < 0:
+                statistics.first_nonzero_seq = sample_seq
+                statistics.first_nonzero_time = sample_time
+              end
+            end
+          else:
+            statistics.invalid_count = statistics.invalid_count + 1
+          end
+        end
+        # 统计也是模型预算的一部分，不能在计时之后偷偷增加计算。
         sample.compute = adm_now() - started
         compute_max = adm_max(compute_max, sample.compute)
         sample.compute_max = compute_max
@@ -363,8 +463,10 @@ def ur_admittance_control():
         end
 
         global adm_load_snapshot = sample
+        global adm_statistics = statistics
         if adm_reason == 0:
           global adm_running_time = running_time
+          global adm_running_frame = running_frame
           global adm_phase = model_phase
         end
         exit_critical
@@ -379,6 +481,7 @@ def ur_admittance_control():
     local started = adm_now()
     enter_critical
     local sample = adm_load_snapshot
+    local statistics = adm_statistics
     local segment = adm_executed_segment
     local phase = adm_phase
     local reason = adm_reason
@@ -408,7 +511,7 @@ def ur_admittance_control():
     local f2 = adm_zero
     local f3 = adm_zero
     if layout == 1:
-      extra = [floor(stamp*1000000.), floor(adm_base*1000000.), floor(adm_dt*1000000.), sample.bias_count, ${DIAGNOSTIC_AXIS}, ${ACTIVE_MOTION_AXIS}, adm_mode, adm_load_source, ${TELEMETRY_SCHEMA_VERSION}, 0., 0., floor(stamp*1000000.)]
+      extra = [floor(stamp*1000000.), floor(adm_base*1000000.), floor(adm_dt*1000000.), sample.bias_count, ${DIAGNOSTIC_AXIS}, ${ACTIVE_MOTION_AXIS}, adm_mode, adm_load_source, ${TELEMETRY_SCHEMA_VERSION}, adm_config_id, 0., floor(stamp*1000000.)]
     elif layout == 2:
       f0 = sample.raw
       f1 = sample.bias
@@ -418,6 +521,9 @@ def ur_admittance_control():
       if sample.bias_ready:
         extra[10] = 1.
       end
+    elif layout == 5:
+      extra = [1, adm_config_id, statistics.start_seq, statistics.end_seq, statistics.valid_count, statistics.nonzero_count, statistics.first_nonzero_seq, statistics.invalid_count, statistics.trajectory_complete, statistics.final, statistics.complete, floor(stamp*1000000.)]
+      f0 = [statistics.start_time, statistics.end_time, statistics.filtered_min, statistics.filtered_max, statistics.max_drive, statistics.first_nonzero_time]
     else:
       extra = [sample.generated_seq, sample.submitted_seq, adopted, frame, segment.based_on, segment.first, segment.last, gaps, limit, floor(servo_interval*1000000.), floor(servo_max*1000000.), floor(stamp*1000000.)]
       if layout == 3:
@@ -474,7 +580,7 @@ def ur_admittance_control():
       adm_publish(layout)
       if adm_phase == 0:
         layout = 1
-      elif layout == 1 or layout == 4:
+      elif layout == 1 or layout == 5:
         layout = 2
       else:
         layout = layout + 1
@@ -504,7 +610,9 @@ def ur_admittance_control():
   local initial_speed = get_actual_joint_speeds()
   local k = 0
   while k < 6:
-    if adm_abs(initial_speed[k]) > adm_actual_max_qd:
+    if not adm_finite(initial_speed[k]) or not adm_finite(adm_q_anchor[k]):
+      adm_fail(21)
+    elif adm_abs(initial_speed[k]) > adm_actual_max_qd[k]:
       adm_fail(19)
     elif adm_abs(initial_speed[k]) > ${STATIONARY_MAX_QD_RAD_S}:
       adm_fail(10)
@@ -521,13 +629,20 @@ def ur_admittance_control():
       adm_tracking[k] = ${DIAGNOSTIC_MOTION_TRACKING_RAD}
     end
     # 锚点确定后一次生成绝对包络；实际反馈边界覆盖启动、偏置和运行阶段。
-    adm_motion_actual_lower[k] = adm_q_anchor[k] - adm_actual_margin
-    adm_motion_actual_upper[k] = adm_q_anchor[k] + adm_actual_margin
+    adm_motion_actual_lower[k] = adm_q_anchor[k] - adm_actual_margin[k]
+    adm_motion_actual_upper[k] = adm_q_anchor[k] + adm_actual_margin[k]
     if adm_mode == 0 and adm_axes[k] == 1:
       adm_motion_actual_lower[k] = adm_motion_actual_lower[k] - ${SINGLE_AXIS_MAX_OFFSET_RAD}
       adm_motion_actual_upper[k] = adm_motion_actual_upper[k] + ${SINGLE_AXIS_MAX_OFFSET_RAD}
     elif adm_mode == 2 and k == ${DIAGNOSTIC_MOTION_AXIS} - 1:
       adm_motion_actual_upper[k] = adm_motion_actual_upper[k] + ${DIAGNOSTIC_MOTION_AMPLITUDE_RAD}
+      if adm_profile == 1:
+        adm_motion_actual_lower[k] = adm_motion_actual_lower[k] - ${DIAGNOSTIC_MOTION_AMPLITUDE_RAD}
+        # 新筛选须能覆盖整段正负行程，不能把绝对关节范围裁掉的一段仍标作轨迹完成。
+        if adm_q_anchor[k] - ${DIAGNOSTIC_MOTION_AMPLITUDE_RAD} < -adm_q_limit[k] or adm_q_anchor[k] + ${DIAGNOSTIC_MOTION_AMPLITUDE_RAD} > adm_q_limit[k]:
+          adm_fail(8)
+        end
+      end
     end
     k = k + 1
   end
@@ -574,7 +689,9 @@ def ur_admittance_control():
     local actual_speed = get_actual_joint_speeds()
     k = 0
     while k < 6:
-      if adm_abs(actual_speed[k]) > adm_actual_max_qd:
+      if not adm_finite(actual[k]) or not adm_finite(actual_speed[k]) or not adm_finite(q[k]):
+        adm_fail(21)
+      elif adm_abs(actual_speed[k]) > adm_actual_max_qd[k]:
         adm_fail(19)
       elif actual[k] < adm_motion_actual_lower[k] or actual[k] > adm_motion_actual_upper[k]:
         adm_fail(20)
@@ -587,8 +704,15 @@ def ur_admittance_control():
     end
     if adm_phase < 2 and started - adm_origin >= ${ADMITTANCE_START_TIMEOUT_S}:
       adm_fail(13)
-    elif adm_phase == 2 and started - adm_origin - adm_running_time >= ${DIAGNOSTIC_DURATION_S}:
-      adm_fail(11)
+    elif adm_phase == 2:
+      if adm_mode == 2 and adm_profile == 1:
+        # 以实际已采用的最后帧为完成依据，不能因墙钟到时而少执行尾段。
+        if adm_frame - adm_running_frame >= ${TRAJECTORY_TOTAL_FRAMES}:
+          adm_fail(11)
+        end
+      elif started - adm_origin - adm_running_time >= ${DIAGNOSTIC_DURATION_S}:
+        adm_fail(11)
+      end
     end
     local servo_started = adm_now()
     if last_servo >= 0.0:
@@ -628,6 +752,13 @@ def ur_admittance_control():
   kill producer
   kill publisher
   adm_phase = 4
+  adm_statistics.final = 1
+  if adm_mode == 2 and adm_profile == 1 and adm_reason == 11 and adm_running_frame >= 0 and adm_frame - adm_running_frame >= ${TRAJECTORY_TOTAL_FRAMES}:
+    adm_statistics.trajectory_complete = 1
+    if adm_statistics.valid_count > 0 and adm_statistics.invalid_count == 0 and adm_statistics.valid_count == adm_statistics.end_seq - adm_statistics.start_seq + 1:
+      adm_statistics.complete = 1
+    end
+  end
   if adm_reason == 15:
     # 计算超预算时先保留触发样本，避免最后执行页覆盖唯一故障计时。
     adm_publish(4)
@@ -640,4 +771,6 @@ def ur_admittance_control():
   else:
     sleep(0.006)
   end
+  # 终态统计作为最后一页常驻寄存器；程序停止后的 RTDE 帧仍可读取同 run/config 的结果。
+  adm_publish(5)
 end

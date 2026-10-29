@@ -1,4 +1,4 @@
-"""只读汇总导纳日志，供人工排查；不连接设备、不修改日志、不作通过或失败判定。"""
+"""只读汇总导纳日志；首阶段验收仅使用本轮最终逐周期统计，不连接设备。"""
 
 from __future__ import annotations
 
@@ -119,6 +119,10 @@ class HostBudgetSummary:
         self.worst_heartbeat = None
         self.send_failures = []
         self.send_contracts = []
+        self.send_warnings = []
+        self.send_warning_observed = 0
+        self.send_warning_missing = 0
+        self.packet_totals = NumericSummary()
         self.send_entry_remaining = NumericSummary()
         self.host_timing = {}
         self.process_bridge_gaps = []
@@ -153,6 +157,19 @@ class HostBudgetSummary:
 
     def add(self, record):
         kind, payload = record["kind"], record["payload"]
+        if kind in ("rtde_input", "rtde_input_send_failed"):
+            total = payload.get("packet_total", payload.get("transport_timing", {}).get("packet_total", {}))
+            self.packet_totals.add(total.get("wall_s"), record_location(record))
+            warning = payload.get("send_warning_exceeded")
+            if type(warning) is bool:
+                self.send_warning_observed += 1
+                if warning:
+                    self.send_warnings.append({
+                        "记录序号": record["seq"], "事件": kind,
+                        "观测阈值_s": payload.get("send_warning_threshold_s"), "整包耗时": total,
+                    })
+            else:
+                self.send_warning_missing += 1
         if kind == "rtde_input":
             self.send_entry_remaining.add(
                 payload["send_entry_remaining_s"] if "send_entry_remaining_s" in payload else None,
@@ -206,6 +223,7 @@ class HostBudgetSummary:
                 "记录序号": record["seq"],
                 "原始发送约定": {key: payload[key] for key in (
                     "runtime_send_timing_version", "runtime_send_contract", "runtime_send_timeout_s",
+                    "runtime_send_warning_s",
                 ) if key in payload},
             })
             if "state_progress_contract" in payload:
@@ -222,6 +240,14 @@ class HostBudgetSummary:
             "单包发送失败": {
                 "已记录失败次数": len(self.send_failures),
                 "失败事件及原始证据": self.send_failures,
+            },
+            "单包发送观测超期": {
+                "带观测判据的发送记录数": self.send_warning_observed,
+                "缺少观测判据的发送记录数": self.send_warning_missing,
+                "已记录超期次数": len(self.send_warnings) if self.send_warning_observed else None,
+                "超期记录": self.send_warnings,
+                "组包至发送返回耗时_s": self.packet_totals.report(),
+                "说明": "观测超期不等于发送失败；退出期限另列。旧日志缺项保持未知。",
             },
             "成功发送包进入发送段的剩余期限_s": self.send_entry_remaining.report(),
             "发送计时与期限约定": {
@@ -535,7 +561,7 @@ def load_vectors(page, layout):
     """按已声明布局区分历史补偿力矩与有来源标记的输入，始终只取同页。"""
     if layout == 3:
         raw_key = "tau_raw_nm"
-    elif layout == 4:
+    elif layout in (4, 5):
         if page["load_source"] not in ("joint_torque", "flange_wrench"):
             raise ValueError("第四版载荷页的输入来源未定义")
         raw_key = "input_raw_nm"
@@ -744,7 +770,8 @@ def contact_windows_report(run_dir, events, normal_segments, anchor, config,
     criteria = context["manual_return_criteria"] if "manual_return_criteria" in context else None
     enabled_axes = ([index + 1 for index, enabled in enumerate(config["JOINT_AXES"]) if enabled]
                     if config["DIAGNOSTIC_MODE"] == "admittance" else [])
-    criteria_contract = return_criteria_contract(criteria, enabled_axes)
+    criteria_contract = (return_criteria_contract(criteria, enabled_axes)
+                         if config["DIAGNOSTIC_MODE"] == "admittance" else None)
     result = {
         "状态": "未取得成对的施力开始/完全松手人工标记",
         "允许运动轴": enabled_axes,
@@ -905,7 +932,7 @@ def contact_windows_report(run_dir, events, normal_segments, anchor, config,
 
 
 def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
-    """读取第 3/4 版遥测冻结页、原始 RTDE 和双端时序，输出描述性证据。"""
+    """读取第 3/4/5 版遥测冻结页、原始 RTDE 和双端时序，输出描述性证据。"""
     if tail_seconds <= 0:
         raise ValueError("残差尾窗长度必须大于零")
     context = metadata["context"]
@@ -915,10 +942,10 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
     mode = config["DIAGNOSTIC_MODE"]
     telemetry_schema = context["controller"]["telemetry_schema"] if "controller" in context else None
     telemetry_layout = None if telemetry_schema is None else telemetry_schema["telemetry_schema_version"]
-    if telemetry_layout not in (None, 3, 4):
+    if telemetry_layout not in (None, 3, 4, 5):
         raise ValueError(f"不支持的连续遥测布局：{telemetry_layout}")
     load_source = ("joint_torque" if telemetry_layout == 3
-                   else config["JOINT_LOAD_SOURCE"] if telemetry_layout == 4 else None)
+                   else config["JOINT_LOAD_SOURCE"] if telemetry_layout in (4, 5) else None)
     motion_axis = (config["JOINT_AXES"].index(1)
                    if mode == "admittance" and "SINGLE_AXIS_MAX_OFFSET_RAD" in config
                    else config["DIAGNOSTIC_MOTION_AXIS"] - 1)
@@ -936,7 +963,7 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
                 "target_speed_fraction": NumericSummary()}
                for start, end in motion_windows]
     kinds, phases, page_types, limit_reasons = Counter(), Counter(), Counter(), Counter()
-    page_sequences = {name: SequenceSummary() for name in ("anchor", "load", "execution", "timing")}
+    page_sequences = {name: SequenceSummary() for name in ("anchor", "load", "execution", "timing", "statistics")}
     identities = {name: SequenceSummary() for name in
                   ("model_sample_seq", "generated_seq", "submitted_seq", "adopted_seq", "frame")}
     running_load_sequences = SequenceSummary()
@@ -971,6 +998,18 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
                 [-margin, margin + (config["DIAGNOSTIC_MOTION_AMPLITUDE_RAD"] if axis == motion_axis else 0)]
                 for axis in range(6)],
         }
+        if "DIAGNOSTIC_MOTION_NON_MOTION_ACTUAL_MAX_QD_RAD_S" in config:
+            inactive_margin = config["DIAGNOSTIC_MOTION_NON_MOTION_ACTUAL_MARGIN_RAD"]
+            amplitude = config["DIAGNOSTIC_MOTION_AMPLITUDE_RAD"]
+            symmetric = config.get("DIAGNOSTIC_MOTION_PROFILE") == "bidirectional_trapezoid"
+            actual_motion_limits["各轴实际速度上限_rad_s"] = [
+                config["DIAGNOSTIC_MOTION_ACTUAL_MAX_QD_RAD_S"] if axis == motion_axis
+                else config["DIAGNOSTIC_MOTION_NON_MOTION_ACTUAL_MAX_QD_RAD_S"]
+                for axis in range(6)]
+            actual_motion_limits["各轴相对锚点实际位置包络_rad"] = [
+                [-margin - (amplitude if symmetric else 0), amplitude + margin]
+                if axis == motion_axis else [-inactive_margin, inactive_margin]
+                for axis in range(6)]
     elif mode == "admittance" and "SINGLE_AXIS_ACTUAL_MAX_QD_RAD_S" in config:
         margin = config["SINGLE_AXIS_ACTUAL_MARGIN_RAD"]
         extents = [margin + (config["SINGLE_AXIS_MAX_OFFSET_RAD"] if axis == motion_axis else 0)
@@ -985,6 +1024,26 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
             "命令加速度上限_rad_s2": config["SINGLE_AXIS_MAX_QDD_RAD_S2"],
             "跟踪偏差上限_rad": config["SINGLE_AXIS_TRACKING_RAD"],
             "停止确认速度上限_rad_s": config["SINGLE_AXIS_STOP_MAX_QD_RAD_S"],
+        }
+        if "SINGLE_AXIS_NON_MOTION_ACTUAL_MAX_QD_RAD_S" in config:
+            inactive_margin = config["SINGLE_AXIS_NON_MOTION_ACTUAL_MARGIN_RAD"]
+            actual_motion_limits["各轴实际速度上限_rad_s"] = [
+                config["SINGLE_AXIS_ACTUAL_MAX_QD_RAD_S"] if axis == motion_axis
+                else config["SINGLE_AXIS_NON_MOTION_ACTUAL_MAX_QD_RAD_S"]
+                for axis in range(6)]
+            actual_motion_limits["各轴相对锚点实际位置包络_rad"] = [
+                [-extents[axis], extents[axis]] if axis == motion_axis
+                else [-inactive_margin, inactive_margin] for axis in range(6)]
+    elif (mode == "fixed_joint_hold" and "controller" in context
+          and "actual_guard_limits" in context["controller"]):
+        limits = context["controller"]["actual_guard_limits"]
+        actual_motion_limits = {
+            "模式": mode, "允许运动轴": [],
+            "约束来源": "本轮context.controller.actual_guard_limits显式契约",
+            "实际速度上限_rad_s": max(limits["max_qd_rad_s"]),
+            "各轴实际速度上限_rad_s": limits["max_qd_rad_s"],
+            "各轴轨迹外包络裕量_rad": limits["margin_rad"],
+            "各轴相对锚点实际位置包络_rad": [[-margin, margin] for margin in limits["margin_rad"]],
         }
     elif (mode == "fixed_joint_hold" and "controller" in context
           and "fixed_hold_actual_limits" in context["controller"]):
@@ -1169,7 +1228,8 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
                     speed = numeric_value(robot["actual_qd"][axis])
                     if actual_motion_limits:
                         lower, upper = actual_motion_limits["各轴相对锚点实际位置包络_rad"][axis]
-                        speed_violations[axis] += int(speed is not None and abs(speed) > actual_motion_limits["实际速度上限_rad_s"])
+                        speed_limit = actual_motion_limits.get("各轴实际速度上限_rad_s", [actual_motion_limits["实际速度上限_rad_s"]] * 6)[axis]
+                        speed_violations[axis] += int(speed is not None and abs(speed) > speed_limit)
                         envelope_violations[axis] += int(offset is not None and not lower <= offset <= upper)
                     current = numeric_value(robot["actual_current"][axis])
                     robot_speeds[axis].add(None if speed is None else abs(speed), location)
@@ -1183,7 +1243,7 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
             page_types[page_type] += 1
             if not page_sequences[page_type].add(control["page_seq"]):
                 continue
-            if page_type == "anchor":
+            if page_type in ("anchor", "statistics"):
                 continue
             page = control["load"] if page_type == "load" else control["continuous"][page_type]
             page_location = {**location, "page_type": page_type, "page_seq": page["page_seq"],
@@ -1212,7 +1272,7 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
                 for name, summary in servo_timings.items():
                     summary.add(page[name], page_location)
             elif page_type == "load" and page["phase"] == 2:
-                if telemetry_layout == 4 and page["load_source"] != load_source:
+                if telemetry_layout in (4, 5) and page["load_source"] != load_source:
                     raise ValueError(f"记录 {record['seq']} 的输入来源与本轮配置不一致")
                 if not running_load_sequences.add(page["model_sample_seq"]):
                     continue
@@ -1331,16 +1391,562 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
     }
 
 
+def analyze_j1_no_contact(run_dir):
+    """严格核对首阶段单轮证据；抽样载荷页永远不能补充逐周期统计的缺失。"""
+    from UR_Utils.admittance_trajectory import profile_parameters
+
+    run_dir = Path(run_dir).resolve()
+    metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
+    context = metadata.get("context", {})
+    controller = context.get("controller", {})
+    config = controller.get("parameters", context.get("prepared_parameters", {}))
+    errors, failures = [], []
+
+    def error(message):
+        if message not in errors:
+            errors.append(message)
+
+    def fail(message):
+        if message not in failures:
+            failures.append(message)
+
+    def finite(value):
+        return type(value) in (int, float) and math.isfinite(value)
+
+    def vector(value):
+        return isinstance(value, list) and len(value) == 6 and all(finite(x) for x in value)
+
+    expected = {
+        "DIAGNOSTIC_MODE": "preset_joint_motion", "DIAGNOSTIC_MOTION_AXIS": 1,
+        "DIAGNOSTIC_AXIS": 1, "DIAGNOSTIC_MOTION_PROFILE": "bidirectional_trapezoid",
+        "DIAGNOSTIC_MOTION_AMPLITUDE_RAD": .1, "DIAGNOSTIC_MOTION_MAX_QD_RAD_S": .03,
+        "DIAGNOSTIC_MOTION_MAX_QDD_RAD_S2": .2, "DIAGNOSTIC_MOTION_TRACKING_RAD": .005,
+        "DIAGNOSTIC_MOTION_ACTUAL_MAX_QD_RAD_S": .06, "DIAGNOSTIC_MOTION_ACTUAL_MARGIN_RAD": .001,
+        "DIAGNOSTIC_MOTION_NON_MOTION_ACTUAL_MAX_QD_RAD_S": .003,
+        "DIAGNOSTIC_MOTION_NON_MOTION_ACTUAL_MARGIN_RAD": .001,
+        "DIAGNOSTIC_MOTION_NODE_HOLD_S": 2., "DIAGNOSTIC_MOTION_TAIL_HOLD_S": 10.,
+        "JOINT_LOAD_SOURCE": "joint_torque", "JOINT_AXES": [1, 0, 0, 0, 0, 0],
+        "JOINT_TARGET_TORQUE_NM": [0.] * 6,
+    }
+    mismatches = {key: {"期望": value, "实际": config.get(key)}
+                  for key, value in expected.items() if config.get(key) != value}
+    for key, value in (("JOINT_DEADBAND_NM", 10.), ("JOINT_MASS", 6.),
+                       ("JOINT_DAMPING", 30.), ("JOINT_STIFFNESS", 30.)):
+        values = config.get(key)
+        if not vector(values) or values[0] != value:
+            mismatches[key + "[0]"] = {"期望": value, "实际": values}
+    if mismatches:
+        error("生效配置不符合本次 J1 首候选，不能计为该候选的验证轮次")
+    if context.get("reference_source") != "fixed" or context.get("space") != "joint":
+        error("必须为 fixed + joint")
+    if controller.get("telemetry_schema", {}).get("telemetry_schema_version") != 5:
+        error("缺少第五版逐周期统计协议；历史载荷抽样不能证明全程零 drive")
+    expected_run = controller.get("run_id")
+    expected_config = controller.get("config_id")
+    if type(expected_run) is not int or expected_run <= 0 or type(expected_config) is not int or expected_config <= 0:
+        error("缺少本轮机器人运行身份或配置身份")
+    environment = context.get("validation_environment", "未声明")
+    profile = context.get("validation_profile", "AdmittanceProcess" if "communication_process" in context else "未声明")
+    validation_scope = context.get("validation_scope")
+    script_only = profile == "ursim_script_only_host_send_20ms"
+    isolated = profile in ("synchronous_controller_buffered_log", "ursim_script_only_host_send_20ms")
+    injection = context.get("simulator_only_script_injection") or {}
+    synthetic_input = context.get("synthetic_load_injection") is True or bool(injection)
+    if synthetic_input:
+        fail("本轮使用合成输入，仅作为统计机制验证，不能计为原生无接触筛选")
+    if profile not in ("AdmittanceProcess", "synchronous_controller_buffered_log", "ursim_script_only_host_send_20ms"):
+        error("验证运行方式未声明或不支持，不能确认本轮验证范围")
+    if isolated and not validation_scope:
+        error("控制器隔离验证缺少范围声明")
+    if script_only and (environment != "ursim" or context.get("simulator_test_host_send_timeout_s") != .02):
+        error("机器人脚本隔离验证必须声明 URSim 和临时测试发送期限 20 ms")
+    if environment not in ("ursim", "real_robot"):
+        error("未显式声明 validation_environment 为 ursim 或 real_robot")
+    if context.get("no_contact_confirmed") is not True:
+        error("没有本轮无接触条件确认；算法零 drive 不证明没有接触")
+    if context.get("validation_scenario") != "J1_empty_flange_no_contact":
+        error("未声明本轮空法兰 J1 无接触场景")
+    plan = None
+    try:
+        plan = profile_parameters(config)
+        if config.get("DIAGNOSTIC_DURATION_S") != plan["duration_s"]:
+            error("有效运行时长与离散轨迹总时长不一致")
+    except (KeyError, TypeError, ValueError, ZeroDivisionError):
+        error("缺少有效的离散轨迹参数")
+
+    record_sequences = SequenceSummary()
+    pages_seen = {name: set() for name in ("statistics", "execution", "timing", "load")}
+    stats_pages, final_stats = 0, None
+    previous_stats = None
+    statistics_values_by_page = {}
+    saw_nonzero = False
+    anchor = None
+    bias = None
+    bias_ready_count = None
+    bias_sampling_seen = False
+    bias_standard_deviation = None
+    raw_count = 0
+    robot_configuration = None
+    first_running_timestamp = None
+    previous_timestamp = None
+    previous_raw_packet = None
+    duplicate_raw_packets = 0
+    raw_max_gap = 0.
+    raw_missing_frames = 0
+    command_offsets = [NumericSummary() for _ in range(6)]
+    command_speeds = [NumericSummary() for _ in range(6)]
+    actual_offsets = [NumericSummary() for _ in range(6)]
+    actual_speeds = [NumericSummary() for _ in range(6)]
+    tracking = [NumericSummary() for _ in range(6)]
+    speed_violations, envelope_violations, tracking_violations = [0] * 6, [0] * 6, [0] * 6
+    command_points = []
+    actual_points = []
+    limits = [config.get("DIAGNOSTIC_MOTION_ACTUAL_MAX_QD_RAD_S")] + [
+        config.get("DIAGNOSTIC_MOTION_NON_MOTION_ACTUAL_MAX_QD_RAD_S")] * 5
+    margins = [config.get("DIAGNOSTIC_MOTION_ACTUAL_MARGIN_RAD")] + [
+        config.get("DIAGNOSTIC_MOTION_NON_MOTION_ACTUAL_MARGIN_RAD")] * 5
+    extents = [None if not finite(margin) else margin + (.1 if axis == 0 else 0.)
+               for axis, margin in enumerate(margins)]
+    limit_reasons = Counter()
+    exit_reasons = Counter()
+    final_status = metadata.get("finish_summary") or {}
+    final_status = final_status.get("status") or {}
+    host_budget = HostBudgetSummary()
+    record_count = 0
+    with (run_dir / "records.jsonl").open(encoding="utf-8") as stream:
+        for line_number, line in enumerate(stream, 1):
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                error(f"第 {line_number} 行不是完整 JSON 记录")
+                continue
+            record_count += 1
+            if record.get("run_id") != metadata.get("run_id") or record.get("log_schema_version") != metadata.get("log_schema_version"):
+                error("日志行运行身份或日志版本与元数据不一致")
+            if type(record.get("seq")) is not int or not record_sequences.add(record["seq"]):
+                error("日志记录序号缺失或重复")
+            payload = record.get("payload", {})
+            kind = record.get("kind")
+            if kind in ("rtde_input", "rtde_input_send_failed", "connection_ready"):
+                host_budget.add(record)
+            if (kind in ("rtde_input", "rtde_input_send_failed")
+                    and "ADMITTANCE_RTDE_SEND_WARNING_S" in config):
+                total = payload.get("packet_total", payload.get("transport_timing", {}).get("packet_total", {}))
+                threshold = config["ADMITTANCE_RTDE_SEND_WARNING_S"]
+                duration = total.get("wall_s")
+                if (not finite(threshold) or not finite(duration) or payload.get("send_warning_threshold_s") != threshold
+                        or payload.get("send_warning_exceeded") is not (duration > threshold)):
+                    error("单包发送观测判据缺失或与本轮配置、耗时不一致")
+            if kind in ("log_gap", "process_bridge_gap", "controller_error", "controller_worker_failed", "rtde_input_send_failed"):
+                error(f"记录包含 {kind} 事件")
+            if kind == "logging_enabled" and payload.get("enabled") is False:
+                error("本轮曾关闭日志记录")
+            if "status" in payload:
+                status = payload["status"]
+                if status.get("exit_reason"):
+                    exit_reasons[status["exit_reason"]] += 1
+                if status.get("statistics_validation_errors"):
+                    error("主机锁存了逐周期统计校验错误")
+            if kind != "rtde_state":
+                continue
+            control, raw = payload.get("control", {}), payload.get("raw", {})
+            if control.get("statistics_validation_errors"):
+                error("主机锁存了逐周期统计校验错误")
+            if not payload.get("lifecycle_valid"):
+                continue
+            if control.get("run_id") != expected_run:
+                error("有效生命周期记录的运行身份不匹配")
+                continue
+            q_start = control.get("q_start")
+            if vector(q_start):
+                if anchor is not None and q_start != anchor:
+                    error("同轮固定锚点发生变化")
+                anchor = q_start
+            phase = control.get("phase")
+            if control.get("exit_reason"):
+                exit_reasons[control["exit_reason"]] += 1
+            if phase in (1, 2):
+                observed_configuration = {key: raw.get(key) for key in
+                                          ("payload", "payload_cog", "payload_inertia", "tcp_offset")}
+                if (not finite(raw.get("payload")) or not vector(raw.get("tcp_offset"))
+                        or not vector(raw.get("payload_inertia"))):
+                    error("缺少本轮原始负载 / TCP 配置证据")
+                else:
+                    if raw["payload"] != 0. or any(raw["tcp_offset"]):
+                        fail("本轮原始配置不是空法兰候选的零负载 / 零 TCP")
+                    if robot_configuration is not None and observed_configuration != robot_configuration:
+                        error("偏置或有效运行期间机器人负载 / TCP 配置改变")
+                    robot_configuration = observed_configuration
+                if raw.get("runtime_state") != 2 or raw.get("safety_mode") != 1:
+                    fail("偏置或有效运行期间出现非运行 / 非 NORMAL 状态")
+                if raw.get("speed_scaling") != 1. or raw.get("target_speed_fraction") != 1.:
+                    fail("偏置或有效运行期间速度比例不为 1")
+                if not all(vector(raw.get(key)) for key in ("actual_q", "actual_qd", "target_q")):
+                    error("偏置或有效运行反馈存在缺测 / 非有限值")
+                elif anchor is None:
+                    error("偏置或有效运行反馈缺少本轮固定锚点")
+                else:
+                    for axis in range(6):
+                        offset = raw["actual_q"][axis] - anchor[axis]
+                        speed = abs(raw["actual_qd"][axis])
+                        difference = abs(raw["target_q"][axis] - raw["actual_q"][axis])
+                        if finite(limits[axis]):
+                            speed_violations[axis] += int(speed > limits[axis])
+                        if finite(extents[axis]):
+                            envelope_violations[axis] += int(abs(offset) > extents[axis])
+                        if finite(config.get("DIAGNOSTIC_MOTION_TRACKING_RAD")):
+                            tracking_violations[axis] += int(difference > config["DIAGNOSTIC_MOTION_TRACKING_RAD"])
+                        actual_offsets[axis].add(offset)
+                        actual_speeds[axis].add(speed)
+                        tracking[axis].add(difference)
+                    if phase == 2:
+                        actual_points.append(raw["actual_q"][0] - anchor[0])
+                if phase == 2:
+                    raw_count += 1
+                    timestamp = raw.get("timestamp")
+                    if not finite(timestamp):
+                        error("有效运行缺少有限机器人时间")
+                    else:
+                        if first_running_timestamp is None:
+                            first_running_timestamp = timestamp
+                        if previous_timestamp is not None:
+                            gap = timestamp - previous_timestamp
+                            raw_max_gap = max(raw_max_gap, gap)
+                            frequency = context.get("rtde", {}).get("state_frequency_hz")
+                            if finite(frequency) and frequency > 0 and gap > 1.5 / frequency:
+                                raw_missing_frames += max(0, round(gap * frequency) - 1)
+                            if gap == 0 and raw == previous_raw_packet:
+                                duplicate_raw_packets += 1
+                            elif gap <= 0 or gap > config.get("ADMITTANCE_STATE_TIMEOUT_S", 0):
+                                error("有效运行机器人时间倒退、同时间反馈冲突或反馈间隔超过状态超时")
+                        previous_timestamp = timestamp
+                        previous_raw_packet = raw
+            page_type = control.get("page_type")
+            if page_type not in pages_seen or (page_type != "statistics" and not payload.get("derived_valid")):
+                continue
+            page = (control.get(page_type) if page_type in ("statistics", "load")
+                    else control.get("continuous", {}).get(page_type))
+            if not isinstance(page, dict):
+                error(f"完整 {page_type} 页缺少解码对象")
+                continue
+            if page.get("run_id") != expected_run:
+                error(f"{page_type} 页运行身份不匹配")
+                continue
+            page_seq = page.get("page_seq")
+            if type(page_seq) is not int or page_seq <= 0:
+                error(f"{page_type} 页缺少正整数页身份")
+                continue
+            if page_type == "statistics":
+                # 冻结页重复传输允许到达时间不同，统计载荷本身必须不变。
+                values = {key: value for key, value in page.items()
+                          if key not in ("received_monotonic_s", "robot_timestamp_s")}
+                if page_seq in statistics_values_by_page and statistics_values_by_page[page_seq] != values:
+                    error("同一冻结统计页的内容改变")
+                statistics_values_by_page[page_seq] = values
+            if page_seq in pages_seen[page_type]:
+                continue
+            pages_seen[page_type].add(page_seq)
+            if page_type == "statistics":
+                stats_pages += 1
+                if (page.get("statistics_schema_version") != 1 or page.get("config_id") != expected_config
+                        or page.get("identity_valid") is not True or page.get("validation_errors")):
+                    error("逐周期统计版本、配置身份或字段校验无效")
+                if not all(type(page.get(key)) is bool for key in ("trajectory_complete", "final", "complete")):
+                    error("统计完成标记缺失或类型非法")
+                if page.get("final") and page.get("phase") != 4:
+                    error("最终统计未在停止阶段冻结")
+                integer_fields = ("valid_cycle_count", "invalid_cycle_count", "nonzero_drive_count")
+                if not all(type(page.get(key)) is int and page[key] >= 0 for key in integer_fields):
+                    error("逐周期统计计数或采样身份缺失 / 非法")
+                    continue
+                if page["valid_cycle_count"] + page["invalid_cycle_count"] and not all(
+                        type(page.get(key)) is int and page[key] > 0
+                        for key in ("start_sample_seq", "end_sample_seq")):
+                    error("非空统计缺少正整数起止采样身份")
+                    continue
+                if page["nonzero_drive_count"] > 0:
+                    saw_nonzero = True
+                if page["invalid_cycle_count"]:
+                    error("机器人统计存在无效周期")
+                if page["valid_cycle_count"]:
+                    if not all(finite(page.get(key)) for key in (
+                            "start_sample_time_s", "end_sample_time_s", "filtered_min_nm", "filtered_max_nm", "max_abs_drive_nm")):
+                        error("有效周期统计存在缺测或非有限数")
+                        continue
+                    if (page["start_sample_time_s"] < 0 or page["end_sample_time_s"] < page["start_sample_time_s"]
+                            or page["end_sample_seq"] - page["start_sample_seq"] + 1 != page["valid_cycle_count"] + page["invalid_cycle_count"]):
+                        error("累计统计时间或逐模型采样序号覆盖无效")
+                    if (page["filtered_min_nm"] > page["filtered_max_nm"] or page["max_abs_drive_nm"] < 0
+                            or page["nonzero_drive_count"] > page["valid_cycle_count"]):
+                        error("逐周期统计峰值或非零计数互相矛盾")
+                    if page["max_abs_drive_nm"] > 0:
+                        saw_nonzero = True
+                    if (page["nonzero_drive_count"] == 0) != (page["max_abs_drive_nm"] == 0):
+                        error("非零 drive 周期数与峰值矛盾")
+                    deadband = config.get("JOINT_DEADBAND_NM")
+                    if vector(deadband) and (page["nonzero_drive_count"] > 0) != (
+                            max(abs(page["filtered_min_nm"]), abs(page["filtered_max_nm"])) > deadband[0]):
+                        error("滤波残差峰值与本候选死区后的非零计数矛盾")
+                    if page["nonzero_drive_count"] == 0:
+                        if page.get("first_nonzero_sample_seq") is not None or page.get("first_nonzero_time_s") is not None:
+                            error("零 drive 统计仍包含首次非零身份")
+                    elif (type(page.get("first_nonzero_sample_seq")) is not int
+                          or not finite(page.get("first_nonzero_time_s"))
+                          or not page["start_sample_seq"] <= page["first_nonzero_sample_seq"] <= page["end_sample_seq"]
+                          or not page["start_sample_time_s"] <= page["first_nonzero_time_s"] <= page["end_sample_time_s"]):
+                        error("首次非零 drive 的采样身份或时刻缺失 / 越界")
+                    if previous_stats is not None:
+                        if previous_stats.get("final") or page_seq <= previous_stats["page_seq"]:
+                            error("最终统计后继续变化或统计页身份倒退")
+                        if previous_stats["nonzero_drive_count"] and any(
+                                page.get(key) != previous_stats.get(key)
+                                for key in ("first_nonzero_sample_seq", "first_nonzero_time_s")):
+                            error("首次非零 drive 身份被改变")
+                        if (page["start_sample_seq"] != previous_stats["start_sample_seq"]
+                                or page["start_sample_time_s"] != previous_stats["start_sample_time_s"]
+                                or any(page[key] < previous_stats[key] for key in (
+                                    "end_sample_seq", "valid_cycle_count", "invalid_cycle_count", "nonzero_drive_count", "max_abs_drive_nm"))
+                                or page["filtered_min_nm"] > previous_stats["filtered_min_nm"]
+                                or page["filtered_max_nm"] < previous_stats["filtered_max_nm"]):
+                            error("本轮累计统计发生回退或被清零")
+                    previous_stats = page
+                if page.get("final") is True:
+                    final_stats = page
+            elif page_type == "timing":
+                count = page.get("bias_sample_count")
+                if page.get("phase") == 1 and type(count) is int and count > 0:
+                    bias_sampling_seen = True
+                if page.get("phase") == 2 and page.get("bias_ready") is True and type(count) is int and count > 0:
+                    if bias_ready_count is not None and bias_ready_count != count:
+                        error("有效运行中的偏置样本数改变")
+                    bias_ready_count = count
+                    bias_standard_deviation = page.get("bias_std_nm")
+                if page.get("gap_count", 0) > 0:
+                    fail("执行器记录到伺服帧缺口")
+            elif page_type == "load" and page.get("phase") == 2:
+                if page.get("load_source") != "joint_torque":
+                    error("本轮载荷来源不是已选关节力矩通道")
+                if not vector(page.get("bias_nm")):
+                    error("有效运行载荷页缺少六轴偏置")
+                elif bias is not None and bias != page["bias_nm"]:
+                    error("有效运行的固定关节偏置改变")
+                else:
+                    bias = page["bias_nm"]
+            elif page_type == "execution" and page.get("phase") == 2:
+                if page.get("gap_count", 0) > 0:
+                    fail("执行器记录到伺服帧缺口")
+                limit_reasons[page.get("limit_reason")] += 1
+                if anchor is None or not vector(page.get("q_cmd")) or not vector(page.get("qd_cmd")):
+                    error("执行页缺少有限命令或本轮锚点")
+                    continue
+                for axis in range(6):
+                    offset = page["q_cmd"][axis] - anchor[axis]
+                    speed = abs(page["qd_cmd"][axis])
+                    command_offsets[axis].add(offset)
+                    command_speeds[axis].add(speed)
+                    if abs(offset) > (.1 if axis == 0 else 0) + 1e-9:
+                        fail("实际采用命令越过行程或非运动轴离开固定锚点")
+                    if speed > (.03 if axis == 0 else 0) + 1e-9:
+                        fail("实际采用命令速度超限")
+                command_points.append(page["q_cmd"][0] - anchor[0])
+
+    if not metadata.get("finished") or metadata.get("dropped_count") != 0 or metadata.get("skipped_count") != 0:
+        error("日志未完成或发生丢弃 / 停记")
+    if record_count != metadata.get("record_count"):
+        error("实际日志行数与结束元数据不符")
+    sequence_report = record_sequences.report()
+    if sequence_report.get("已观测首尾之间未出现的标识数量", 0) or sequence_report.get("相邻记录标识倒退次数", 0):
+        error("日志序号存在缺口或倒退")
+    bridge = context.get("process_bridge")
+    if "ADMITTANCE_RTDE_SEND_TIMEOUT_S" in config:
+        runtime = context.get("rtde", {})
+        if (runtime.get("runtime_send_timeout_s") != config["ADMITTANCE_RTDE_SEND_TIMEOUT_S"]
+                or runtime.get("runtime_send_warning_s") != config["ADMITTANCE_RTDE_SEND_WARNING_S"]):
+            error("运行传输期限与本轮生效配置不一致")
+        if final_status.get("send_warning_count") != len(host_budget.send_warnings):
+            error("最终发送观测超期次数与逐包记录不一致")
+    if profile == "AdmittanceProcess" and ("communication_process" not in context
+            or not isinstance(bridge, dict) or bridge.get("dropped_count") != 0 or bridge.get("pending_gap")):
+        error("通信进程桥缺少无丢弃的结束摘要")
+    if final_status.get("exit_reason") != 11 or final_status.get("stopped_confirmed") is not True or final_status.get("last_error"):
+        fail("未以完整诊断时长退出并确认六轴静止")
+    if any(reason != 11 for reason in exit_reasons):
+        fail("本轮记录存在正常完成以外的退出原因")
+    if not bias_sampling_seen or not bias_ready_count or bias is None or not vector(bias_standard_deviation):
+        error("未取得本轮重新采偏置及完成后的六轴基线证据")
+    if not raw_count:
+        error("没有有效运行的原始反馈")
+    frequency = context.get("rtde", {}).get("state_frequency_hz")
+    # phase 随独立发布页切换，原始反馈首尾不与模型采样同步；两端分别计一个发布周期和 RTDE 帧。
+    raw_boundary_uncertainty = (2 * config["TELEMETRY_PERIOD_S"] + 2 / frequency
+                                if finite(frequency) and frequency > 0
+                                and finite(config.get("TELEMETRY_PERIOD_S")) else None)
+    if raw_boundary_uncertainty is None:
+        error("缺少协商 RTDE 频率或遥测周期，不能解释原始运行反馈边界")
+    if (plan is not None and first_running_timestamp is not None and previous_timestamp is not None
+            and raw_boundary_uncertainty is not None
+            and previous_timestamp - first_running_timestamp < plan["duration_s"] - raw_boundary_uncertainty - 1e-6):
+        error("原始运行反馈时间不足以覆盖完整轨迹及停留")
+    if any(speed_violations) or any(envelope_violations) or any(tracking_violations):
+        fail("六轴实际运动或同包目标跟踪检查未通过")
+    if final_stats is None:
+        error("最终逐周期统计缺失；中间零值不能计为通过")
+    else:
+        saved_result = context.get("model_statistics_result", {})
+        saved_statistics = saved_result.get("statistics") or {}
+        final_fields = ("run_id", "config_id", "statistics_schema_version", "model_sample_seq",
+                        "start_sample_seq", "end_sample_seq", "valid_cycle_count", "invalid_cycle_count",
+                        "nonzero_drive_count", "max_abs_drive_nm", "filtered_min_nm", "filtered_max_nm",
+                        "start_sample_time_s", "end_sample_time_s", "first_nonzero_sample_seq",
+                        "first_nonzero_time_s", "trajectory_complete", "final", "complete", "exit_reason")
+        if (saved_result.get("run_id") != expected_run or saved_result.get("config_id") != expected_config
+                or saved_result.get("final_received") is not True or saved_result.get("validation_errors")
+                or any(saved_statistics.get(key) != final_stats.get(key) for key in final_fields)):
+            error("结束元数据与日志中的有效最终统计不一致或缺失")
+        if final_stats.get("complete") is not True or final_stats.get("trajectory_complete") is not True:
+            error("最终统计覆盖或既定轨迹未完成")
+        if final_stats.get("exit_reason") != 11:
+            fail("最终统计页未声明正常时长完成退出")
+        count = final_stats.get("valid_cycle_count")
+        start, end = final_stats.get("start_sample_seq"), final_stats.get("end_sample_seq")
+        if (type(count) is not int or count <= 0 or type(start) is not int or type(end) is not int
+                or start <= 0 or end - start + 1 != count or end != final_stats.get("model_sample_seq")):
+            error("最终有效周期数不能覆盖连续起止模型采样序号")
+        first_time, last_time = final_stats.get("start_sample_time_s"), final_stats.get("end_sample_time_s")
+        if (plan is None or not finite(first_time) or not finite(last_time)
+                or last_time - first_time < plan["duration_s"] - config.get("MODEL_DT_S", 0) - 1e-6):
+            error("最终统计时段不足以覆盖离散轨迹及全部停留")
+    if saw_nonzero:
+        fail("J1 有效模型周期出现非零 drive；后续恢复为零不清除此失败")
+
+    def milestones(points, tolerance):
+        targets = (0., .1, 0., -.1, 0.)
+        reached = 0
+        for point in points:
+            if reached < len(targets) and abs(point - targets[reached]) <= tolerance:
+                reached += 1
+        return reached
+
+    command_milestones = milestones(command_points, 1e-6)
+    actual_milestones = milestones(actual_points, .005)
+    if command_milestones != 5 or actual_milestones != 5:
+        error("采用命令或原始反馈未按顺序覆盖 0 → +0.10 → 0 → −0.10 → 0")
+    passed = not errors and not failures
+    send_report = host_budget.report(metadata)
+    result = ("URSim 机器人脚本隔离验证通过；正式主机链路和实机未验证" if passed and script_only
+              else "URSim 控制器隔离检查通过；正式完整链路和实机无接触未验证" if passed and environment == "ursim" and isolated
+              else "控制器隔离检查通过；正式完整链路未验证" if passed and isolated
+              else "URSim 软件链路检查通过；实机无接触未验证" if passed and environment == "ursim"
+              else "本轮无接触筛选通过；不代表接触验收" if passed
+              else "证据无效或不完整" if errors else "本轮不通过")
+    return {
+        "报告版本": 1, "日志目录": str(run_dir), "结论": result,
+        "软件与记录检查通过": passed, "检查通过仅适用于本轮运行方式": True,
+        "正式进程完整链路检查通过": passed and profile == "AdmittanceProcess",
+        "实机无接触筛选通过": passed and environment == "real_robot" and profile == "AdmittanceProcess",
+        "J1输入判据": ("不通过：曾出现非零 drive" if saw_nonzero else
+                     "全有效模型周期为零" if final_stats is not None and final_stats.get("complete") is True
+                     and not errors else "无法判定：完整有效统计不足"),
+        "原生残差判据适用": not synthetic_input,
+        "合成输入": synthetic_input,
+        "模拟器输入注入说明": {key: value for key, value in injection.items() if key != "script_source"},
+        "证据问题": errors, "不通过原因": failures,
+        "run_id": metadata.get("run_id"), "机器人run_id": expected_run, "config_id": expected_config,
+        "开始主机单调时间_ns": metadata.get("started_monotonic_ns"),
+        "环境": environment, "场景": context.get("validation_scenario"),
+        "验证运行方式": profile, "验证范围声明": validation_scope,
+        "模拟器测试主机发送超时_s": context.get("simulator_test_host_send_timeout_s"),
+        "模拟器测试GC启用": context.get("simulator_test_gc_enabled"),
+        "实际生效参数": config, "首候选参数差异": mismatches, "离散轨迹": plan,
+        "主机发送检查": {key: send_report[key] for key in (
+            "单包发送观测超期", "单包发送失败", "发送计时与期限约定", "已记录心跳发送间隔_s")},
+        "起始姿态_rad": anchor,
+        "本轮原始机器人配置": robot_configuration,
+        "独立偏置": {"观测到本轮采样": bias_sampling_seen, "样本数": bias_ready_count,
+                     "六轴偏置_Nm": bias, "六轴标准差_Nm": bias_standard_deviation},
+        "逐模型周期统计": {"独立累计页数量": stats_pages, "最终统计": final_stats,
+                           "曾观测非零drive": saw_nonzero,
+                           "说明": "仅使用机器人每次有效模型计算累计结果；低频载荷抽样不参与零 drive 判定。"},
+        "轨迹与六轴运动": {
+            "采用命令节点覆盖数_共5": command_milestones, "实际反馈节点覆盖数_共5": actual_milestones,
+            "各轴采用命令范围_rad": [item.report() for item in command_offsets],
+            "各轴采用命令峰速_rad_s": [item.report(maximum_only=True) for item in command_speeds],
+            "各轴实际偏移范围_rad": [item.report() for item in actual_offsets],
+            "各轴实际峰速_rad_s": [item.report(maximum_only=True) for item in actual_speeds],
+            "各轴同包target_q与actual_q最大差_rad": [item.report(maximum_only=True) for item in tracking],
+            "各轴实际速度超限包数": speed_violations, "各轴实际位置越界包数": envelope_violations,
+            "各轴同包目标跟踪超限包数": tracking_violations, "执行页约束码计数": dict(limit_reasons),
+            "说明": "命令范围来自已采用执行页；原始反馈核对六轴。target_q 是控制器同包目标，不替代脚本逐帧 q_cmd 跟踪守卫；异常退出会否决整轮。",
+        },
+        "记录完整性": {"实际记录数": record_count, "记录序号": sequence_report,
+                       "phase2原始反馈包数": raw_count, "最大原始反馈间隔_s": raw_max_gap,
+                       "同timestamp且全部raw字段相同的重复观测数": duplicate_raw_packets,
+                       "原始运行机器人时间范围_s": [first_running_timestamp, previous_timestamp],
+                       "冻结phase与原始反馈首尾边界不确定度_s": raw_boundary_uncertainty,
+                       "按协商频率估计未观测RTDE帧数": raw_missing_frames,
+                       "说明": "RTDE 未观测帧不等于模型漏算；输入全周期覆盖由机器人累计序号核对，主机无丢弃与日志结束另查。"},
+        "退出原因计数": dict(exit_reasons), "最终退出码": final_status.get("exit_reason"),
+        "最终静止确认": final_status.get("stopped_confirmed"),
+        "解释范围": "URSim 只验证软件、轨迹、统计与记录链路，不能证明真实关节残差、起动力、接触让位或撤力趋稳；本报告不自动进入接触试验。",
+    }
+
+
+def summarize_j1_no_contact(run_dirs):
+    """保留三轮各自结果；任何缺项、重复轮次或候选变化均不能由平均值掩盖。"""
+    reports = [analyze_j1_no_contact(path) for path in run_dirs]
+    reasons = []
+    if len(reports) != 3:
+        reasons.append("必须恰好提供同一候选的三轮独立运行")
+    for key in ("run_id", "机器人run_id", "config_id", "开始主机单调时间_ns"):
+        values = [report[key] for report in reports]
+        if any(value is None for value in values) or len(set(values)) != len(values):
+            reasons.append(f"三轮 {key} 缺失或重复，不能确认每轮重新启动")
+    if reports:
+        for key in ("实际生效参数", "环境", "场景", "本轮原始机器人配置", "验证运行方式", "验证范围声明", "模拟器测试主机发送超时_s", "模拟器测试GC启用", "合成输入", "模拟器输入注入说明"):
+            if any(report[key] != reports[0][key] for report in reports[1:]):
+                reasons.append(f"三轮 {key} 不同，不能合并为同条件候选")
+        anchors = [report["起始姿态_rad"] for report in reports]
+        tolerance = reports[0]["实际生效参数"].get("DIAGNOSTIC_MOTION_TRACKING_RAD", .005)
+        if (any(anchor is None for anchor in anchors)
+                or any(abs(value - reference) > tolerance for anchor in anchors[1:]
+                       for value, reference in zip(anchor, anchors[0]))):
+            reasons.append("三轮起始姿态差异超过本候选跟踪阈值或缺失，不能计为同场景")
+    if any(not report["软件与记录检查通过"] for report in reports):
+        reasons.append("至少一轮未通过完整软件与记录检查")
+    passed = not reasons
+    real_passed = passed and all(report["实机无接触筛选通过"] for report in reports)
+    full_process_passed = passed and all(report["正式进程完整链路检查通过"] for report in reports)
+    isolated = bool(reports) and reports[0]["验证运行方式"] != "AdmittanceProcess"
+    script_only = bool(reports) and reports[0]["验证运行方式"] == "ursim_script_only_host_send_20ms"
+    return {"报告版本": 1, "轮次数": len(reports), "软件三轮检查通过": passed,
+            "正式进程完整链路三轮检查通过": full_process_passed,
+            "实机三轮无接触筛选通过": real_passed,
+            "结论": ("三轮实机无接触筛选通过；接触参数仍待用户决定" if real_passed
+                     else "三轮 URSim 机器人脚本隔离验证通过；正式主机链路和实机未验证" if passed and script_only
+                     else "三轮控制器隔离检查通过；正式完整链路及实机无接触与接触未验证" if passed and isolated
+                     else "三轮 URSim 软件链路检查通过；实机无接触与接触未验证" if passed
+                     else "三轮验收未通过"),
+            "汇总问题": reasons, "各轮": reports,
+            "解释范围": "每轮重新启动、重新采偏置、累计统计清零；不同候选不能凑足三轮，单轮失败不能被其他轮覆盖。"}
+
+
 def main():
     """从命令行读取一轮日志目录并输出中文 JSON 报告。"""
-    parser = argparse.ArgumentParser(description="只读分析导纳日志；不连接设备、不修改日志、不自动判定通过或失败。")
-    parser.add_argument("run_dir", type=Path, help="包含 metadata.json 和 records.jsonl 的单轮日志目录")
+    parser = argparse.ArgumentParser(description="只读分析导纳日志；--stage-a 严格核对 J1 无接触首候选，URSim 结果不代表实机通过。")
+    parser.add_argument("run_dir", type=Path, nargs="+", help="包含 metadata.json 和 records.jsonl 的日志目录；--stage-a 可接受三轮目录")
+    parser.add_argument("--stage-a", action="store_true", help="仅输出严格 J1 首阶段报告；缺最终逐周期统计不得通过")
     parser.add_argument("--motion-window", type=float, nargs=2, action="append", metavar=("START", "END"),
                         help="日志 schema 3（遥测布局 3/4）的原始 RTDE 运动窗口，单位秒，可重复；默认微动取 1～3 与 5～7 秒")
     parser.add_argument("--tail-seconds", type=float, default=3.0, help="日志 schema 3（遥测布局 3/4）的六轴残差尾窗秒数，默认 3")
     args = parser.parse_args()
-    print(json.dumps(analyze(args.run_dir, motion_windows=args.motion_window, tail_seconds=args.tail_seconds),
-                     ensure_ascii=False, indent=2, allow_nan=False))
+    if args.stage_a:
+        report = (analyze_j1_no_contact(args.run_dir[0]) if len(args.run_dir) == 1
+                  else summarize_j1_no_contact(args.run_dir))
+    else:
+        if len(args.run_dir) != 1:
+            parser.error("多轮汇总请使用 --stage-a")
+        report = analyze(args.run_dir[0], motion_windows=args.motion_window, tail_seconds=args.tail_seconds)
+    print(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False))
 
 
 if __name__ == "__main__":

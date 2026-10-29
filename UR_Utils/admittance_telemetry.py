@@ -28,9 +28,10 @@ ROBOT_FIELDS = (
 )
 
 _TYPE_BYTES = {"DOUBLE": 8, "UINT32": 4, "INT32": 4, "VECTOR6D": 48, "VECTOR3D": 24}
-TELEMETRY_SCHEMA_VERSION = 4
+TELEMETRY_SCHEMA_VERSION = 5
+STATISTICS_SCHEMA_VERSION = 1
 LOAD_SOURCE_CODES = {"joint_torque": 0, "flange_wrench": 1}
-PAGE_NAMES = {1: "anchor", 2: "load", 3: "execution", 4: "timing"}
+PAGE_NAMES = {1: "anchor", 2: "load", 3: "execution", 4: "timing", 5: "statistics"}
 _COMMON_INT_FIELDS = (
     "phase", "exit_reason", "adopted_source_seq", "model_sample_seq", "reference_source",
     "heartbeat_echo", "heartbeat_age_us", "heartbeat_max_interval_us", "page_seq_begin",
@@ -39,7 +40,7 @@ _COMMON_INT_FIELDS = (
 _PAGE_INT_FIELDS = {
     1: ("snapshot_time_us", "dt_base_us", "dt_model_design_us", "bias_sample_count",
         "observation_axis", "motion_axis", "diagnostic_mode", "load_source_code", "telemetry_schema_version",
-        "reserved", "reserved", "snapshot_time_us"),
+        "config_id", "reserved", "snapshot_time_us"),
     2: ("sample_time_us", "dt_model_actual_us", "dt_model_max_us", "compute_duration_us",
         "bias_sample_count", "generated_seq", "submitted_seq", "limit_reason",
         "load_duration_us", "publish_duration_us", "bias_ready", "snapshot_time_us"),
@@ -48,6 +49,9 @@ _PAGE_INT_FIELDS = {
         "servoj_max_interval_us", "snapshot_time_us"),
     4: ("generated_seq", "submitted_seq", "adopted_seq", "frame", "based_on_seq", "start_frame",
         "end_frame", "gap_count", "limit_reason", "bias_sample_count", "bias_ready", "snapshot_time_us"),
+    5: ("statistics_schema_version", "config_id", "start_sample_seq", "end_sample_seq",
+        "valid_cycle_count", "nonzero_drive_count", "first_nonzero_sample_seq", "invalid_cycle_count",
+        "trajectory_complete", "final", "complete", "snapshot_time_us"),
 }
 TIMING_FLOAT_FIELDS = (
     "sample_time_s", "generated_time_s", "submitted_time_s", "adopted_time_s",
@@ -56,6 +60,10 @@ TIMING_FLOAT_FIELDS = (
     *(f"bias_std_nm[{axis}]" for axis in range(6)),
     "compute_duration_s", "compute_max_duration_s", "servoj_duration_s",
     "servoj_duration_max_s", "publish_duration_s", "publish_max_duration_s",
+)
+STATISTICS_FLOAT_FIELDS = (
+    "start_sample_time_s", "end_sample_time_s", "filtered_min_nm", "filtered_max_nm",
+    "max_abs_drive_nm", "first_nonzero_time_s",
 )
 
 
@@ -109,7 +117,7 @@ def load_source_description(source: str) -> str:
 
 
 def log_schema(config: dict, space: str) -> dict:
-    """记录第四版输入来源和完整冻结页，不混用历史补偿力矩字段。"""
+    """记录第五版逐模型周期统计及冻结页，历史缺失值不可作为零值。"""
     int_base = config["ADMITTANCE_OUTPUT_INT_BASE"]
     float_base = config["ADMITTANCE_OUTPUT_FLOAT_BASE"]
     registers = {f"output_int_register_{int_base + index}": name
@@ -125,6 +133,7 @@ def log_schema(config: dict, space: str) -> dict:
             "load": f"{('input_raw_nm', 'bias_nm', 'filtered_nm', 'drive')[block]}[{axis}]",
             "execution": f"{('q_cmd', 'qd_cmd', 'q_nom', 'delta_q')[block]}[{axis}]",
             "timing": TIMING_FLOAT_FIELDS[index],
+            "statistics": STATISTICS_FLOAT_FIELDS[index] if index < 6 else "未使用",
         }
     return {
         "telemetry_schema_version": TELEMETRY_SCHEMA_VERSION,
@@ -145,10 +154,15 @@ def log_schema(config: dict, space: str) -> dict:
         },
         "program_seen": "已收到运行身份与本轮一致、起止序号相同且大于零的完整页",
         "lifecycle_valid": "本包属于本轮完整页；停止状态不依赖锚点确认",
-        "derived_valid": "本包属于本轮完整页且锚点已确认；原始 RTDE 机器人状态仍有独立采样时刻",
+        "derived_valid": "本包属于本轮完整页且锚点已确认；原始 RTDE 机器人状态仍有独立采样时刻。统计页另以 run/config 身份校验，锚点未确认的空终态仍可保留",
         "page_identity": "每页有 run_id、page_seq、model_sample_seq、snapshot_time_s 和到达关联时间；缓存保留各自身份，不跨页拼成同步样本",
         "continuous.execution": "最近完整执行页；q_cmd/qd_cmd 为执行器已采用命令，生成和提交身份不代表已经执行",
         "continuous.timing": "最近完整计时页；最大间隔、缺口计数由执行器累计，发布丢页不会清零",
+        "statistics": "机器人端 phase 2 每个模型周期累计的 J1 滤波输入与死区后 drive；每页冻结，非零计数不可清零。统计页版本为 1，缺失值保留 None，旧日志不得补零",
+        "statistics_identity": "run_id 标识运行，config_id 是每轮独立生成并固化到脚本及锚点的正整数配置令牌；元数据保存令牌和完整参数，不以它替代参数内容",
+        "statistics_completion": "final 表示停止后冻结；complete 还要求正常定时结束、完整预设轨迹及尾段、连续统计范围、有效周期数大于零且无失效周期。身份或字段异常、无终态、旧页与缺失统计均不能通过",
+        "statistics_invalid_cycle_count": "只统计 phase 2 中载荷或滤波/drive 失效的模型周期；执行器实际状态非有限另记退出原因 21 并令 complete 为假。零失效周期不替代原始状态和退出原因检查",
+        "statistics_final_received": "收到身份与字段校验通过的最终统计页；与 stopped_confirmed 独立，异常退出仍能确认停止，但不得据此声称统计完整",
         "load": "最近完整六轴载荷页；input_raw_nm/bias_nm/filtered_nm/drive 同页冻结，每页明确 load_source；偏置未完成时后三项为 None。布局3的 tau_raw_nm 仅代表历史补偿关节力矩",
         "q_start": "本轮固定锚点，只在完整锚点页确认一次，不因页面切换改变",
         "q_cmd": "仅当前执行页有效；其他类型页清空顶层命令，展示历史采用值需读取带身份的 continuous.execution",

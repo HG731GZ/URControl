@@ -4,6 +4,7 @@ from collections import OrderedDict
 from copy import deepcopy
 from contextlib import contextmanager
 from importlib.metadata import version
+import math
 import secrets
 import threading
 import time
@@ -19,8 +20,6 @@ from UR_Utils.admittance_transport import (
 )
 
 
-# 主机单包从准备到发送共用的期限，与机器人伺服周期独立。
-RTDE_SEND_TIMEOUT_S = 0.002
 _RAW_STATUS_FIELDS = frozenset(field[0] for field in admittance_telemetry.ROBOT_FIELDS)
 
 
@@ -34,6 +33,7 @@ EXIT_REASONS = {
     15: "模型计算超预算", 16: "连续伺服出现帧缺口",
     17: "速度缩放发生变化", 18: "目标交接身份无效",
     19: "受限运动实际速度超限", 20: "受限运动实际位置超出包络",
+    21: "载荷或模型统计存在非有限或无效数值",
 }
 
 
@@ -62,8 +62,9 @@ def idle_admittance_status() -> dict:
         "cycle_count": None, "parameters": None, "robot_configuration": None,
         "controller_version": None, "diagnostic": None,
         "telemetry_layout": admittance_telemetry.TELEMETRY_SCHEMA_VERSION,
-        "run_id": None, "page_type": None, "page_seq": None, "model_sample_seq": None,
+        "run_id": None, "config_id": None, "page_type": None, "page_seq": None, "model_sample_seq": None,
         "continuous": {"execution": None, "timing": None}, "load": None,
+        "statistics": None, "statistics_final_received": False, "statistics_validation_errors": [],
         "scaling_ok": False, "scaling_confirmed": False,
         "scaling_change_received_monotonic_s": None,
         "state_received_monotonic": None, "state_receive_count": 0,
@@ -77,6 +78,7 @@ def idle_admittance_status() -> dict:
         "rtde_processing_duration_s": None, "primary_processing_duration_s": None,
         "packet_prepare_duration_s": None, "packet_prepare_max_duration_s": None,
         "send_duration_s": None, "send_max_duration_s": None,
+        "send_warning_count": 0,
         "receive_duration_s": None, "receive_max_duration_s": None,
         "decode_duration_s": None, "decode_max_duration_s": None,
         "log_submit_duration_s": None, "log_submit_max_duration_s": None,
@@ -125,7 +127,9 @@ class URAdmittanceController:
                                  for i in range(8)]
         self._input_float_names = [f"input_double_register_{self.parameters['ADMITTANCE_INPUT_FLOAT_BASE'] + i}"
                                    for i in range(6)]
-        self._script = admittance_config.render_script(reference_source, space, config=self.parameters)
+        self._config_id = secrets.randbelow(2 ** 31 - 1) + 1
+        self._script = admittance_config.render_script(
+            reference_source, space, config=self.parameters, config_id=self._config_id)
         self._lock = threading.Lock()
         self._stop_requested = threading.Event() if stop_event is None else stop_event
         self._stop_logged = False
@@ -171,7 +175,7 @@ class URAdmittanceController:
             stopping=self._stop_requested.is_set(), stopped_confirmed=False,
             phase=0, phase_name=PHASE_NAMES[0], reference_source=reference_source,
             space=space, parameters=deepcopy(self.parameters),
-            run_id=self._run_id,
+            run_id=self._run_id, config_id=self._config_id,
         )
         if reference_source == "teleop":
             # 构造时保存启动参考；此时到达的停止标志仍由启动线程直接执行取消。
@@ -183,15 +187,16 @@ class URAdmittanceController:
         controller_context = {
             "robot_ip": robot_ip, "reference_source": reference_source, "space": space,
             "parameters": deepcopy(self.parameters),
-            "run_id": self._run_id,
+            "run_id": self._run_id, "config_id": self._config_id,
             "units": admittance_config.units(reference_source, space, config=self.parameters),
             "telemetry_schema": admittance_telemetry.log_schema(self.parameters, space),
         }
-        if self.parameters["DIAGNOSTIC_MODE"] == "fixed_joint_hold":
-            controller_context["fixed_hold_actual_limits"] = {
-                "max_qd_rad_s": self.parameters["SINGLE_AXIS_ACTUAL_MAX_QD_RAD_S"],
-                "margin_rad": self.parameters["SINGLE_AXIS_ACTUAL_MARGIN_RAD"],
-            }
+        actual_speeds, actual_margins = admittance_config.actual_guard_limits(self.parameters)
+        controller_context["actual_guard_limits"] = {
+            "axis_order": ["J1", "J2", "J3", "J4", "J5", "J6"],
+            "max_qd_rad_s": actual_speeds, "margin_rad": actual_margins,
+            "scope": "六轴实际反馈守卫，启动、偏置及运行阶段均生效；裕量加在各轴命令范围两侧",
+        }
         if self._log_sink is not None:
             # 固定上下文在关闭日志时也保留，供中途首次开启准确恢复本轮配置及脚本。
             self._log_sink.update_context({
@@ -430,6 +435,14 @@ class URAdmittanceController:
                               stopped_confirmed=True, phase=4, phase_name=PHASE_NAMES[4])
         status = self.get_status()
         status.update(complete_flags)
+        if self._log_sink is not None:
+            # 与停止确认分开保存：程序可被外部终止而没有产生最终统计。
+            self._log_sink.update_context({"model_statistics_result": {
+                "run_id": self._run_id, "config_id": self._config_id,
+                "statistics": status["statistics"],
+                "final_received": status["statistics_final_received"],
+                "validation_errors": status["statistics_validation_errors"],
+            }})
         # 完成事件先入队，再让界面看到 inactive，确保界面结束日志时事件已提交。
         self._record("controller_complete", {"status": status})
         with self._state_lock():
@@ -512,10 +525,13 @@ class URAdmittanceController:
             "rtde_library_version": version("UrRtde"),
             "rtde_library_path": rtde_module.__file__,
             "runtime_transport": "UR_Utils.admittance_transport.AdmittanceRTDE",
-            "runtime_send_timeout_s": RTDE_SEND_TIMEOUT_S,
-            "runtime_send_timing_version": 2,
+            "runtime_send_timeout_s": cfg["ADMITTANCE_RTDE_SEND_TIMEOUT_S"],
+            "runtime_send_warning_s": cfg["ADMITTANCE_RTDE_SEND_WARNING_S"],
+            "runtime_send_timing_version": 3,
             "runtime_send_contract": "从准备开始至完整写出共用单包期限；准备段仅采样时间点，"
-                                     "状态锁计时及分段统计在发送成功或失败后归并；失败不重发、不续期。",
+                                     "状态锁计时及分段统计在发送成功或失败后归并；失败不重发、不续期。"
+                                     "超过观测阈值累计并记录，不单独触发退出；超过退出期限仍终止本轮。"
+                                     "完整本机写出不等于机器人收到，机器人端心跳与运动守卫独立生效。",
             "runtime_receive_max_syscalls": 1,
             "runtime_receive_max_packets": 1,
             "runtime_receive_max_bytes": min(4096, cfg["ADMITTANCE_RTDE_BUFFER_LIMIT_BYTES"]),
@@ -532,8 +548,8 @@ class URAdmittanceController:
         """发送前只准备输入并采样时间点；统计归并与日志在发送结果确定后执行。"""
         prepare_clock = clock_sample()
         prepare_started = prepare_clock[0]
-        send_deadline = prepare_started + RTDE_SEND_TIMEOUT_S
         cfg = self.parameters
+        send_deadline = prepare_started + cfg["ADMITTANCE_RTDE_SEND_TIMEOUT_S"]
         if heartbeat:
             self._heartbeat = (self._heartbeat + 1) % (2 ** 31)
         snapshot_wait = clock_sample()
@@ -572,6 +588,10 @@ class URAdmittanceController:
                 "input_serialize": clock_interval(serialize_started, send_clock),
             }
             packet_total = clock_interval(prepare_clock, send_finished)
+            send_warning = packet_total["wall_s"] > cfg["ADMITTANCE_RTDE_SEND_WARNING_S"]
+            if send_warning:
+                with self._state_lock():
+                    self._status["send_warning_count"] += 1
             for name, sample in {**preparation_segments, "packet_prepare": prepare_timing,
                                  "send": clock_interval(send_clock, send_finished),
                                  "packet_total": packet_total}.items():
@@ -589,6 +609,8 @@ class URAdmittanceController:
                     "send_entry_remaining_s": send_deadline - send_started,
                     "heartbeat_deadline_monotonic_s": heartbeat_deadline,
                     "packet_prepare": prepare_timing, "packet_total": packet_total,
+                    "send_warning_threshold_s": cfg["ADMITTANCE_RTDE_SEND_WARNING_S"],
+                    "send_warning_exceeded": send_warning,
                     "transport_timing": {**preparation_segments, **self._connection.last_send_timing},
                 }, host_monotonic_s=send_finished[0])
         transport_timing = self._connection.last_send_timing
@@ -625,6 +647,7 @@ class URAdmittanceController:
                 "rtde_processing_duration_s", "primary_processing_duration_s",
                 "packet_prepare_duration_s", "packet_prepare_max_duration_s",
                 "send_duration_s", "send_max_duration_s",
+                "send_warning_count",
                 "receive_duration_s", "receive_max_duration_s",
                 "decode_duration_s", "decode_max_duration_s",
                 "log_submit_duration_s", "log_submit_max_duration_s",
@@ -659,6 +682,8 @@ class URAdmittanceController:
                 "send_duration_s": sent_monotonic - send_started,
                 "send_deadline_monotonic_s": send_deadline,
                 "send_entry_remaining_s": send_deadline - send_started,
+                "send_warning_threshold_s": cfg["ADMITTANCE_RTDE_SEND_WARNING_S"],
+                "send_warning_exceeded": send_warning,
                 "transport_timing": {**preparation_segments, "packet_prepare": prepare_timing,
                                      "packet_total": packet_total, **transport_timing},
                 "heartbeat_deadline_monotonic_s": heartbeat_deadline, "timing": timing,
@@ -782,17 +807,19 @@ class URAdmittanceController:
         if (lifecycle_valid and ints[10] == 1 and reason == 0
                 and self._diagnostic_anchor is None):
             if (ints[20] != admittance_telemetry.TELEMETRY_SCHEMA_VERSION
-                    or ints[19] != admittance_telemetry.LOAD_SOURCE_CODES[cfg["JOINT_LOAD_SOURCE"]]):
-                raise RuntimeError("导纳锚点页的输入来源或遥测版本与本轮配置不一致")
+                    or ints[19] != admittance_telemetry.LOAD_SOURCE_CODES[cfg["JOINT_LOAD_SOURCE"]]
+                    or ints[21] != self._config_id):
+                raise RuntimeError("导纳锚点页的输入来源、遥测版本或配置身份与本轮不一致")
             self._diagnostic_anchor = values[:6]
             self._diagnostic_anchor_ack = 1
         derived_valid = lifecycle_valid and self._diagnostic_anchor is not None
         page = None
-        if derived_valid:
+        if derived_valid or lifecycle_valid and ints[10] == 5:
             page = self._decode_page(ints, values)
             page.update(received_monotonic_s=received_monotonic,
                         robot_timestamp_s=float(state.timestamp))
         entry = self._sent_references.get(adopted) if self.reference_source == "teleop" else None
+        final_statistics = None
         self._record_timing("decode", elapsed_sample(decode_started))
         publish_started = clock_sample()
         with self._state_lock():
@@ -863,6 +890,21 @@ class URAdmittanceController:
                         if self.reference_source == "teleop":
                             self._status.update(q_master=None if entry is None else entry[1].tolist(),
                                                 source_seq=None if entry is None else entry[0])
+            if lifecycle_valid and ints[10] == 5:
+                # 统计包含独立配置身份；启动或偏置中停止也保留空的最终统计，
+                # 不依赖用于轨迹解码的锚点握手完成。
+                previous = self._status["statistics"]
+                if previous is None or previous["page_seq"] != page["page_seq"]:
+                    errors = list(self._status["statistics_validation_errors"])
+                    errors.extend(self._statistics_errors(page, previous))
+                    errors = list(dict.fromkeys(errors))
+                    page["validation_errors"] = errors
+                    self._status["statistics_validation_errors"] = errors
+                    self._status["statistics"] = page
+                    received_final = page["final"] and page["identity_valid"] and not errors
+                    self._status["statistics_final_received"] = received_final
+                    if received_final:
+                        final_statistics = page
             if self._controller_interruption is not None or self._stop_requested.is_set():
                 self._status.update(
                     controller_interruption=self._controller_interruption,
@@ -893,6 +935,8 @@ class URAdmittanceController:
             }, host_monotonic_s=received_monotonic, host_time_unix_s=received_wall_time)
             if configuration is not None:
                 self._record("robot_configuration", {"configuration": configuration})
+            if final_statistics is not None:
+                self._record("model_statistics_final", {"statistics": final_statistics})
             if scaling_event is not None:
                 self._record(scaling_event, {
                     "speed_scaling": robot["speed_scaling"],
@@ -905,7 +949,7 @@ class URAdmittanceController:
                 self._record("controller_error", {"message": control["last_error"], "status": control})
 
     def _decode_page(self, ints: list[int], values: list[float]) -> dict:
-        """按第四版布局解码冻结页，来源由已核对锚点的本轮配置确定。"""
+        """按第五版布局解码冻结页，来源由已核对锚点的本轮配置确定。"""
         def seconds(value: int) -> Optional[float]:
             """整数时间以微秒传输，负值表示尚无该测量。"""
             return value / 1_000_000 if value >= 0 else None
@@ -919,7 +963,7 @@ class URAdmittanceController:
             page.update(q_anchor=values[:6], dt_base_s=seconds(ints[13]),
                         dt_model_design_s=seconds(ints[14]), bias_sample_count=ints[15],
                         observation_axis=ints[16], motion_axis=ints[17], diagnostic_mode=ints[18],
-                        load_source_code=ints[19], telemetry_schema_version=ints[20])
+                        load_source_code=ints[19], telemetry_schema_version=ints[20], config_id=ints[21])
         elif layout == 2:
             bias_ready = bool(ints[22])
             page.update(
@@ -933,6 +977,27 @@ class URAdmittanceController:
                 filtered_nm=values[12:18] if bias_ready else None,
                 drive=values[18:24] if bias_ready else None,
             )
+        elif layout == 5:
+            page["exit_reason"] = ints[1]
+            page.update(zip(("statistics_schema_version", "config_id", "start_sample_seq",
+                             "end_sample_seq", "valid_cycle_count", "nonzero_drive_count",
+                             "first_nonzero_sample_seq", "invalid_cycle_count"), ints[12:20]))
+            page.update(trajectory_complete=ints[20] == 1, final=ints[21] == 1,
+                        complete=ints[22] == 1,
+                        identity_valid=(ints[12] == admittance_telemetry.STATISTICS_SCHEMA_VERSION
+                                        and ints[13] == self._config_id and ints[11] == self._run_id),
+                        validation_errors=[])
+            for name, value in zip(admittance_telemetry.STATISTICS_FLOAT_FIELDS, values[:6]):
+                page[name] = value
+            for name in ("start_sample_seq", "end_sample_seq", "first_nonzero_sample_seq",
+                         "start_sample_time_s", "end_sample_time_s", "first_nonzero_time_s"):
+                if page[name] == -1:
+                    page[name] = None
+            if page["valid_cycle_count"] == 0:
+                for name in ("filtered_min_nm", "filtered_max_nm", "max_abs_drive_nm"):
+                    page[name] = None
+            if any(value not in (0, 1) for value in ints[20:23]):
+                page["validation_errors"].append("statistics flags must be 0 or 1")
         else:
             page.update(dict(zip(("generated_seq", "submitted_seq", "adopted_seq", "frame", "based_on_seq",
                                   "start_frame", "end_frame", "gap_count", "limit_reason"), ints[12:21])))
@@ -946,6 +1011,74 @@ class URAdmittanceController:
                 page.update(bias_sample_count=ints[21], bias_ready=bool(ints[22]),
                             bias_std_nm=values[12:18] if ints[22] else None)
         return page
+
+    @staticmethod
+    def _statistics_errors(page: dict, previous: Optional[dict]) -> list[str]:
+        """校验统计本身及累计单调性；异常锁存但不妨碍独立的停止确认。"""
+        errors = list(page["validation_errors"])
+        if not page["identity_valid"]:
+            errors.append("statistics schema, run or config identity mismatch")
+        count = page["valid_cycle_count"]
+        invalid = page["invalid_cycle_count"]
+        nonzero = page["nonzero_drive_count"]
+        if min(count, invalid, nonzero) < 0 or nonzero > count:
+            errors.append("statistics cycle counts are invalid")
+        start, end = page["start_sample_seq"], page["end_sample_seq"]
+        start_time, end_time = page["start_sample_time_s"], page["end_sample_time_s"]
+        finite = lambda value: isinstance(value, (int, float)) and math.isfinite(value)
+        if count + invalid > 0:
+            if (start is None or end is None or start < 1 or end < start
+                    or end - start + 1 != count + invalid):
+                errors.append("statistics sample range does not cover every model cycle")
+            if (not finite(start_time) or not finite(end_time)
+                    or start_time < 0 or end_time < start_time):
+                errors.append("statistics sample time range is invalid")
+        elif any(value is not None for value in (start, end, start_time, end_time)):
+            errors.append("empty statistics has a nonempty sample range")
+        if count > 0:
+            low, high, maximum = (page[name] for name in
+                                  ("filtered_min_nm", "filtered_max_nm", "max_abs_drive_nm"))
+            if not all(finite(value) for value in (low, high, maximum)):
+                errors.append("statistics extrema contain nonfinite values")
+            elif low > high or maximum < 0 or (nonzero == 0) != (maximum == 0):
+                errors.append("statistics extrema disagree with cycle counts")
+        first, first_time = page["first_nonzero_sample_seq"], page["first_nonzero_time_s"]
+        if nonzero > 0:
+            if (first is None or start is None or end is None or not start <= first <= end
+                    or not finite(first_time) or not finite(start_time) or not finite(end_time)
+                    or not start_time <= first_time <= end_time):
+                errors.append("statistics first nonzero sample is invalid")
+        elif first is not None or first_time is not None:
+            errors.append("zero-drive statistics has a first nonzero sample")
+        if page["final"] and page["phase"] != 4:
+            errors.append("final statistics was published before stopped phase")
+        if page["complete"] and (not page["final"] or not page["trajectory_complete"] or page["exit_reason"] != 11
+                                 or invalid != 0 or count <= 0 or end != page["model_sample_seq"]):
+            errors.append("complete statistics does not satisfy final coverage requirements")
+        if previous is not None:
+            if page["page_seq"] <= previous["page_seq"]:
+                errors.append("statistics page sequence moved backwards")
+            if previous["final"]:
+                errors.append("statistics changed after final publication")
+            if any(page[name] < previous[name] for name in
+                   ("valid_cycle_count", "invalid_cycle_count", "nonzero_drive_count")):
+                errors.append("statistics accumulated counts moved backwards")
+            if previous["start_sample_seq"] is not None:
+                if (start != previous["start_sample_seq"]
+                        or start_time != previous["start_sample_time_s"]):
+                    errors.append("statistics start sample changed")
+            if previous["nonzero_drive_count"] > 0:
+                if (first != previous["first_nonzero_sample_seq"]
+                        or first_time != previous["first_nonzero_time_s"]):
+                    errors.append("statistics first nonzero sample changed")
+            if previous["valid_cycle_count"] > 0 and count > 0:
+                for name, direction in (("filtered_min_nm", 1), ("filtered_max_nm", -1),
+                                        ("max_abs_drive_nm", -1)):
+                    if (finite(page[name]) and finite(previous[name])
+                            and direction * page[name] > direction * previous[name]):
+                        errors.append("statistics accumulated extrema moved backwards")
+                        break
+        return errors
 
     @staticmethod
     def _advance_deadline(deadline: float, period: float, now: float) -> float:

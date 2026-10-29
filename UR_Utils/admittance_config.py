@@ -6,6 +6,7 @@ from pathlib import Path
 from string import Template
 
 from UR_Utils import admittance_telemetry
+from UR_Utils.admittance_trajectory import profile_parameters
 
 
 # 以下值仅为低速联调起点，尚未针对具体工具和接触环境整定。
@@ -22,12 +23,17 @@ DIAGNOSTIC_AXIS = 1
 DIAGNOSTIC_MOTION_AXIS = 1
 DIAGNOSTIC_MOTION_AMPLITUDE_RAD = 0.004
 DIAGNOSTIC_MOTION_PERIOD_S = 8.0
+DIAGNOSTIC_MOTION_PROFILE = "cosine"
+DIAGNOSTIC_MOTION_NODE_HOLD_S = 2.0
+DIAGNOSTIC_MOTION_TAIL_HOLD_S = 10.0
 DIAGNOSTIC_MOTION_MAX_QD_RAD_S = 0.003
 DIAGNOSTIC_MOTION_MAX_QDD_RAD_S2 = 0.02
 DIAGNOSTIC_MOTION_TRACKING_RAD = 0.005
 # 微动实际反馈独立约束：运动轴允许轨迹两侧各一段裕量，其余轴仅允许锚点两侧裕量。
 DIAGNOSTIC_MOTION_ACTUAL_MAX_QD_RAD_S = 0.003
 DIAGNOSTIC_MOTION_ACTUAL_MARGIN_RAD = 0.001
+DIAGNOSTIC_MOTION_NON_MOTION_ACTUAL_MAX_QD_RAD_S = 0.003
+DIAGNOSTIC_MOTION_NON_MOTION_ACTUAL_MARGIN_RAD = 0.001
 # 微动停止确认须低于运行速度量级，不沿用普通流程的 0.01 rad/s 静止阈值。
 DIAGNOSTIC_MOTION_STOP_MAX_QD_RAD_S = 0.0001
 # 第六步仅开放 J1 或 J3 的单轴接触联调，使用独立的小范围约束。
@@ -37,6 +43,8 @@ SINGLE_AXIS_MAX_QDD_RAD_S2 = 0.02
 SINGLE_AXIS_TRACKING_RAD = 0.005
 SINGLE_AXIS_ACTUAL_MAX_QD_RAD_S = 0.003
 SINGLE_AXIS_ACTUAL_MARGIN_RAD = 0.001
+SINGLE_AXIS_NON_MOTION_ACTUAL_MAX_QD_RAD_S = 0.003
+SINGLE_AXIS_NON_MOTION_ACTUAL_MARGIN_RAD = 0.001
 SINGLE_AXIS_STOP_MAX_QD_RAD_S = 0.0001
 DIAGNOSTIC_STATE_HZ = 500.0
 DIAGNOSTIC_SETTLE_S = 1.0
@@ -51,6 +59,10 @@ ADMITTANCE_HEARTBEAT_HZ = 50.0
 # 80 毫秒软件超时到 10 赫兹硬看门狗仅有名义 20 毫秒间隙，不能保证 stopj 完成减速。
 ADMITTANCE_WATCHDOG_MIN_HZ = 10.0
 ADMITTANCE_HEARTBEAT_TIMEOUT_S = 0.08
+# 主机单包组包和发送的观测阈值、退出期限，均独立于机器人伺服周期。
+# 默认保持和 J1 无接触候选均为 2 ms 观测、10 ms 退出。
+ADMITTANCE_RTDE_SEND_WARNING_S = 0.002
+ADMITTANCE_RTDE_SEND_TIMEOUT_S = 0.010
 # 收发循环每轮只处理限定时间和字节量，避免状态或诊断积压阻塞下一次心跳。
 ADMITTANCE_RTDE_READ_BUDGET_S = 0.002
 ADMITTANCE_RTDE_BUFFER_LIMIT_BYTES = 4096
@@ -128,6 +140,51 @@ def snapshot():
     }
 
 
+def j1_no_contact_config():
+    """显式选择讨论稿中的 J1 无接触筛选候选；不改变默认或接触模式参数。"""
+    values = snapshot()
+    values.update({
+        "DIAGNOSTIC_MODE": "preset_joint_motion",
+        "DIAGNOSTIC_AXIS": 1,
+        "DIAGNOSTIC_MOTION_AXIS": 1,
+        "DIAGNOSTIC_MOTION_PROFILE": "bidirectional_trapezoid",
+        "DIAGNOSTIC_MOTION_AMPLITUDE_RAD": .10,
+        "DIAGNOSTIC_MOTION_MAX_QD_RAD_S": .03,
+        "DIAGNOSTIC_MOTION_MAX_QDD_RAD_S2": .2,
+        "DIAGNOSTIC_MOTION_TRACKING_RAD": .005,
+        "DIAGNOSTIC_MOTION_ACTUAL_MAX_QD_RAD_S": .06,
+        "DIAGNOSTIC_MOTION_ACTUAL_MARGIN_RAD": .001,
+        "DIAGNOSTIC_MOTION_NON_MOTION_ACTUAL_MAX_QD_RAD_S": .003,
+        "DIAGNOSTIC_MOTION_NON_MOTION_ACTUAL_MARGIN_RAD": .001,
+        "DIAGNOSTIC_MOTION_NODE_HOLD_S": 2.,
+        "DIAGNOSTIC_MOTION_TAIL_HOLD_S": 10.,
+        "JOINT_LOAD_SOURCE": "joint_torque",
+        "JOINT_AXES": [1, 0, 0, 0, 0, 0],
+        "ADMITTANCE_RTDE_SEND_TIMEOUT_S": .010,
+    })
+    values["JOINT_DEADBAND_NM"][0] = 10.
+    values["JOINT_MASS"][0] = 6.
+    values["JOINT_DAMPING"][0] = 30.
+    values["JOINT_STIFFNESS"][0] = 30.
+    values["DIAGNOSTIC_DURATION_S"] = profile_parameters(values)["duration_s"]
+    return validate_run_config("fixed", "joint", config=values)
+
+
+def actual_guard_limits(config):
+    """返回与脚本一致的六轴实际速度和位置裕量；保持模式没有运动轴。"""
+    preset = config["DIAGNOSTIC_MODE"] == "preset_joint_motion"
+    prefix = "DIAGNOSTIC_MOTION" if preset else "SINGLE_AXIS"
+    speeds = [config[f"{prefix}_NON_MOTION_ACTUAL_MAX_QD_RAD_S"]] * 6
+    margins = [config[f"{prefix}_NON_MOTION_ACTUAL_MARGIN_RAD"]] * 6
+    axes = [config["DIAGNOSTIC_MOTION_AXIS"] - 1] if preset else [
+        i for i, enabled in enumerate(config["JOINT_AXES"])
+        if enabled and config["DIAGNOSTIC_MODE"] == "admittance"]
+    for axis in axes:
+        speeds[axis] = config[f"{prefix}_ACTUAL_MAX_QD_RAD_S"]
+        margins[axis] = config[f"{prefix}_ACTUAL_MARGIN_RAD"]
+    return speeds, margins
+
+
 def stop_speed_limit(config):
     """保持加载取证和受限单轴均使用低速停止确认，预设微动保留专用阈值。"""
     if config["DIAGNOSTIC_MODE"] == "preset_joint_motion":
@@ -190,6 +247,9 @@ def validate_config(config=None):
         elif name == "JOINT_LOAD_SOURCE":
             if value not in ("joint_torque", "flange_wrench"):
                 raise ValueError("JOINT_LOAD_SOURCE 必须为 joint_torque 或 flange_wrench")
+        elif name == "DIAGNOSTIC_MOTION_PROFILE":
+            if value not in ("cosine", "bidirectional_trapezoid"):
+                raise ValueError("DIAGNOSTIC_MOTION_PROFILE 必须为 cosine 或 bidirectional_trapezoid")
         elif isinstance(default, str):
             if value not in ("base", "tool_start"):
                 raise ValueError("CART_FRAME 必须为 base 或 tool_start")
@@ -215,6 +275,15 @@ def validate_config(config=None):
         raise ValueError("本阶段明确采用 2 ms 伺服、4 ms 模型与两帧片段")
     if values["DIAGNOSTIC_MOTION_AMPLITUDE_RAD"] > min(values["JOINT_MAX_OFFSET_RAD"]):
         raise ValueError("预设微动幅度不能超过关节偏移边界")
+    if values["DIAGNOSTIC_MOTION_PROFILE"] == "bidirectional_trapezoid":
+        if values["DIAGNOSTIC_MODE"] != "preset_joint_motion" or values["DIAGNOSTIC_MOTION_AXIS"] != 1 or values["DIAGNOSTIC_AXIS"] != 1:
+            raise ValueError("双向梯形仅用于 J1 预设无接触筛选，不能用于接触导纳或其他轴")
+        if values["JOINT_LOAD_SOURCE"] != "joint_torque" or values["JOINT_AXES"] != [1, 0, 0, 0, 0, 0]:
+            raise ValueError("J1 无接触筛选须仅启用 J1 并保持现有关节载荷通道")
+        if values["DIAGNOSTIC_MOTION_NODE_HOLD_S"] < 2. or values["DIAGNOSTIC_MOTION_TAIL_HOLD_S"] < 10.:
+            raise ValueError("J1 无接触筛选节点至少保持 2 秒，末尾至少保持 10 秒")
+        if abs(values["DIAGNOSTIC_DURATION_S"] - profile_parameters(values)["duration_s"]) > 1e-9:
+            raise ValueError("双向梯形的运行时长必须等于量化轨迹及完整尾段时长")
     for name, width in (("ADMITTANCE_INPUT_INT_BASE", 8), ("ADMITTANCE_INPUT_FLOAT_BASE", 6),
                         ("ADMITTANCE_OUTPUT_INT_BASE", 24), ("ADMITTANCE_OUTPUT_FLOAT_BASE", 24)):
         base = values[name]
@@ -230,6 +299,8 @@ def validate_config(config=None):
         raise ValueError("名义跟踪和关节导纳速度之和不能超过最终速度上限")
     if not 2 / values["ADMITTANCE_HEARTBEAT_HZ"] < values["ADMITTANCE_HEARTBEAT_TIMEOUT_S"] < 1 / values["ADMITTANCE_WATCHDOG_MIN_HZ"]:
         raise ValueError("软件心跳超时必须覆盖两个心跳周期，并早于机器人 RTDE 看门狗")
+    if not values["ADMITTANCE_RTDE_SEND_WARNING_S"] <= values["ADMITTANCE_RTDE_SEND_TIMEOUT_S"] < 1 / values["ADMITTANCE_HEARTBEAT_HZ"]:
+        raise ValueError("发送观测阈值不能大于退出期限，退出期限必须小于心跳周期")
     if values["ADMITTANCE_RTDE_READ_BUDGET_S"] + values["ADMITTANCE_PRIMARY_READ_BUDGET_S"] >= 1 / values["ADMITTANCE_HEARTBEAT_HZ"]:
         raise ValueError("每轮 RTDE 与 Primary 读取预算之和必须小于心跳周期")
     # 状态配方增加字段后，缓冲下限随完整数据包长度同步变化。
@@ -244,6 +315,9 @@ def validate_config(config=None):
         raise ValueError("单轮导纳联调最长 60 秒，请分轮采集以限制高频日志容量")
     if values["SINGLE_AXIS_STOP_MAX_QD_RAD_S"] >= values["SINGLE_AXIS_ACTUAL_MAX_QD_RAD_S"]:
         raise ValueError("单轴停止确认速度必须小于实际运行速度上限")
+    for prefix in ("SINGLE_AXIS", "DIAGNOSTIC_MOTION"):
+        if values[f"{prefix}_STOP_MAX_QD_RAD_S"] >= min(values[f"{prefix}_ACTUAL_MAX_QD_RAD_S"], values[f"{prefix}_NON_MOTION_ACTUAL_MAX_QD_RAD_S"]):
+            raise ValueError(f"{prefix} 停止确认速度必须小于运动轴及非运动轴实际速度上限")
     if values["ADMITTANCE_STOP_TIMEOUT_S"] <= max(values["COMMAND_MAX_QD_RAD_S"]) / values["STOP_JOINT_ACCEL_RAD_S2"]:
         raise ValueError("停止超时必须覆盖最大命令速度的减速时间")
     if max(values["ADMITTANCE_STATE_HZ"], values["DIAGNOSTIC_STATE_HZ"], values["TELEOP_REFERENCE_HZ"], values["ADMITTANCE_HEARTBEAT_HZ"]) > 500:
@@ -277,10 +351,19 @@ def validate_run_config(reference_source, space, *, config=None):
     return values
 
 
-def render_script(reference_source, space, *, config=None):
+def render_script(reference_source, space, *, config=None, config_id=0):
     """将已验证的固定类型参数写入完整主程序，不执行或连接机器人。"""
     values = validate_run_config(reference_source, space, config=config)
+    if isinstance(config_id, bool) or not isinstance(config_id, int) or not 0 <= config_id <= 2147483647:
+        raise ValueError("config_id 必须为非负 32 位整数")
     rendered = {name: repr(value) for name, value in values.items()}
+    rendered["CONFIG_ID"] = str(config_id)
+    rendered["DIAGNOSTIC_MOTION_PROFILE_CODE"] = "1" if values["DIAGNOSTIC_MOTION_PROFILE"] == "bidirectional_trapezoid" else "0"
+    speeds, margins = actual_guard_limits(values)
+    rendered["ACTUAL_MAX_QD_BY_AXIS"] = repr(speeds)
+    rendered["ACTUAL_MARGIN_BY_AXIS"] = repr(margins)
+    for name, value in profile_parameters(values).items():
+        rendered[f"TRAJECTORY_{name.upper()}"] = repr(value)
     rendered["REFERENCE_SOURCE"] = "1" if reference_source == "teleop" else "3"
     rendered["ADMITTANCE_SPACE"] = "1" if space == "joint" else "2"
     rendered["DIAGNOSTIC_MODE_CODE"] = str({"admittance": 0, "fixed_joint_hold": 1, "preset_joint_motion": 2}[values["DIAGNOSTIC_MODE"]])
