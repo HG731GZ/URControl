@@ -1,4 +1,4 @@
-"""从三份 Designer 源文件生成界面，只转换生成器说明注释。"""
+"""从经典主界面与导纳窗口的 Designer 源文件生成界面，只转换生成器说明注释。"""
 
 from pathlib import Path
 import subprocess
@@ -8,7 +8,7 @@ import sys
 def generate():
     """使用当前 Python 环境中的 PyQt5 生成器，不计算内容签名。"""
     directory = Path(__file__).resolve().parent
-    for name in ("admittance_window", "main_window", "classic_window"):
+    for name in ("classic_window", "admittance_window"):
         source = directory / (name + ".ui")
         destination = directory / ("ui_" + name + ".py")
         subprocess.run([sys.executable, "-m", "PyQt5.uic.pyuic", str(source),

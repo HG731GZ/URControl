@@ -15,6 +15,9 @@ OPERATOR_EVENTS = {
     "force_start": "施力开始", "hold_start": "开始保持受载", "released": "完全松手",
     "buzzing": "听到嗡鸣", "stop_requested": "请求停止",
 }
+# 顺序对应 Designer 中的候选项；六轴候选仅开放固定参考。
+JOINT_CANDIDATE_AXES = ((), (1,), (3,), (1, 3), (2,), (4,), (5,), (6,), (1, 2, 3, 4, 5, 6),
+                        (1, 2, 3, 4, 5, 6))
 
 
 class AdmittanceWindow(QtWidgets.QMainWindow):
@@ -40,6 +43,7 @@ class AdmittanceWindow(QtWidgets.QMainWindow):
         self._binding = False
         self._context = {
             "robot_ready": False, "busy": False, "occupied": False,
+            "standalone": False,
             "stop_pending": False, "master_fresh": False, "synced": False,
             "phase": "未开启", "run_id": None, "robot_address": "未连接",
             "controller_joint_limits": None, "parameters_revision": 0,
@@ -114,6 +118,7 @@ class AdmittanceWindow(QtWidgets.QMainWindow):
         self._fill_waiting_tables()
         self._plot_window_changed()
         self._update_controls()
+        self.set_candidate(admittance_config.fixed_joint_deployment_config())
 
     @property
     def reference_source(self):
@@ -206,15 +211,18 @@ class AdmittanceWindow(QtWidgets.QMainWindow):
 
     def _candidate_changed(self, index):
         """只更改下轮草稿，现场点击应用后才交给启动入口。"""
-        axes = ((), (1,), (3,), (1, 3))[index]
-        values = admittance_config.joint_contact_config(axes) if axes else admittance_config.snapshot()
+        axes = JOINT_CANDIDATE_AXES[index]
+        values = (admittance_config.fixed_joint_deployment_config() if index == 9 else
+                  admittance_config.joint_contact_config(axes) if axes else admittance_config.snapshot())
         self.parameters.select_candidate(values)
         self._write_editors()
 
     def set_candidate(self, values):
         """人工入口显示并应用完整候选，不在修改编辑器时丢掉运行约束。"""
         axes = tuple(i + 1 for i, enabled in enumerate(values["JOINT_AXES"]) if enabled)
-        index = ((), (1,), (3,), (1, 3)).index(axes) if values["DIAGNOSTIC_MODE"] == "admittance" else 0
+        index = JOINT_CANDIDATE_AXES.index(axes) if values["DIAGNOSTIC_MODE"] == "admittance" else 0
+        if axes == (1, 2, 3, 4, 5, 6) and values["DIAGNOSTIC_DURATION_S"] == 0:
+            index = 9
         self.ui.comboBox_JointCandidate.blockSignals(True)
         self.ui.comboBox_JointCandidate.setCurrentIndex(index)
         self.ui.comboBox_JointCandidate.blockSignals(False)
@@ -295,8 +303,12 @@ class AdmittanceWindow(QtWidgets.QMainWindow):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "导入常用参数预设", "", "JSON 预设 (*.json)")
         if not path:
             return
+        previous_draft = deepcopy(self.parameters.draft_parameters)
         try:
             reference_source, space, name = self.parameters.import_preset(path)
+            if self._context["standalone"] and (reference_source, space) != ("fixed", "joint"):
+                self.parameters.set_draft(previous_draft)
+                raise ValueError("独立入口只接受固定参考关节导纳预设；原草稿已保留")
         except (OSError, UnicodeError, ValueError) as error:
             QtWidgets.QMessageBox.warning(self, "预设导入失败", str(error))
             return
@@ -366,14 +378,17 @@ class AdmittanceWindow(QtWidgets.QMainWindow):
                       else self.parameters.prepared_parameters)
         diagnostic_axis = parameters["DIAGNOSTIC_AXIS"]
         diagnostic_mode = parameters["DIAGNOSTIC_MODE"]
-        supported_selection = self.space == "joint" and (not teleop or diagnostic_mode == "admittance")
+        enabled_axes = [index + 1 for index, enabled in enumerate(parameters["JOINT_AXES"]) if enabled]
+        supported_axes = diagnostic_mode != "admittance" or tuple(enabled_axes) in JOINT_CANDIDATE_AXES[1:]
+        supported_selection = self.space == "joint" and supported_axes and (
+            not teleop or diagnostic_mode == "admittance" and enabled_axes in ([1], [3], [1, 3]))
         for field in FIELDS:
             for editor in self._editors[field.key]:
                 editor.setEnabled(not occupied and field.participates(self.reference_source, self.space))
         for name in ("ApplyParameters", "RestoreDefaults", "ImportParameters"):
             getattr(self.ui, "pushButton_" + name).setEnabled(not occupied)
-        self.ui.comboBox_ReferenceSource.setEnabled(not occupied)
-        self.ui.comboBox_AdmittanceSpace.setEnabled(not occupied)
+        self.ui.comboBox_ReferenceSource.setEnabled(not occupied and not self._context["standalone"])
+        self.ui.comboBox_AdmittanceSpace.setEnabled(not occupied and not self._context["standalone"])
         self.ui.comboBox_JointCandidate.setEnabled(not occupied)
         self.ui.pushButton_StartAdmittance.setEnabled(
             idle and ready_source and not self.parameters.has_unapplied_changes
@@ -401,19 +416,24 @@ class AdmittanceWindow(QtWidgets.QMainWindow):
             text = (f"预设微动；J{parameters['DIAGNOSTIC_MOTION_AXIS']} 运动，J{diagnostic_axis} 观测，"
                     "外力不驱动目标。")
         else:
-            enabled_axes = [index + 1 for index, enabled in enumerate(parameters["JOINT_AXES"]) if enabled]
             axes_text = "、".join(f"J{axis}" for axis in enabled_axes) or "未选择"
             text = f"关节导纳；当前启用 {axes_text}，J{diagnostic_axis} 观测。"
-            if enabled_axes not in ([1], [3], [1, 3]):
-                text += " 本阶段请选择 J1、J3 或 J1+J3。"
+            if tuple(enabled_axes) not in JOINT_CANDIDATE_AXES[1:]:
+                text += " 本阶段请选择单轴、J1+J3 或六轴同时开启。"
             offsets, speeds, _, _ = admittance_config.joint_command_limits(parameters)
-            text += f" 限时 {parameters['DIAGNOSTIC_DURATION_S']:g} 秒；" + "；".join(
+            duration = parameters["DIAGNOSTIC_DURATION_S"]
+            text += (f" 限时 {duration:g} 秒；" if duration > 0 else " 持续运行至停止；") + "；".join(
                 f"J{axis} ±{offsets[axis - 1]:g} rad / {speeds[axis - 1]:g} rad/s" for axis in enabled_axes)
-            if teleop:
+            if teleop and supported_selection:
                 text += "。受载时参考共同减速保持，撤力后追赶最新目标。"
         text += f" 伺服 {parameters['SERVO_DT_S'] * 1000:g} ms / 模型 {parameters['MODEL_DT_S'] * 1000:g} ms。"
         if not supported_selection:
-            text += " 请选择关节空间；遥操作须先选择并应用导纳候选。"
+            if self.space == "joint" and diagnostic_mode == "admittance" and supported_axes:
+                text += " 六轴及新增轴目前仅开放固定参考，请选择定点柔顺。"
+            elif self.space == "joint" and not supported_axes:
+                text += " 当前轴组合尚未开放，启动已禁用。"
+            else:
+                text += " 请选择关节空间；遥操作须先选择并应用导纳候选。"
         self.ui.label_DiagnosticMode.setText(text)
         self._update_debug_log_status()
 

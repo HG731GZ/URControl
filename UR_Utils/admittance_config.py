@@ -54,7 +54,7 @@ DIAGNOSTIC_MOTION_NON_MOTION_ACTUAL_MARGIN_RAD = 0.5
 # 微动停止确认须低于运行速度量级，不沿用普通流程的 0.01 rad/s 静止阈值。
 DIAGNOSTIC_MOTION_STOP_MAX_QD_RAD_S = 0.0001
 # 以下单轴标量保留 J1 候选的原有修改位置；j1_contact_config() 将其写入 J1 逐轴数组。
-# J3 与 J1+J3 采用后面的 JOINT_COMMAND_*，参数分别在各自候选函数中声明。
+# J2～J6、J1+J3 与六轴候选采用后面的 JOINT_COMMAND_*，参数分别在各自候选函数中声明。
 # 正常命令让位上限，单位 rad：最终 q_cmd 相对 q_start 限制在 ±此值，并提前按剩余距离减速。
 # 正常到达边界后继续限位保持，不因达到此值单独退出；不调整锚点，也不自动卸载。
 # 它限制发送目标，不保证 actual_q 与目标完全重合，更不是接触力上限。
@@ -86,7 +86,7 @@ SINGLE_AXIS_NON_MOTION_ACTUAL_MARGIN_RAD = 0.5
 # 它不参与正常限速，也不是“速度低于此值就自动停止”。
 SINGLE_AXIS_STOP_MAX_QD_RAD_S = 0.0001
 # 关节导纳最终命令逐轴约束；单轴和多轴使用同一执行器，禁用轴固定在启动锚点。
-# 接触候选在 joint_contact_config() 中分别填写 J1/J3，其他轴暂不开放运动。
+# 接触候选由 joint_contact_config() 选择；多轴组合逐轴继承单轴参数，不另设一套整臂参数。
 JOINT_COMMAND_MAX_OFFSET_RAD = [0.004] * 6
 JOINT_COMMAND_MAX_QD_RAD_S = [0.0015] * 6
 JOINT_COMMAND_MAX_QDD_RAD_S2 = [0.02] * 6
@@ -100,6 +100,7 @@ TELEOP_MAX_QD_RAD_S = [0.01, 0.005, 0.005, 0.003, 0.003, 0.003]
 TELEOP_MAX_QDD_RAD_S2 = [0.05, 0.025, 0.025, 0.015, 0.015, 0.015]
 DIAGNOSTIC_STATE_HZ = 500.0
 DIAGNOSTIC_SETTLE_S = 1.0
+# 人工联调使用正数限时；固定参考日常配置显式取 0，持续运行至用户停止或守卫退出。
 DIAGNOSTIC_DURATION_S = 15.0
 # 有限片段包含两个基础帧；模型超预算和片段耗尽仍独立停止，采样起点间隔仅观测。
 SERVO_DT_S = 0.002
@@ -297,18 +298,74 @@ def j3_no_contact_config():
     return validate_run_config("fixed", "joint", config=values)
 
 
+def single_joint_contact_config(axis):
+    """返回指定单轴的完整候选；剩余轴独立设参，不把 J1/J3 的验收结论外推。"""
+    if axis == 1:
+        return j1_contact_config()
+    if axis == 3:
+        return j3_contact_config()
+    # 每行依次为 M、D、K、连续死区（N·m）。
+    # J2 保留肩关节模型；腕部保留各自模型，不复制大关节的 10 N·m 死区。
+    # 2026-10-30 双向无接触残差峰值：J2 7.965、J4 1.518、J5 1.513、J6 1.727 N·m。
+    # 用户据此选择腕部死区 2 N·m，接受起动力增大；这些值只对应本轮空法兰条件。
+    # J6 手推后仍有小幅波动，用户看过末段数值后明确接受并保留 2 N·m，未采用 3 N·m 候选。
+    parameters = {
+        2: (6., 30., 30., 10.),
+        4: (1., 5., 5., 2.),
+        5: (1., 5., 5., 2.),
+        6: (.5, 3., 3., 2.),
+    }
+    if type(axis) is not int or axis not in parameters:
+        raise ValueError("单轴候选必须选择 J1～J6")
+    index = axis - 1
+    values = snapshot()
+    values.update(DIAGNOSTIC_MODE="admittance", DIAGNOSTIC_AXIS=axis,
+                  DIAGNOSTIC_MOTION_AXIS=axis, DIAGNOSTIC_DURATION_S=60.,
+                  JOINT_AXES=[int(i == index) for i in range(6)], JOINT_LOAD_SOURCE="joint_torque")
+    for key, value in zip(("JOINT_MASS", "JOINT_DAMPING", "JOINT_STIFFNESS", "JOINT_DEADBAND_NM"),
+                          parameters[axis]):
+        values[key][index] = value
+    # 新轴命令范围独立于 J1 的 80% 表达式；速度与 J3 当前候选一致。
+    # 单位依次为 rad、rad/s、rad/s²、rad；实际守卫继续取 ±0.5 rad 和 0.1 rad/s。
+    for suffix, value in (("MAX_OFFSET_RAD", .10), ("MAX_QD_RAD_S", .03),
+                          ("MAX_QDD_RAD_S2", .10), ("TRACKING_RAD", .005)):
+        values[f"JOINT_COMMAND_{suffix}"][index] = value
+    return validate_run_config("fixed", "joint", config=values)
+
+
+def joint_no_contact_config(axis):
+    """按所选轴候选执行一次双向无接触往返，节点停 2 秒、末尾停 10 秒。"""
+    values = single_joint_contact_config(axis)
+    index = axis - 1
+    values.update({
+        "DIAGNOSTIC_MODE": "preset_joint_motion",
+        "DIAGNOSTIC_MOTION_PROFILE": "bidirectional_trapezoid",
+        # 采集限制为 ±0.10 rad；不重新开启 J1 扩大行程的验证。
+        "DIAGNOSTIC_MOTION_AMPLITUDE_RAD": min(.10, values["JOINT_COMMAND_MAX_OFFSET_RAD"][index]),
+        "DIAGNOSTIC_MOTION_MAX_QD_RAD_S": values["JOINT_COMMAND_MAX_QD_RAD_S"][index],
+        "DIAGNOSTIC_MOTION_MAX_QDD_RAD_S2": values["JOINT_COMMAND_MAX_QDD_RAD_S2"][index],
+        "DIAGNOSTIC_MOTION_TRACKING_RAD": values["JOINT_COMMAND_TRACKING_RAD"][index],
+        "DIAGNOSTIC_MOTION_NODE_HOLD_S": 2.,
+        "DIAGNOSTIC_MOTION_TAIL_HOLD_S": 10.,
+    })
+    values["DIAGNOSTIC_DURATION_S"] = profile_parameters(values)["duration_s"]
+    return validate_run_config("fixed", "joint", config=values)
+
+
 def joint_contact_config(axes=(3,), *, reference_source="fixed"):
-    """选择 J1、J3 或 J1+J3；各轴独立积分，共同受最终命令和实际运动守卫约束。"""
-    if tuple(axes) not in ((1,), (3,), (1, 3)):
-        raise ValueError("本阶段开放 J1、J3 或 J1+J3，请按升序选择且不重复")
-    values = j1_contact_config() if tuple(axes) == (1,) else j3_contact_config()
-    if tuple(axes) == (1, 3):
-        j1 = j1_contact_config()
+    """选择单轴、J1+J3 或固定参考六轴；逐轴复用已选模型、死区及命令约束。"""
+    if tuple(axes) not in tuple((axis,) for axis in range(1, 7)) + ((1, 3), (1, 2, 3, 4, 5, 6)):
+        raise ValueError("本阶段选择 J1～J6 单轴、J1+J3 或六轴同时开启")
+    # 双轴仍观测 J3；六轴默认观测 J6，保留其已接受小幅波动的逐周期证据。
+    values = single_joint_contact_config(axes[-1])
+    for axis in axes[:-1]:
+        selected = single_joint_contact_config(axis)
+        index = axis - 1
         for key in ("JOINT_MASS", "JOINT_DAMPING", "JOINT_STIFFNESS", "JOINT_DEADBAND_NM",
                     "JOINT_COMMAND_MAX_OFFSET_RAD", "JOINT_COMMAND_MAX_QD_RAD_S",
                     "JOINT_COMMAND_MAX_QDD_RAD_S2", "JOINT_COMMAND_TRACKING_RAD"):
-            values[key][0] = j1[key][0]
-        values["JOINT_AXES"][0] = 1
+            values[key][index] = selected[key][index]
+        values["JOINT_AXES"][index] = 1
     return validate_run_config(reference_source, "joint", config=values)
 
 
@@ -318,6 +375,13 @@ def joint_command_limits(config):
     if "JOINT_COMMAND_MAX_OFFSET_RAD" in config:
         return tuple(list(config[f"JOINT_COMMAND_{suffix}"]) for suffix in suffixes)
     return tuple([config[f"SINGLE_AXIS_{suffix}"]] * 6 for suffix in suffixes)
+
+
+def fixed_joint_deployment_config():
+    """空法兰六关节日常使用：沿用已选参数，固定锚点，持续运行到显式停止。"""
+    values = joint_contact_config((1, 2, 3, 4, 5, 6))
+    values["DIAGNOSTIC_DURATION_S"] = 0.
+    return validate_run_config("fixed", "joint", config=values)
 
 
 def actual_guard_limits(config):
@@ -415,6 +479,11 @@ def validate_config(config=None):
         elif name == "DIAGNOSTIC_MODE":
             if value not in ("fixed_joint_hold", "preset_joint_motion", "admittance"):
                 raise ValueError("DIAGNOSTIC_MODE 必须为 fixed_joint_hold、preset_joint_motion 或 admittance")
+        elif name == "DIAGNOSTIC_DURATION_S":
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(value) or not 0 <= value <= 60:
+                raise ValueError("运行时长须为 0（持续运行）或不超过 60 秒的正有限数值")
+            if value == 0 and values["DIAGNOSTIC_MODE"] != "admittance":
+                raise ValueError("保持和预设轨迹必须使用正数限时，不能持续运行")
         elif name == "JOINT_LOAD_SOURCE":
             if value not in ("joint_torque", "flange_wrench"):
                 raise ValueError("JOINT_LOAD_SOURCE 必须为 joint_torque 或 flange_wrench")
@@ -449,12 +518,13 @@ def validate_config(config=None):
     if values["DIAGNOSTIC_MOTION_AMPLITUDE_RAD"] > min(values["JOINT_MAX_OFFSET_RAD"]):
         raise ValueError("预设微动幅度不能超过关节偏移边界")
     if values["DIAGNOSTIC_MOTION_PROFILE"] == "bidirectional_trapezoid":
-        if values["DIAGNOSTIC_MODE"] != "preset_joint_motion" or values["DIAGNOSTIC_MOTION_AXIS"] != 1 or values["DIAGNOSTIC_AXIS"] != 1:
-            raise ValueError("双向梯形仅用于 J1 预设无接触筛选，不能用于接触导纳或其他轴")
-        if values["JOINT_LOAD_SOURCE"] != "joint_torque" or values["JOINT_AXES"] != [1, 0, 0, 0, 0, 0]:
-            raise ValueError("J1 无接触筛选须仅启用 J1 并保持现有关节载荷通道")
+        motion_axis = values["DIAGNOSTIC_MOTION_AXIS"]
+        if values["DIAGNOSTIC_MODE"] != "preset_joint_motion" or values["DIAGNOSTIC_AXIS"] != motion_axis:
+            raise ValueError("双向梯形仅用于单轴预设无接触采集，观测轴须与运动轴相同")
+        if values["JOINT_LOAD_SOURCE"] != "joint_torque" or values["JOINT_AXES"] != [int(i + 1 == motion_axis) for i in range(6)]:
+            raise ValueError("无接触采集须仅启用所选运动轴，并保持关节载荷通道")
         if values["DIAGNOSTIC_MOTION_NODE_HOLD_S"] < 2. or values["DIAGNOSTIC_MOTION_TAIL_HOLD_S"] < 10.:
-            raise ValueError("J1 无接触筛选节点至少保持 2 秒，末尾至少保持 10 秒")
+            raise ValueError("无接触采集节点至少保持 2 秒，末尾至少保持 10 秒")
         if abs(values["DIAGNOSTIC_DURATION_S"] - profile_parameters(values)["duration_s"]) > 1e-9:
             raise ValueError("双向梯形的运行时长必须等于量化轨迹及完整尾段时长")
     for name, width in (("ADMITTANCE_INPUT_INT_BASE", 8), ("ADMITTANCE_INPUT_FLOAT_BASE", 6),
@@ -484,8 +554,6 @@ def validate_config(config=None):
         raise ValueError("启动超时必须大于偏置采样时长")
     if values["ADMITTANCE_START_TIMEOUT_S"] <= values["DIAGNOSTIC_SETTLE_S"] + values["ADMITTANCE_BIAS_DURATION_S"]:
         raise ValueError("启动超时必须大于统一伺服保持与偏置采样的总时长")
-    if values["DIAGNOSTIC_DURATION_S"] > 60:
-        raise ValueError("单轮导纳联调最长 60 秒，请分轮采集以限制高频日志容量")
     if values["SINGLE_AXIS_STOP_MAX_QD_RAD_S"] >= values["SINGLE_AXIS_ACTUAL_MAX_QD_RAD_S"]:
         raise ValueError("单轴停止确认速度必须小于实际运行速度上限")
     for prefix in ("SINGLE_AXIS", "DIAGNOSTIC_MOTION"):
@@ -507,10 +575,14 @@ def validate_run_config(reference_source, space, *, config=None):
         raise ValueError("当前开放关节导纳；末端空间与 IK 留待独立实现")
     if reference_source == "teleop" and values["DIAGNOSTIC_MODE"] != "admittance":
         raise ValueError("关节遥操作须选择导纳候选，保持和预设轨迹只用于固定参考")
+    if values["DIAGNOSTIC_DURATION_S"] == 0 and reference_source != "fixed":
+        raise ValueError("持续运行仅开放固定参考关节导纳，遥操作仍使用限时联调")
     if values["DIAGNOSTIC_MODE"] == "admittance":
         enabled_axes = [index + 1 for index, enabled in enumerate(values["JOINT_AXES"]) if enabled]
-        if enabled_axes not in ([1], [3], [1, 3]):
-            raise ValueError("当前关节导纳开放 J1、J3 或 J1+J3，其他轴保持启动锚点")
+        if len(enabled_axes) != 1 and enabled_axes not in ([1, 3], [1, 2, 3, 4, 5, 6]):
+            raise ValueError("本阶段开放 J1～J6 单轴、J1+J3 或六轴同时开启，其余组合另行联调")
+        if reference_source == "teleop" and enabled_axes not in ([1], [3], [1, 3]):
+            raise ValueError("六轴及新增轴仅开放固定参考；遥操作仍使用 J1、J3 或 J1+J3")
         offsets, speeds, accelerations, tracking = joint_command_limits(values)
         actual_speeds, margins = actual_guard_limits(values)
         for axis in (number - 1 for number in enabled_axes):

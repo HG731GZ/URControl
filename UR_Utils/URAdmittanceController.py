@@ -951,7 +951,7 @@ class URAdmittanceController:
                 self._record("controller_error", {"message": control["last_error"], "status": control})
 
     def _decode_page(self, ints: list[int], values: list[float]) -> dict:
-        """按第六版布局解码冻结页，来源和观测轴由本轮配置确定。"""
+        """按第七版布局解码冻结页：运行时间用毫秒，短周期计时仍用微秒。"""
         def seconds(value: int) -> Optional[float]:
             """整数时间以微秒传输，负值表示尚无该测量。"""
             return value / 1_000_000 if value >= 0 else None
@@ -959,7 +959,7 @@ class URAdmittanceController:
         layout = ints[10]
         page = {
             "run_id": ints[11], "page_seq": ints[8], "page_type": admittance_telemetry.PAGE_NAMES[layout],
-            "model_sample_seq": ints[3], "phase": ints[0], "snapshot_time_s": seconds(ints[23]),
+            "model_sample_seq": ints[3], "phase": ints[0], "snapshot_time_s": ints[23] / 1000,
         }
         if layout == 1:
             page.update(q_anchor=values[:6], dt_base_s=seconds(ints[13]),
@@ -969,7 +969,7 @@ class URAdmittanceController:
         elif layout == 2:
             bias_ready = bool(ints[22])
             page.update(
-                sample_time_s=seconds(ints[12]), dt_model_actual_s=seconds(ints[13]),
+                sample_time_s=ints[12] / 1000, dt_model_actual_s=seconds(ints[13]),
                 dt_model_max_s=seconds(ints[14]), compute_duration_s=seconds(ints[15]),
                 bias_sample_count=ints[16], generated_seq=ints[17], submitted_seq=ints[18],
                 limit_reason=ints[19], load_duration_s=seconds(ints[20]),
@@ -1122,6 +1122,16 @@ class URAdmittanceController:
                 )
             if max(abs(v) for v in baseline.actual_qd) > admittance_config.stop_speed_limit(cfg):
                 raise RuntimeError("机器人尚未静止，不能开始导纳偏置采样")
+            if cfg["DIAGNOSTIC_DURATION_S"] == 0:
+                # 日常部署当前只覆盖空法兰，安装条件在唯一上传边界核对。
+                if baseline.payload != 0 or any(baseline.tcp_offset):
+                    raise RuntimeError("当前持续运行配置要求空法兰、零负载和零 TCP 偏移")
+                if baseline.target_speed_fraction != 1:
+                    raise RuntimeError("当前持续运行配置要求速度滑条为 100%")
+                _, margins = admittance_config.actual_guard_limits(cfg)
+                if any(abs(q) + margin > limit for q, margin, limit in zip(
+                        baseline.actual_q, margins, cfg["JOINT_POSITION_LIMIT_RAD"])):
+                    raise RuntimeError("当前姿态的实际运动包络触及绝对关节边界，请先调整姿态")
             if self.reference_source == "teleop":
                 with self._state_lock():
                     sync_error = np.max(np.abs(self._q_master - np.asarray(baseline.actual_q)))

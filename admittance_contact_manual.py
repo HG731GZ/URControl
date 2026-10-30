@@ -1,4 +1,4 @@
-"""关节人工接触联调：选择 J1、J3 或 J1+J3，记录末端或连杆接触与撤力观察。"""
+"""关节人工接触联调：单轴、J1+J3 或六轴固定参考，记录接触与撤力观察。"""
 
 import argparse
 import json
@@ -31,7 +31,7 @@ class ContactSession(QtCore.QObject):
                      else self.config["DIAGNOSTIC_AXIS"]) - 1
         self.config["DIAGNOSTIC_AXIS"] = self.axis + 1
         self.axis_label = f"J{self.axis + 1}"
-        self.axes_label = "+".join(f"J{axis}" for axis in args.axes)
+        self.axes_label = "六轴" if len(args.axes) == 6 else "+".join(f"J{axis}" for axis in args.axes)
         offsets, speeds, _, _ = admittance_config.joint_command_limits(self.config)
         self.command_limit = offsets[self.axis]
         self.command_speed = speeds[self.axis]
@@ -74,6 +74,7 @@ class ContactSession(QtCore.QObject):
         self.controller = self.logger = None
         self.path = None
         self.completed = False
+        self.postcheck_pending = False
         self.external_confirmation_attempted = False
         self.running_timestamp = None
         self.running_monotonic = None
@@ -226,6 +227,9 @@ class ContactSession(QtCore.QObject):
 
     def stop(self, source="window"):
         """所有停止来源都交给正式导纳停止契约。"""
+        if self.postcheck_pending:
+            self.finish_stop(self.controller.get_status())
+            return
         if self.controller is not None and self.controller.active:
             self.logger.record("manual_stop_requested", {"source": source, "host_monotonic_s": time.monotonic()})
             self.controller.request_stop()
@@ -391,7 +395,7 @@ class ContactSession(QtCore.QObject):
 
     def refresh(self):
         """显示采样只用于人工提示，完整证据由正式 500 Hz 日志链记录。"""
-        if self.controller is None or self.completed:
+        if self.controller is None or self.completed or self.postcheck_pending:
             return
         state = self.controller.get_status()
         if self.controller.needs_external_stop_confirmation() and not self.external_confirmation_attempted:
@@ -468,22 +472,39 @@ class ContactSession(QtCore.QObject):
                 and self.release_monotonic is None and state["running"] and not self.alerted)
             self.window.ui.pushButton_EventReleased.setEnabled(self.force_started and self.release_monotonic is None)
         if not state["active"] and state["stopped_confirmed"]:
-            self.controller.close()
+            self.finish_stop(state)
+
+    def finish_stop(self, state):
+        """独立复核连续静止后收尾；未通过时保留窗口和日志，等现场显式再次检查。"""
+        self.controller.close()
+        try:
             observation = read_robot_state(self.args.robot_ip)
+            self.logger.record("manual_stop_observations", observation)
             require_stopped(observation, admittance_config.stop_speed_limit(self.config))
-            self.logger.record("manual_postcheck", observation)
-            self.logger.finish({"status": state})
-            (self.path / "manual_final_status.json").write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-            report = analyze(self.path)
-            (self.path / "descriptive_report.json").write_text(
-                json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
-            self.completed = True
-            self.window.ui.label_ContactStage.setText("已停止并保存描述性报告，请等待数据分析与现场评价")
-            self.window.update_context({"robot_ready": False, "busy": False, "occupied": False, "stop_pending": False,
-                                        "phase": "已停止并保存，请等待本轮分析", "debug_log_status": self.logger.get_status()})
-            print(json.dumps({"接触轮次完成": str(self.path), "退出码": state["exit_reason"],
-                              "错误": state["last_error"], "最终安全状态": observation["samples"][-1]["safety_mode"]},
-                             ensure_ascii=False), flush=True)
+        except (RuntimeError, OSError, ValueError) as error:
+            self.postcheck_pending = True
+            message = f"独立停止复核未通过：{error}。请保持撤力，点击“停止导纳”再次复核。"
+            self.logger.record("manual_postcheck_pending", {"error": str(error)})
+            self.window.append_log(message)
+            self.window.ui.label_ContactStage.setText(message)
+            self.window.update_context({"robot_ready": False, "busy": True, "occupied": True,
+                                        "stop_pending": True, "phase": message})
+            print(message, flush=True)
+            return
+        self.postcheck_pending = False
+        self.logger.record("manual_postcheck", observation)
+        self.logger.finish({"status": state})
+        (self.path / "manual_final_status.json").write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        report = analyze(self.path)
+        (self.path / "descriptive_report.json").write_text(
+            json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
+        self.completed = True
+        self.window.ui.label_ContactStage.setText("已停止并保存描述性报告，请等待数据分析与现场评价")
+        self.window.update_context({"robot_ready": False, "busy": False, "occupied": False, "stop_pending": False,
+                                    "phase": "已停止并保存，请等待本轮分析", "debug_log_status": self.logger.get_status()})
+        print(json.dumps({"接触轮次完成": str(self.path), "退出码": state["exit_reason"],
+                          "错误": state["last_error"], "最终安全状态": observation["samples"][-1]["safety_mode"]},
+                         ensure_ascii=False), flush=True)
 
 
 def main():
@@ -494,16 +515,17 @@ def main():
     parser.add_argument("--label", required=True)
     parser.add_argument("--empty-flange", action="store_true", required=True)
     parser.add_argument("--force-cue-n", type=float, required=True)
-    parser.add_argument("--axes", type=int, nargs="+", choices=(1, 3), default=[1], help="柔顺轴：1、3 或 1 3")
-    parser.add_argument("--observation-axis", type=int, choices=(1, 3), help="逐周期统计和边界提示轴，默认采用候选观测轴")
+    parser.add_argument("--axes", type=int, nargs="+", choices=range(1, 7), default=[1],
+                        help="柔顺轴：1～6 中的单轴、1 3，或 1 2 3 4 5 6")
+    parser.add_argument("--observation-axis", type=int, choices=range(1, 7), help="逐周期统计和边界提示轴，默认采用候选观测轴")
     parser.add_argument("--contact-point", default="空法兰末端", help="记录本轮实际接触位置，例如前臂连杆中段")
     parser.add_argument("--contact-direction", default="沿启用关节允许的方向缓慢轻推", help="记录本轮现场约定施力方向")
     parser.add_argument("--protocol", choices=("single", "sustained", "timed_push", "boundary_hold"), default="single",
                         help="single 单次施力，sustained 人工保持计时，timed_push 自动手推，boundary_hold 到边界后提示保持 5 秒")
     parser.add_argument("--preview", type=Path)
     args = parser.parse_args()
-    if tuple(args.axes) not in ((1,), (3,), (1, 3)):
-        parser.error("柔顺轴须为 1、3 或 1 3")
+    if len(args.axes) != 1 and args.axes not in ([1, 3], [1, 2, 3, 4, 5, 6]):
+        parser.error("本轮柔顺轴须为单轴、1 3，或完整六轴 1 2 3 4 5 6")
     if args.observation_axis is not None and args.observation_axis not in args.axes:
         parser.error("观测轴须属于本轮启用轴")
     if not math.isfinite(args.force_cue_n) or args.force_cue_n <= 0:

@@ -28,7 +28,7 @@ ROBOT_FIELDS = (
 )
 
 _TYPE_BYTES = {"DOUBLE": 8, "UINT32": 4, "INT32": 4, "VECTOR6D": 48, "VECTOR3D": 24}
-TELEMETRY_SCHEMA_VERSION = 6
+TELEMETRY_SCHEMA_VERSION = 7
 STATISTICS_SCHEMA_VERSION = 2
 LOAD_SOURCE_CODES = {"joint_torque": 0, "flange_wrench": 1}
 PAGE_NAMES = {1: "anchor", 2: "load", 3: "execution", 4: "timing", 5: "statistics", 6: "reference"}
@@ -38,22 +38,22 @@ _COMMON_INT_FIELDS = (
     "page_seq_end", "page_type", "run_id",
 )
 _PAGE_INT_FIELDS = {
-    1: ("snapshot_time_us", "dt_base_us", "dt_model_design_us", "bias_sample_count",
+    1: ("snapshot_time_ms", "dt_base_us", "dt_model_design_us", "bias_sample_count",
         "observation_axis", "motion_axis", "diagnostic_mode", "load_source_code", "telemetry_schema_version",
-        "config_id", "reserved", "snapshot_time_us"),
-    2: ("sample_time_us", "dt_model_actual_us", "dt_model_max_us", "compute_duration_us",
+        "config_id", "reserved", "snapshot_time_ms"),
+    2: ("sample_time_ms", "dt_model_actual_us", "dt_model_max_us", "compute_duration_us",
         "bias_sample_count", "generated_seq", "submitted_seq", "limit_reason",
-        "load_duration_us", "publish_duration_us", "bias_ready", "snapshot_time_us"),
+        "load_duration_us", "publish_duration_us", "bias_ready", "snapshot_time_ms"),
     3: ("generated_seq", "submitted_seq", "adopted_seq", "frame", "based_on_seq", "start_frame",
         "end_frame", "gap_count", "limit_reason", "servoj_start_interval_us",
-        "servoj_max_interval_us", "snapshot_time_us"),
+        "servoj_max_interval_us", "snapshot_time_ms"),
     4: ("generated_seq", "submitted_seq", "adopted_seq", "frame", "based_on_seq", "start_frame",
-        "end_frame", "gap_count", "limit_reason", "bias_sample_count", "bias_ready", "snapshot_time_us"),
+        "end_frame", "gap_count", "limit_reason", "bias_sample_count", "bias_ready", "snapshot_time_ms"),
     5: ("statistics_schema_version", "config_id", "start_sample_seq", "end_sample_seq",
         "valid_cycle_count", "nonzero_drive_count", "first_nonzero_sample_seq", "invalid_cycle_count",
-        "trajectory_complete", "final", "complete", "snapshot_time_us"),
+        "trajectory_complete", "final", "complete", "snapshot_time_ms"),
     6: ("latest_source_seq", "executed_source_seq", "contact_blocked", "reference_age_us",
-        "frame", "adopted_seq", "reserved", "reserved", "reserved", "reserved", "reserved", "snapshot_time_us"),
+        "frame", "adopted_seq", "reserved", "reserved", "reserved", "reserved", "reserved", "snapshot_time_ms"),
 }
 TIMING_FLOAT_FIELDS = (
     "sample_time_s", "generated_time_s", "submitted_time_s", "adopted_time_s",
@@ -119,7 +119,7 @@ def load_source_description(source: str) -> str:
 
 
 def log_schema(config: dict, space: str) -> dict:
-    """记录第六版参考页和选定轴统计，历史缺失值不可作为零值。"""
+    """记录第七版长时运行时间编码及选定轴统计，历史缺失值不可作为零值。"""
     int_base = config["ADMITTANCE_OUTPUT_INT_BASE"]
     float_base = config["ADMITTANCE_OUTPUT_FLOAT_BASE"]
     registers = {f"output_int_register_{int_base + index}": name
@@ -171,7 +171,7 @@ def log_schema(config: dict, space: str) -> dict:
         "q_start": "本轮固定锚点，只在完整锚点页确认一次，不因页面切换改变",
         "q_cmd": "仅当前执行页有效；其他类型页清空顶层命令，展示历史采用值需读取带身份的 continuous.execution",
         "drive": "仅当前载荷页且偏置已完成时有效；六轴均保留死区后的载荷，只有启用轴在关节导纳中积分；保持及预设微动不以外力驱动轨迹",
-        "time_encoding": "整数 _us 为相对脚本起点或间隔的微秒，浮点 _s 为秒；未获得的负计时解码为 None；bias_std_nm 是六轴总体标准差",
+        "time_encoding": "第七版整数 _ms 为相对脚本起点的毫秒（约 24.8 天范围）；间隔 _us 仍为微秒，浮点 _s 为秒。避免微秒绝对时间约 35.8 分钟溢出。固定参考的主端年龄为未获得；负计时解码为 None；bias_std_nm 是六轴总体标准差",
         "host_monotonic_s": "主机单调时间，用于对齐接收、发送和控制诊断",
         "host_time_unix_s": "主机 Unix 时间，用于与外部日志对齐",
         "host_processing": "packet_prepare/send/receive/decode/log_submit 分别保存最近与最大耗时，绝对发送期限和迟到单独记录；未验收完整业务负载预算",

@@ -16,7 +16,7 @@ from DataCollector import DataCollector
 from GripperController import GripperController, GRIPPER_SPEED_DEFAULT, GRIPPER_FORCE_DEFAULT
 from RealSenseCamera import Camera, CameraError
 from window_display import WindowDisplayController, configure_high_dpi
-from window_layouts import create_layout, saved_layout, switch_layout
+from ui_classic_window import Ui_MainWindow
 from admittance_window import AdmittanceWindow, OPERATOR_EVENTS
 from admittance_lifecycle import AdmittanceLifecycleWorker, AdmittanceLogFinishWorker
 from admittance_logger import AdmittanceLogger
@@ -75,9 +75,10 @@ ADMITTANCE_ROBOT_HEARTBEAT_FIELDS = ('heartbeat_echo', 'heartbeat_age_us', 'hear
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self._layout_settings = QtCore.QSettings('URControl', 'Display')
-        self._layout_mode = saved_layout(self._layout_settings)
-        self._ui = create_layout(self, self._layout_mode)
+        self._display_settings = QtCore.QSettings('URControl', 'Display')
+        self._ui = Ui_MainWindow()
+        self._ui.setupUi(self)
+        vars(self).update(vars(self._ui))
         self.robot_ip = UR_REAL_IP
         self.connected_ip = None
         self.dashboard_client = None
@@ -103,7 +104,8 @@ class MainWindow(QMainWindow):
         self._admittance_parameters = None
         self._last_admittance_status = None
         self._last_admittance_run_id = None
-        self._admittance_logging_enabled = True
+        # 日常持续运行默认不写高频调试日志，现场分析时在导纳窗口显式开启。
+        self._admittance_logging_enabled = False
         self._admittance_logger = None
         self._admittance_log_finish_workers = []
         self._admittance_reported_log_error = None
@@ -124,35 +126,14 @@ class MainWindow(QMainWindow):
         self.initialize_collector()
         self.create_timers()
         self.initialize_visualizer()
-        self.display_controller = WindowDisplayController(self, self._ui, self._layout_settings)
+        self.display_controller = WindowDisplayController(self, self._ui, self._display_settings)
         self.bind_signals()
-        self.bind_layout_actions()
         self.lineEdit_IP.setText(self.robot_ip)
         self.update_connection_label()
         self.update_buttons()
         self.status_timer.start(100)
         self.robot_view_timer.start(10)
         self.camera_timer.start(50)
-
-    def bind_layout_actions(self):
-        self.actionLayoutModern.triggered.connect(lambda: self.on_change_layout('modern'))
-        self.actionLayoutClassic.triggered.connect(lambda: self.on_change_layout('classic'))
-
-    def on_change_layout(self, mode):
-        if mode == self._layout_mode:
-            return
-        self.setUpdatesEnabled(False)
-        try:
-            self.display_controller.dispose()
-            self._ui = switch_layout(self, self._ui, mode)
-            self._layout_mode = mode
-            self._layout_settings.setValue('layoutMode', mode)
-            self.display_controller = WindowDisplayController(self, self._ui, self._layout_settings)
-            self.bind_layout_actions()
-            self.update_connection_label()
-            self.update_buttons()
-        finally:
-            self.setUpdatesEnabled(True)
 
     def initialize_devices(self):
         self.udp_client = URUDPClient(bind_host='0.0.0.0', bind_port=UDP_LOCAL_PORT)
@@ -508,7 +489,6 @@ class MainWindow(QMainWindow):
         self.pushButton_UDPSync.setEnabled(rtde_ready and idle and joint_command)
         self.pushButton_RTDEUDP.setEnabled(rtde_ready and idle and joint_command)
         self.pushButton_Admittance.setEnabled(True)
-        self.pushButton_Admittance.setText('导纳调参与监视…')
         hidden = (self.admittance_mode != 'off' and
                   (self.admittance_window is None or not self.admittance_window.isVisible()))
         self.label_AdmittanceStatus.setText(
@@ -544,9 +524,9 @@ class MainWindow(QMainWindow):
             self.rtde_controller = None
 
     def on_admittance(self):
-        """主界面入口只打开同一个非模态监视窗口。"""
+        """启动导纳按钮打开同一窗口；首次默认六轴固定参考，实际启动由窗口按钮发起。"""
         if self.admittance_window is None:
-            window = AdmittanceWindow(settings=self._layout_settings, parent=self)
+            window = AdmittanceWindow(settings=self._display_settings, parent=self)
             self.admittance_window = window
             window.start_requested.connect(self.start_admittance_run)
             window.stop_requested.connect(self.request_admittance_stop)

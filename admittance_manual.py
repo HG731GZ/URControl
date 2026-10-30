@@ -1,4 +1,4 @@
-"""导纳单轮人工联调入口：只读检查、J1/J3 无接触轨迹或选定关节的固定/遥操作联调。"""
+"""导纳单轮人工联调入口：只读检查、逐轴无接触轨迹或选定关节的固定/遥操作联调。"""
 
 from __future__ import annotations
 
@@ -85,6 +85,8 @@ def run_manual(args):
         config = admittance_config.j1_no_contact_config()
     elif args.command == "j3-motion":
         config = admittance_config.j3_no_contact_config()
+    elif args.command == "joint-motion":
+        config = admittance_config.joint_no_contact_config(args.axis)
     else:
         config = admittance_config.joint_contact_config(tuple(args.axes), reference_source=source)
         config["DIAGNOSTIC_DURATION_S"] = args.duration
@@ -105,7 +107,9 @@ def run_manual(args):
         "validation_environment": args.environment, "validation_profile": "AdmittanceProcess",
         "validation_scope": "正式通信进程、正常自动 GC、500 Hz 状态和实时磁盘日志；未加载完整主界面及其他设备",
         "validation_scenario": ("J1_empty_flange_no_contact" if stage_a else
-                                "J3_cosine_no_contact" if args.command == "j3-motion" else "joint_empty_flange_no_contact"),
+                                "J3_cosine_no_contact" if args.command == "j3-motion" else
+                                f"J{args.axis}_bidirectional_no_contact" if args.command == "joint-motion" else
+                                "joint_empty_flange_no_contact"),
         "manual_reference_definition": "终端显式设定相对启动姿态的目标，100 Hz 发布；不是现场主端" if source == "teleop" else None,
         "no_contact_confirmed": True,
         "empty_flange_confirmed": True,
@@ -207,6 +211,9 @@ def run_manual(args):
     report = analyze_j1_no_contact(path) if stage_a else analyze(path)
     report_name = "stage_a_report.json" if stage_a else "descriptive_report.json"
     (path / report_name).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    if args.command == "joint-motion":
+        print(json.dumps({"观测轴": args.axis, "死区_Nm": config["JOINT_DEADBAND_NM"][args.axis - 1],
+                          "最终逐周期统计": report["选定轴最终逐周期统计"]}, ensure_ascii=False), flush=True)
     print(json.dumps({"日志目录": str(path), "报告": report_name,
                       "结论": report["结论"] if stage_a else "本轮描述性记录，不替代真实接触验收",
                       "退出原因": status["exit_reason"], "错误": status["last_error"],
@@ -235,13 +242,21 @@ def main():
     j3.add_argument("--label", required=True)
     j3.add_argument("--empty-flange", action="store_true", required=True)
     j3.add_argument("--no-contact", action="store_true", required=True)
+    motion = subparsers.add_parser("joint-motion", help="指定单轴完成正负往返、节点保持及 10 秒尾段；外力不驱动命令")
+    motion.add_argument("--robot-ip", required=True)
+    motion.add_argument("--environment", choices=("ursim", "real_robot"), required=True)
+    motion.add_argument("--label", required=True)
+    motion.add_argument("--empty-flange", action="store_true", required=True)
+    motion.add_argument("--no-contact", action="store_true", required=True)
+    motion.add_argument("--axis", type=int, choices=range(1, 7), required=True)
     joint = subparsers.add_parser("joint", help="单轮关节无接触联调；遥操作目标由终端显式给定")
     joint.add_argument("--robot-ip", required=True)
     joint.add_argument("--environment", choices=("ursim", "real_robot"), required=True)
     joint.add_argument("--label", required=True)
     joint.add_argument("--empty-flange", action="store_true", required=True)
     joint.add_argument("--no-contact", action="store_true", required=True)
-    joint.add_argument("--axes", type=int, nargs="+", choices=(1, 3), default=[3])
+    joint.add_argument("--axes", type=int, nargs="+", choices=range(1, 7), default=[3],
+                       help="单轴、1 3，或固定参考六轴 1 2 3 4 5 6")
     joint.add_argument("--reference-source", choices=("fixed", "teleop"), default="fixed")
     joint.add_argument("--duration", type=float, default=15., help="运行秒数，最长 60 秒")
     args = parser.parse_args()

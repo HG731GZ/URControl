@@ -15,15 +15,6 @@ class Ui_MainWindow(object):
         font = QtGui.QFont()
         font.setPointSize(10)
         MainWindow.setFont(font)
-        self.menubar = QtWidgets.QMenuBar(MainWindow)
-        self.menubar.setGeometry(QtCore.QRect(0, 0, 900, 28))
-        self.menubar.setStyleSheet("QMenuBar {\n"
-"    background-color: rgb(248, 228, 92);\n"
-"}")
-        self.menubar.setObjectName("menubar")
-        self.menu_Interface = QtWidgets.QMenu(self.menubar)
-        self.menu_Interface.setObjectName("menu_Interface")
-        MainWindow.setMenuBar(self.menubar)
         self.statusbar = QtWidgets.QStatusBar(MainWindow)
         self.statusbar.setStyleSheet("QStatusBar {\n"
 "    background-color: rgb(192, 191, 188);\n"
@@ -76,7 +67,7 @@ class Ui_MainWindow(object):
         self.label_AdmittanceStatus.setObjectName("label_AdmittanceStatus")
         self.gridLayout_Admittance.addWidget(self.label_AdmittanceStatus, 0, 2, 1, 1)
         self.pushButton_Admittance = QtWidgets.QPushButton(self.groupBox_Admittance)
-        self.pushButton_Admittance.setEnabled(False)
+        self.pushButton_Admittance.setEnabled(True)
         self.pushButton_Admittance.setMinimumSize(QtCore.QSize(130, 40))
         self.pushButton_Admittance.setObjectName("pushButton_Admittance")
         self.gridLayout_Admittance.addWidget(self.pushButton_Admittance, 0, 3, 1, 1)
@@ -614,19 +605,6 @@ class Ui_MainWindow(object):
         self.scrollArea_Classic.setWidget(self.classicCanvas)
         self.verticalLayout_Classic.addWidget(self.scrollArea_Classic)
         MainWindow.setCentralWidget(self.centralwidget)
-        self.actionLayoutModern = QtWidgets.QAction(MainWindow)
-        self.actionLayoutModern.setCheckable(True)
-        self.actionLayoutModern.setChecked(False)
-        self.actionLayoutModern.setEnabled(True)
-        self.actionLayoutModern.setObjectName("actionLayoutModern")
-        self.actionLayoutClassic = QtWidgets.QAction(MainWindow)
-        self.actionLayoutClassic.setCheckable(True)
-        self.actionLayoutClassic.setChecked(True)
-        self.actionLayoutClassic.setEnabled(False)
-        self.actionLayoutClassic.setObjectName("actionLayoutClassic")
-        self.menu_Interface.addAction(self.actionLayoutModern)
-        self.menu_Interface.addAction(self.actionLayoutClassic)
-        self.menubar.addAction(self.menu_Interface.menuAction())
 
         self.retranslateUi(MainWindow)
         QtCore.QMetaObject.connectSlotsByName(MainWindow)
@@ -637,9 +615,7 @@ class Ui_MainWindow(object):
         MainWindow.setStyleSheet(_translate("MainWindow", "QPushButton:enabled { color: #17283f; }\n"
 "QPushButton:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; }\n"
 "QLineEdit:disabled, QComboBox:disabled { background: #d8dfe8; color: #8a95a5; }\n"
-"QFrame#frame_ClassicHeader { background: #e8edf4; border: 1px solid #cbd5e1; }\n"
-"QMenu::item:disabled { color: #8a95a5; }"))
-        self.menu_Interface.setTitle(_translate("MainWindow", "界面"))
+"QFrame#frame_ClassicHeader { background: #e8edf4; border: 1px solid #cbd5e1; }"))
         self.label_ClassicTitle.setText(_translate("MainWindow", "经典界面 · 原始布局"))
         self.label_UiScale.setText(_translate("MainWindow", "界面大小"))
         self.comboBox_UiScale.setToolTip(_translate("MainWindow", "自动适配当前屏幕；百分比在自动大小基础上微调，并按显示器记忆。"))
@@ -650,8 +626,8 @@ class Ui_MainWindow(object):
         self.groupBox_Admittance.setTitle(_translate("MainWindow", "导纳调参与监视"))
         self.label_AdmittanceStatus.setText(_translate("MainWindow", "未开启"))
         self.label_AdmittanceStatus.setToolTip(_translate("MainWindow", "显示本轮导纳场景、运行阶段或退出原因。"))
-        self.pushButton_Admittance.setText(_translate("MainWindow", "导纳调参与监视…"))
-        self.pushButton_Admittance.setToolTip(_translate("MainWindow", "打开独立调参窗口；打开或关闭窗口不改变运动状态"))
+        self.pushButton_Admittance.setText(_translate("MainWindow", "启动导纳"))
+        self.pushButton_Admittance.setToolTip(_translate("MainWindow", "打开导纳界面，默认六轴固定参考、无需主端；在导纳界面点击启动后才开始运动。关闭导纳界面仅隐藏，停止请使用停止导纳或主窗口停止。"))
         self.pushButton_IP.setText(_translate("MainWindow", "修改IP"))
         self.label_IPset.setText(_translate("MainWindow", "实际连接："))
         self.label_IP_now.setText(_translate("MainWindow", "TextLabel"))
@@ -719,6 +695,4 @@ class Ui_MainWindow(object):
         self.label_camera2.setText(_translate("MainWindow", "Camera2"))
         self.pushButton_Collect.setText(_translate("MainWindow", "开始采集"))
         self.checkBox_URSim.setText(_translate("MainWindow", "URSim"))
-        self.actionLayoutModern.setText(_translate("MainWindow", "新版界面"))
-        self.actionLayoutClassic.setText(_translate("MainWindow", "经典界面（改版前）"))
 from ui_widgets import AspectRatioLabel

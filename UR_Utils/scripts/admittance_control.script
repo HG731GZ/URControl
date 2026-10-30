@@ -204,6 +204,34 @@ def ur_admittance_control():
         return [desired, wanted, 0.]
       end
     end
+    # 多轴受力时常先触发加速度限幅；先求速度和加速度的交集。
+    # 裁剪后的速度若仍满足同一制动距离，就无需计算两侧开方边界。
+    # 这里用严格余量；恰好贴边及不可行区间仍走下面完整边界计算。
+    local lo = v - ah
+    local hi = v + ah
+    if lo < -vmax:
+      lo = -vmax
+    end
+    if hi > vmax:
+      hi = vmax
+    end
+    local velocity = wanted
+    if velocity < lo:
+      velocity = lo
+    elif velocity > hi:
+      velocity = hi
+    end
+    local candidate = q + velocity * adm_h
+    brake_distance = velocity * velocity / (2.0 * amax) + norm(velocity) * adm_h
+    if lo <= hi and candidate >= lower and candidate <= upper:
+      if (velocity >= 0. and upper - q > brake_distance) or (velocity < 0. and q - lower > brake_distance):
+        local limit = 0.
+        if norm(velocity - wanted) > 0.000000000001:
+          limit = 1.
+        end
+        return [candidate, velocity, limit]
+      end
+    end
     local distance_hi = upper - q
     local distance_lo = q - lower
     if distance_hi < 0.:
@@ -214,16 +242,8 @@ def ur_admittance_control():
     end
     local cap_hi = sqrt(ah * ah + 2.0 * amax * distance_hi) - ah
     local cap_lo = sqrt(ah * ah + 2.0 * amax * distance_lo) - ah
-    local lo = v - ah
-    local hi = v + ah
-    if lo < -vmax:
-      lo = -vmax
-    end
     if lo < -cap_lo:
       lo = -cap_lo
-    end
-    if hi > vmax:
-      hi = vmax
     end
     if hi > cap_hi:
       hi = cap_hi
@@ -232,7 +252,7 @@ def ur_admittance_control():
       adm_fail(8)
       return [q, v, 4.]
     end
-    local velocity = adm_clip(wanted, lo, hi)
+    velocity = adm_clip(wanted, lo, hi)
     local limit = 0.
     if norm(velocity - wanted) > 0.000000000001:
       limit = 1.
@@ -349,13 +369,9 @@ def ur_admittance_control():
           end
         end
         local measured_raw = raw
-        local checked_axis = 0
-        while checked_axis < 6:
-          if not adm_finite(raw[checked_axis]) or not adm_finite(bias[checked_axis]):
-            valid_load = False
-          end
-          checked_axis = checked_axis + 1
-        end
+        # 有限分量与自身相减均为零；无穷或 NaN 会使向量范数不等于零。
+        # 保留采样边界检查，使用原生数组运算避免逐轴脚本函数与索引开销。
+        valid_load = norm(raw - raw) == 0. and norm(bias - bias) == 0.
         if not valid_load:
           # 禁止无效数值进入滤波与积分；本轮记录无效并按故障停止，不把替换值记成有效零。
           adm_fail(21)
@@ -420,11 +436,11 @@ def ur_admittance_control():
             elif error < -adm_deadband[k]:
               drive[k] = error + adm_deadband[k]
             end
-            if not adm_finite(filtered[k]) or not adm_finite(drive[k]):
-              valid_load = False
-              adm_fail(21)
-            end
             k = k + 1
+          end
+          if not (norm(filtered - filtered) == 0. and norm(drive - drive) == 0.):
+            valid_load = False
+            adm_fail(21)
           end
           if adm_source == 1:
             local contact_entered = False
@@ -450,6 +466,14 @@ def ur_admittance_control():
               end
             end
           end
+          # URScript 数组乘除逐分量执行；整组六轴使用同一已承诺末状态计算模型。
+          # 模型公式和积分步长不变，禁用轴仍不采用计算结果。
+          local displacement = base.q1 - base.n1
+          local relative_velocity = base.v1 - base.nv1
+          local requested_velocities = adm_zero
+          if valid_load and adm_mode == 0:
+            requested_velocities = relative_velocity + (drive - adm_damping * relative_velocity - adm_stiffness * displacement) / adm_mass * adm_dt
+          end
           k = 0
           while k < 6:
             if valid_load and adm_mode == 0 and adm_axes[k] == 1:
@@ -473,18 +497,31 @@ def ur_admittance_control():
               end
               # 从已承诺末状态更新模型速度，再分别准备两个基础帧期望点。
               # 两帧不能复用同一终点，否则首帧到位后第二帧会归零并丢失模型速度。
-              local displacement = base.q1[k] - base.n1[k]
-              local relative_velocity = base.v1[k] - base.nv1[k]
-              local acceleration = (drive[k] - adm_damping[k] * relative_velocity - adm_stiffness[k] * displacement) / adm_mass[k]
-              local requested_velocity = relative_velocity + acceleration * adm_dt
-              local velocity = adm_clip(requested_velocity, -adm_speed_max[k], adm_speed_max[k])
+              local requested_velocity = requested_velocities[k]
+              # 展开三个标量裁剪，保持原积分、限值和约束码，减少六轴调用开销。
+              local velocity = requested_velocity
+              if velocity < -adm_speed_max[k]:
+                velocity = -adm_speed_max[k]
+              elif velocity > adm_speed_max[k]:
+                velocity = adm_speed_max[k]
+              end
               if velocity != requested_velocity:
                 limit = 1
               end
-              local requested_offset0 = displacement + velocity * adm_h
-              local requested_offset1 = displacement + velocity * adm_dt
-              local offset0 = adm_clip(requested_offset0, -adm_offset_max[k], adm_offset_max[k])
-              local offset1 = adm_clip(requested_offset1, -adm_offset_max[k], adm_offset_max[k])
+              local requested_offset0 = displacement[k] + velocity * adm_h
+              local requested_offset1 = displacement[k] + velocity * adm_dt
+              local offset0 = requested_offset0
+              local offset1 = requested_offset1
+              if offset0 < -adm_offset_max[k]:
+                offset0 = -adm_offset_max[k]
+              elif offset0 > adm_offset_max[k]:
+                offset0 = adm_offset_max[k]
+              end
+              if offset1 < -adm_offset_max[k]:
+                offset1 = -adm_offset_max[k]
+              elif offset1 > adm_offset_max[k]:
+                offset1 = adm_offset_max[k]
+              end
               if offset0 != requested_offset0 or offset1 != requested_offset1:
                 limit = 2
               end
@@ -538,14 +575,19 @@ def ur_admittance_control():
               end
             end
           end
-          if des0 != base.q1[k] or des1 != base.q1[k] or base.v1[k] != 0.:
-            local first = adm_step(base.q1[k], base.v1[k], des0, lower, upper, vmax, amax)
+          if des0 != q0[k] or des1 != q1[k] or v0[k] != 0.:
+            local first = adm_step(q0[k], v0[k], des0, lower, upper, vmax, amax)
             local second = adm_step(first[0], first[1], des1, lower, upper, vmax, amax)
             q0[k] = first[0]
             v0[k] = first[1]
             q1[k] = second[0]
             v1[k] = second[1]
-            limit = adm_max(limit, adm_max(first[2], second[2]))
+            if first[2] > limit:
+              limit = first[2]
+            end
+            if second[2] > limit:
+              limit = second[2]
+            end
           end
           k = k + 1
         end
@@ -636,7 +678,10 @@ def ur_admittance_control():
     local v_nom = adm_v_nom
     local latest_master = adm_master
     local latest_source_seq = adm_master_seq
-    local reference_age = started - adm_last_reference
+    local reference_age = -1.
+    if adm_source == 1:
+      reference_age = started - adm_last_reference
+    end
     local adopted_time = adm_adopted_time
     local age = adm_age
     local age_max = adm_age_max
@@ -651,28 +696,28 @@ def ur_admittance_control():
     local sample_seq = sample.seq
     local sample_time = sample.sample_time
     local stamp = started - adm_origin
-    local extra = [0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., floor(stamp * 1000000.)]
+    local extra = [0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., floor(stamp * 1000.)]
     local f0 = adm_q_anchor
     local f1 = adm_zero
     local f2 = adm_zero
     local f3 = adm_zero
     if layout == 1:
-      extra = [floor(stamp*1000000.), floor(adm_base*1000000.), floor(adm_dt*1000000.), sample.bias_count, ${DIAGNOSTIC_AXIS}, ${ACTIVE_MOTION_AXIS}, adm_mode, adm_load_source, ${TELEMETRY_SCHEMA_VERSION}, adm_config_id, 0., floor(stamp*1000000.)]
+      extra = [floor(stamp*1000.), floor(adm_base*1000000.), floor(adm_dt*1000000.), sample.bias_count, ${DIAGNOSTIC_AXIS}, ${ACTIVE_MOTION_AXIS}, adm_mode, adm_load_source, ${TELEMETRY_SCHEMA_VERSION}, adm_config_id, 0., floor(stamp*1000.)]
     elif layout == 2:
       f0 = sample.raw
       f1 = sample.bias
       f2 = sample.filtered
       f3 = sample.drive
-      extra = [floor(sample_time*1000000.), floor(sample.model_interval*1000000.), floor(sample.model_max*1000000.), floor(sample.compute*1000000.), sample.bias_count, sample.generated_seq, sample.submitted_seq, sample.limit, floor(sample.load_duration*1000000.), floor(adm_publish_duration*1000000.), 0., floor(stamp*1000000.)]
+      extra = [floor(sample_time*1000.), floor(sample.model_interval*1000000.), floor(sample.model_max*1000000.), floor(sample.compute*1000000.), sample.bias_count, sample.generated_seq, sample.submitted_seq, sample.limit, floor(sample.load_duration*1000000.), floor(adm_publish_duration*1000000.), 0., floor(stamp*1000.)]
       if sample.bias_ready:
         extra[10] = 1.
       end
     elif layout == 5:
-      extra = [2, adm_config_id, statistics.start_seq, statistics.end_seq, statistics.valid_count, statistics.nonzero_count, statistics.first_nonzero_seq, statistics.invalid_count, statistics.trajectory_complete, statistics.final, statistics.complete, floor(stamp*1000000.)]
+      extra = [2, adm_config_id, statistics.start_seq, statistics.end_seq, statistics.valid_count, statistics.nonzero_count, statistics.first_nonzero_seq, statistics.invalid_count, statistics.trajectory_complete, statistics.final, statistics.complete, floor(stamp*1000.)]
       f0 = [statistics.start_time, statistics.end_time, statistics.filtered_min, statistics.filtered_max, statistics.max_drive, statistics.first_nonzero_time]
       f1 = [${DIAGNOSTIC_AXIS}, 0., 0., 0., 0., 0.]
     elif layout == 6:
-      extra = [latest_source_seq, segment.source_seq, 0, floor(reference_age*1000000.), frame, adopted, 0, 0, 0, 0, 0, floor(stamp*1000000.)]
+      extra = [latest_source_seq, segment.source_seq, 0, floor(reference_age*1000000.), frame, adopted, 0, 0, 0, 0, 0, floor(stamp*1000.)]
       if segment.contact:
         extra[2] = 1
       end
@@ -681,7 +726,7 @@ def ur_admittance_control():
       f2 = segment.master
       f3 = v_nom
     else:
-      extra = [sample.generated_seq, sample.submitted_seq, adopted, frame, segment.based_on, segment.first, segment.last, gaps, limit, floor(servo_interval*1000000.), floor(servo_max*1000000.), floor(stamp*1000000.)]
+      extra = [sample.generated_seq, sample.submitted_seq, adopted, frame, segment.based_on, segment.first, segment.last, gaps, limit, floor(servo_interval*1000000.), floor(servo_max*1000000.), floor(stamp*1000.)]
       if layout == 3:
         f0 = q_cmd
         f1 = qd_cmd
@@ -843,11 +888,12 @@ def ur_admittance_control():
     end
     local actual = get_actual_joint_positions()
     local actual_speed = get_actual_joint_speeds()
+    if not (norm(actual - actual) == 0. and norm(actual_speed - actual_speed) == 0. and norm(q - q) == 0.):
+      adm_fail(21)
+    end
     k = 0
     while k < 6:
-      if not adm_finite(actual[k]) or not adm_finite(actual_speed[k]) or not adm_finite(q[k]):
-        adm_fail(21)
-      elif norm(actual_speed[k]) > adm_actual_max_qd[k]:
+      if norm(actual_speed[k]) > adm_actual_max_qd[k]:
         adm_fail(19)
       elif actual[k] < adm_motion_actual_lower[k] or actual[k] > adm_motion_actual_upper[k]:
         adm_fail(20)
@@ -866,7 +912,7 @@ def ur_admittance_control():
         if adm_frame - adm_running_frame >= ${TRAJECTORY_TOTAL_FRAMES}:
           adm_fail(11)
         end
-      elif started - adm_origin - adm_running_time >= ${DIAGNOSTIC_DURATION_S}:
+      elif ${DIAGNOSTIC_DURATION_S} > 0. and started - adm_origin - adm_running_time >= ${DIAGNOSTIC_DURATION_S}:
         adm_fail(11)
       end
     end

@@ -2,29 +2,6 @@
 <ui version="4.0">
  <class>MainWindow</class>
  <widget class="QMainWindow" name="MainWindow">
-  <widget class="QMenuBar" name="menubar">
-   <property name="geometry">
-    <rect>
-     <x>0</x>
-     <y>0</y>
-     <width>900</width>
-     <height>28</height>
-    </rect>
-   </property>
-   <property name="styleSheet">
-    <string notr="true">QMenuBar {
-    background-color: rgb(248, 228, 92);
-}</string>
-   </property>
-   <widget class="QMenu" name="menu_Interface">
-    <property name="title">
-     <string>界面</string>
-    </property>
-    <addaction name="actionLayoutModern" />
-    <addaction name="actionLayoutClassic" />
-   </widget>
-   <addaction name="menu_Interface" />
-  </widget>
   <widget class="QStatusBar" name="statusbar">
    <property name="styleSheet">
     <string notr="true">QStatusBar {
@@ -192,10 +169,10 @@
        <item row="0" column="3">
         <widget class="QPushButton" name="pushButton_Admittance">
          <property name="enabled">
-          <bool>false</bool>
+          <bool>true</bool>
          </property>
          <property name="text">
-          <string>导纳调参与监视…</string>
+          <string>启动导纳</string>
          </property>
          <property name="minimumSize">
           <size>
@@ -204,7 +181,7 @@
           </size>
          </property>
          <property name="toolTip">
-          <string>打开独立调参窗口；打开或关闭窗口不改变运动状态</string>
+          <string>打开导纳界面，默认六轴固定参考、无需主端；在导纳界面点击启动后才开始运动。关闭导纳界面仅隐藏，停止请使用停止导纳或主窗口停止。</string>
          </property>
         </widget>
        </item>
@@ -1913,37 +1890,8 @@ QPushButton:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #
    <string>QPushButton:enabled { color: #17283f; }
 QPushButton:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #9ca9ba; }
 QLineEdit:disabled, QComboBox:disabled { background: #d8dfe8; color: #8a95a5; }
-QFrame#frame_ClassicHeader { background: #e8edf4; border: 1px solid #cbd5e1; }
-QMenu::item:disabled { color: #8a95a5; }</string>
+QFrame#frame_ClassicHeader { background: #e8edf4; border: 1px solid #cbd5e1; }</string>
   </property>
-  <action name="actionLayoutModern">
-   <property name="text">
-    <string>新版界面</string>
-   </property>
-   <property name="checkable">
-    <bool>true</bool>
-   </property>
-   <property name="checked">
-    <bool>false</bool>
-   </property>
-   <property name="enabled">
-    <bool>true</bool>
-   </property>
-  </action>
-  <action name="actionLayoutClassic">
-   <property name="text">
-    <string>经典界面（改版前）</string>
-   </property>
-   <property name="checkable">
-    <bool>true</bool>
-   </property>
-   <property name="checked">
-    <bool>true</bool>
-   </property>
-   <property name="enabled">
-    <bool>false</bool>
-   </property>
-  </action>
  </widget>
  <customwidgets>
   <customwidget>

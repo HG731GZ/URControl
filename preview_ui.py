@@ -9,18 +9,18 @@ from types import SimpleNamespace
 from PyQt5 import QtCore, QtWidgets
 
 from window_display import WindowDisplayController, configure_high_dpi
-from window_layouts import create_layout, saved_layout, switch_layout
+from ui_classic_window import Ui_MainWindow
 
 
 class PreviewWindow(QtWidgets.QMainWindow):
-    """两套主界面的独立预览外壳。"""
+    """经典主界面的独立预览外壳。"""
 
     def __init__(self, settings=None):
         super().__init__()
         self.settings = (settings if settings is not None
                          else QtCore.QSettings('URControl', 'Display'))
-        self.mode = saved_layout(self.settings)
-        self.ui = create_layout(self, self.mode)
+        self.ui = Ui_MainWindow()
+        self.ui.setupUi(self)
         self.display = WindowDisplayController(self, self.ui, self.settings)
         self._admittance_window = None
         self._configure_preview()
@@ -28,11 +28,8 @@ class PreviewWindow(QtWidgets.QMainWindow):
 
     def _configure_preview(self):
         self.setWindowTitle('URControl · 离线界面预览')
-        label = (self.ui.label_ClassicTitle if self.display.classic
-                 else self.ui.label_Subtitle)
-        label.setText('离线界面预览 · 不连接设备')
-        self.ui.actionLayoutModern.triggered.connect(lambda: self.change_layout('modern'))
-        self.ui.actionLayoutClassic.triggered.connect(lambda: self.change_layout('classic'))
+        self.ui.label_ClassicTitle.setText('离线界面预览 · 不连接设备')
+        self.ui.pushButton_Admittance.setEnabled(True)
 
     def open_admittance(self):
         if self._admittance_window is None:
@@ -41,26 +38,13 @@ class PreviewWindow(QtWidgets.QMainWindow):
         self._admittance_window.raise_()
         self._admittance_window.activateWindow()
 
-    def change_layout(self, mode):
-        if mode == self.mode:
-            return
-        self.setUpdatesEnabled(False)
-        try:
-            self.display.dispose()
-            self.ui = switch_layout(self, self.ui, mode)
-            self.mode = mode
-            self.settings.setValue('layoutMode', mode)
-            self.display = WindowDisplayController(self, self.ui, self.settings)
-            self._configure_preview()
-        finally:
-            self.setUpdatesEnabled(True)
 
-
-def create_admittance_preview(scenario='diagnostic-joint', settings=None):
+def create_admittance_preview(scenario='fixed-joint', settings=None):
     """用离线演示样本展示柔顺场景或固定保持诊断，不初始化硬件。"""
     import numpy as np
 
     from admittance_window import AdmittanceWindow
+    from UR_Utils import admittance_config
     from UR_Utils.ur5e_kinematics import UR5eKinematics
     from UR_Utils.ur_pose_math import matrix_to_rotvec, rotvec_to_matrix
 
@@ -73,13 +57,14 @@ def create_admittance_preview(scenario='diagnostic-joint', settings=None):
     window.setWindowTitle('导纳调参与监视 · 演示数据 · 不连接设备')
     window.ui.comboBox_ReferenceSource.setCurrentIndex(('teleop', 'fixed').index(source))
     window.ui.comboBox_AdmittanceSpace.setCurrentIndex(('joint', 'cartesian').index(space))
-    config = window.parameters.prepared_copy()
+    config = (admittance_config.snapshot() if diagnostic or preset else
+              admittance_config.fixed_joint_deployment_config() if source == 'fixed' else
+              admittance_config.joint_contact_config((1, 3), reference_source='teleop'))
     if space == 'cartesian':
         config['CART_FRAME'] = 'tool_start'
     config['DIAGNOSTIC_AXIS'] = 3
     config['DIAGNOSTIC_MODE'] = 'fixed_joint_hold' if diagnostic else ('preset_joint_motion' if preset else 'admittance')
-    window.parameters.set_draft(config)
-    window.parameters.apply()
+    window.set_candidate(config)
     # 离线预览需要演示专用配置；不写入 Python 配置文件或用户预设。
     window.parameters.prepared_parameters = deepcopy(config)
     window.parameters.draft_parameters = deepcopy(config)
@@ -154,6 +139,7 @@ def create_admittance_preview(scenario='diagnostic-joint', settings=None):
             'rtde_processing_duration_s': 0.0008, 'primary_processing_duration_s': 0.0002,
             'packet_prepare_duration_s': 0.00003, 'packet_prepare_max_duration_s': 0.00008,
             'send_duration_s': 0.00002, 'send_max_duration_s': 0.00006,
+            'send_warning_count': 0,
             'receive_duration_s': 0.00004, 'receive_max_duration_s': 0.00008,
             'decode_duration_s': 0.00010, 'decode_max_duration_s': 0.00015,
             'log_submit_duration_s': 0.00001, 'log_submit_max_duration_s': 0.00004,
@@ -319,7 +305,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='URControl 离线界面预览，不连接设备')
     parser.add_argument('--admittance', action='store_true', help='预览独立导纳窗口')
     parser.add_argument('--scenario', choices=('teleop-joint', 'teleop-cartesian', 'fixed-joint', 'fixed-cartesian', 'diagnostic-joint', 'preset-joint'),
-                        default='diagnostic-joint', help='固定演示场景；未开放场景仅可离线显示')
+                        default='fixed-joint', help='固定演示场景；未开放场景仅可离线显示')
     args = parser.parse_args()
     configure_high_dpi()
     app = QtWidgets.QApplication(sys.argv)

@@ -561,7 +561,7 @@ def load_vectors(page, layout):
     """按已声明布局区分历史补偿力矩与有来源标记的输入，始终只取同页。"""
     if layout == 3:
         raw_key = "tau_raw_nm"
-    elif layout in (4, 5, 6):
+    elif layout in (4, 5, 6, 7):
         if page["load_source"] not in ("joint_torque", "flange_wrench"):
             raise ValueError("第四版载荷页的输入来源未定义")
         raw_key = "input_raw_nm"
@@ -1116,10 +1116,10 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
     mode = config["DIAGNOSTIC_MODE"]
     telemetry_schema = context["controller"]["telemetry_schema"] if "controller" in context else None
     telemetry_layout = None if telemetry_schema is None else telemetry_schema["telemetry_schema_version"]
-    if telemetry_layout not in (None, 3, 4, 5, 6):
+    if telemetry_layout not in (None, 3, 4, 5, 6, 7):
         raise ValueError(f"不支持的连续遥测布局：{telemetry_layout}")
     load_source = ("joint_torque" if telemetry_layout == 3
-                   else config["JOINT_LOAD_SOURCE"] if telemetry_layout in (4, 5, 6) else None)
+                   else config["JOINT_LOAD_SOURCE"] if telemetry_layout in (4, 5, 6, 7) else None)
     motion_axis = (config["DIAGNOSTIC_AXIS"] - 1
                    if mode == "admittance" and "SINGLE_AXIS_MAX_OFFSET_RAD" in config
                    else config["DIAGNOSTIC_MOTION_AXIS"] - 1)
@@ -1493,7 +1493,7 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
                 for name, summary in servo_timings.items():
                     summary.add(page[name], page_location)
             elif page_type == "load" and page["phase"] == 2:
-                if telemetry_layout in (4, 5, 6) and page["load_source"] != load_source:
+                if telemetry_layout in (4, 5, 6, 7) and page["load_source"] != load_source:
                     raise ValueError(f"记录 {record['seq']} 的输入来源与本轮配置不一致")
                 if not running_load_sequences.add(page["model_sample_seq"]):
                     continue
@@ -1689,8 +1689,8 @@ def analyze_j1_no_contact(run_dir):
         error("生效配置不符合本次 J1 首候选，不能计为该候选的验证轮次")
     if context.get("reference_source") != "fixed" or context.get("space") != "joint":
         error("必须为 fixed + joint")
-    if controller.get("telemetry_schema", {}).get("telemetry_schema_version") not in (5, 6):
-        error("缺少第五或第六版逐周期统计协议；历史载荷抽样不能证明全程零 drive")
+    if controller.get("telemetry_schema", {}).get("telemetry_schema_version") not in (5, 6, 7):
+        error("缺少第五至第七版逐周期统计协议；历史载荷抽样不能证明全程零 drive")
     expected_run = controller.get("run_id")
     expected_config = controller.get("config_id")
     if type(expected_run) is not int or expected_run <= 0 or type(expected_config) is not int or expected_config <= 0:
