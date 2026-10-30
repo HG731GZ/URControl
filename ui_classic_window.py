@@ -673,6 +673,7 @@ class Ui_MainWindow(object):
         self.pushButton_JUp5.setText(_translate("MainWindow", "+"))
         self.pushButton_JUp6.setText(_translate("MainWindow", "+"))
         self.groupBox_Fex.setTitle(_translate("MainWindow", "力"))
+        self.checkBox_FTSwitch.setToolTip(_translate("MainWindow", "勾选后显示所选来源的六轴关节力矩；取消勾选显示 TCP 广义力。"))
         self.checkBox_FTSwitch.setText(_translate("MainWindow", "力矩"))
         self.groupBox_TControl.setTitle(_translate("MainWindow", "末端空间控制"))
         self.pushButton_TDown3.setText(_translate("MainWindow", "Z-"))

@@ -356,7 +356,7 @@
         <item>
          <widget class="QLabel" name="label_DiagnosticMode">
           <property name="toolTip">
-           <string>默认固定关节保持。当前接触导纳仅允许 J1 或 J3 恰好一个轴参与，运行有时间上限，并使用单轴专用的位移、速度、加速度、跟踪及停止约束。</string>
+           <string>默认固定关节保持。可显式选择 J1、J3 或 J1+J3 导纳候选，采用逐轴命令约束。关节遥操作受载时减速保持参考，撤力后追赶最新目标；其他轴保持启动锚点。</string>
           </property>
           <property name="text">
            <string>保持诊断：等待配置</string>
@@ -368,6 +368,24 @@
            <string>color: #8a4100; background: #fff1d6; padding: 5px;</string>
           </property>
          </widget>
+        </item>
+        <item>
+         <layout class="QHBoxLayout" name="horizontalLayout_JointCandidate">
+          <item>
+           <widget class="QLabel" name="label_JointCandidate">
+            <property name="text"><string>导纳候选</string></property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QComboBox" name="comboBox_JointCandidate">
+            <property name="toolTip"><string>选择会加载完整候选到草稿，点击应用参数后生效；参考来源在上方单独选择。</string></property>
+            <item><property name="text"><string>固定保持（无柔顺运动）</string></property></item>
+            <item><property name="text"><string>J1：现有参数</string></property></item>
+            <item><property name="text"><string>J3：独立低速初值</string></property></item>
+            <item><property name="text"><string>J1+J3：逐轴参数</string></property></item>
+           </widget>
+          </item>
+         </layout>
         </item>
         <item>
          <widget class="QSplitter" name="splitter_Main">

@@ -1522,6 +1522,7 @@ class Ui_MainWindow(object):
         self.lineEdit_Fex5.setPlaceholderText(_translate("MainWindow", "—"))
         self.label_ForceAxis6.setText(_translate("MainWindow", "Mz · N·m"))
         self.lineEdit_Fex6.setPlaceholderText(_translate("MainWindow", "—"))
+        self.checkBox_FTSwitch.setToolTip(_translate("MainWindow", "勾选后显示所选来源的六轴关节力矩；取消勾选显示 TCP 广义力。"))
         self.checkBox_FTSwitch.setText(_translate("MainWindow", "显示关节力矩（N·m）"))
         self.tabWidget_Telemetry.setTabText(self.tabWidget_Telemetry.indexOf(self.tab_Force), _translate("MainWindow", "力 / 力矩"))
         self.groupBox_Clamp.setTitle(_translate("MainWindow", "夹爪反馈"))

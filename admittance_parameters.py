@@ -52,9 +52,9 @@ READONLY_KEYS = frozenset({
 })
 
 
-def _merge_program_configuration(parameters):
-    """只接收界面参数，限幅、滤波和通信配置始终取自当前 Python 配置。"""
-    values = admittance_config.snapshot()
+def _merge_program_configuration(parameters, program_configuration):
+    """界面参数覆盖当前显式候选，保留候选的运行模式及逐轴命令约束。"""
+    values = deepcopy(program_configuration)
     values.update({key: deepcopy(parameters[key]) for key in EDITABLE_KEYS})
     return values
 
@@ -77,7 +77,8 @@ class AdmittanceParameters:
     """分别持有草稿、下轮准备值和后端确认的本轮生效值。"""
 
     def __init__(self):
-        self.draft_parameters = admittance_config.snapshot()
+        self.program_configuration = admittance_config.snapshot()
+        self.draft_parameters = deepcopy(self.program_configuration)
         self.prepared_parameters = admittance_config.validate_config(self.draft_parameters)
         self.effective_parameters = None
         self.revision = 0
@@ -89,17 +90,22 @@ class AdmittanceParameters:
 
     def set_draft(self, values):
         """兼容完整配置或完整界面参数输入，不接受非界面值对 Python 配置的覆盖。"""
-        self.draft_parameters = _merge_program_configuration(values)
+        self.draft_parameters = _merge_program_configuration(values, self.program_configuration)
+
+    def select_candidate(self, values):
+        """由候选选择入口载入完整配置，保留应用前后的差异。"""
+        self.program_configuration = admittance_config.validate_config(values)
+        self.draft_parameters = deepcopy(self.program_configuration)
 
     def restore_defaults(self):
         """恢复界面参数为 Python 中的默认值，其余配置仍由 Python 决定。"""
-        defaults = admittance_config.snapshot()
+        defaults = self.program_configuration
         for key in EDITABLE_KEYS:
             self.draft_parameters[key] = deepcopy(defaults[key])
 
     def apply(self):
         self.prepared_parameters = admittance_config.validate_config(
-            _merge_program_configuration(self.draft_parameters))
+            _merge_program_configuration(self.draft_parameters, self.program_configuration))
         self.draft_parameters = deepcopy(self.prepared_parameters)
         self.revision += 1
         return self.prepared_copy()
@@ -134,12 +140,13 @@ class AdmittanceParameters:
             raise ValueError("预设场景或空间无效")
         if not isinstance(data["parameters"], dict) or set(data["parameters"]) != EDITABLE_KEYS:
             raise ValueError("调参预设必须包含全部 13 个界面参数，不能包含 Python 配置项或未知字段")
-        merged = _merge_program_configuration(data["parameters"])
+        merged = _merge_program_configuration(data["parameters"], self.program_configuration)
         self.draft_parameters = admittance_config.validate_config(merged)
         return data["reference_source"], data["space"], data["name"]
 
     def export_preset(self, path, name, reference_source, space):
-        values = admittance_config.validate_config(_merge_program_configuration(self.draft_parameters))
+        values = admittance_config.validate_config(
+            _merge_program_configuration(self.draft_parameters, self.program_configuration))
         data = {"schema_version": 3, "name": name,
                 "reference_source": reference_source, "space": space,
                 "parameters": {field.key: values[field.key] for field in FIELDS if field.editable}}

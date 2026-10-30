@@ -1030,6 +1030,27 @@ class URRTDEController:
                 self._raw_torque_stream = URRTDETorqueClient(self.robot_ip, self.frequency)
             return self._raw_torque_stream.read()[1]
 
+    def get_compensated_torque_sample(self):
+        """供显示线程读取 UR 补偿力矩；返回机器人时间和六轴 Nm，无当前来源时返回 None。"""
+        with self._lifecycle_lock:
+            if self._admittance is not None and self._admittance.active:
+                state = self._admittance.get_status()
+                load = state["load"]
+                # 导纳已经调用 get_joint_torques；直接读取其偏置扣除之前的完整载荷页。
+                # 法兰映射输入不是 UR 补偿关节力矩，停止页或过期页也不作为当前测量。
+                if (not state["lifecycle_valid"] or state["phase"] >= 3 or load is None
+                        or load["load_source"] != "joint_torque"
+                        or time.monotonic() - load["received_monotonic_s"] > .5):
+                    return None
+                return load["robot_timestamp_s"], np.asarray(load["input_raw_nm"], dtype=float)
+            if not self._ordinary_connected:
+                return None
+            with self._rtde_c_lock:
+                if not self.rtde_c.isProgramRunning():
+                    return None
+                torques = np.asarray(self.rtde_c.getJointTorques(), dtype=float)
+                return self.rtde_r.getTimestamp(), torques
+
     def stop_raw_torque_stream(self) -> None:
         """停止关节力矩订阅；下次读取时重新建立连接。"""
         with self._raw_torque_lock:

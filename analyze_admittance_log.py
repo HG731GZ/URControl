@@ -561,7 +561,7 @@ def load_vectors(page, layout):
     """按已声明布局区分历史补偿力矩与有来源标记的输入，始终只取同页。"""
     if layout == 3:
         raw_key = "tau_raw_nm"
-    elif layout in (4, 5):
+    elif layout in (4, 5, 6):
         if page["load_source"] not in ("joint_torque", "flange_wrench"):
             raise ValueError("第四版载荷页的输入来源未定义")
         raw_key = "input_raw_nm"
@@ -1015,6 +1015,8 @@ def timed_push_windows_report(run_dir, events, normal_segments, anchor, context)
         "计划观察尾窗": (max(observe, end - observation["tail_duration_s"]), end, True),
     }
     boundary = observation.get("boundary_hold")
+    # 历史边界日志只用于 J1；新版显式记录观测轴，不从启用集合猜测。
+    boundary_axis = 0 if boundary is None else boundary.get("observation_axis", 1) - 1
     hold_start = None
     if boundary is not None:
         arrivals = [event for event in events if event["event"] == "boundary_hold_started"]
@@ -1069,7 +1071,7 @@ def timed_push_windows_report(run_dir, events, normal_segments, anchor, context)
                 robot = payload["raw"]
                 stamp = robot["timestamp"]
                 limit = side * boundary["command_limit_rad"]
-                actual_offset = robot["actual_q"][0] - anchor[0]
+                actual_offset = robot["actual_q"][boundary_axis] - anchor[boundary_axis]
                 boundary_result["实际反馈总包数"] += 1
                 if abs(actual_offset - limit) <= boundary["actual_band_rad"]:
                     boundary_result["实际反馈在边界观测带内包数"] += 1
@@ -1083,12 +1085,12 @@ def timed_push_windows_report(run_dir, events, normal_segments, anchor, context)
                 previous_boundary_timestamp = stamp
                 if execution is not None:
                     boundary_result["独立采用命令页数"] += 1
-                    command_offset = execution["q_cmd"][0] - anchor[0]
+                    command_offset = execution["q_cmd"][boundary_axis] - anchor[boundary_axis]
                     boundary_result["采用命令在边界观测带内页数"] += int(
                         abs(command_offset - limit) <= boundary["command_band_rad"])
                 if vectors is not None:
                     boundary_result["独立载荷样本数"] += 1
-                    boundary_result["有效力矩指向边界外样本数"] += int(side * vectors["drive"][0] > 0.)
+                    boundary_result["有效力矩指向边界外样本数"] += int(side * vectors["drive"][boundary_axis] > 0.)
     result.update({
         "状态": "已取得完整计划窗口；真实动作及稳定性仍需现场确认与数据评价",
         "采用连续正常运行区间": normal_segment_report(segment),
@@ -1102,7 +1104,7 @@ def timed_push_windows_report(run_dir, events, normal_segments, anchor, context)
 
 
 def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
-    """读取第 3/4/5 版遥测冻结页、原始 RTDE 和双端时序，输出描述性证据。"""
+    """读取第 3 至 6 版遥测冻结页、原始 RTDE 和双端时序，输出描述性证据。"""
     from UR_Utils.admittance_config import servo_interval_contract
 
     if tail_seconds <= 0:
@@ -1114,11 +1116,11 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
     mode = config["DIAGNOSTIC_MODE"]
     telemetry_schema = context["controller"]["telemetry_schema"] if "controller" in context else None
     telemetry_layout = None if telemetry_schema is None else telemetry_schema["telemetry_schema_version"]
-    if telemetry_layout not in (None, 3, 4, 5):
+    if telemetry_layout not in (None, 3, 4, 5, 6):
         raise ValueError(f"不支持的连续遥测布局：{telemetry_layout}")
     load_source = ("joint_torque" if telemetry_layout == 3
-                   else config["JOINT_LOAD_SOURCE"] if telemetry_layout in (4, 5) else None)
-    motion_axis = (config["JOINT_AXES"].index(1)
+                   else config["JOINT_LOAD_SOURCE"] if telemetry_layout in (4, 5, 6) else None)
+    motion_axis = (config["DIAGNOSTIC_AXIS"] - 1
                    if mode == "admittance" and "SINGLE_AXIS_MAX_OFFSET_RAD" in config
                    else config["DIAGNOSTIC_MOTION_AXIS"] - 1)
     if motion_windows is None:
@@ -1135,7 +1137,12 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
                 "target_speed_fraction": NumericSummary()}
                for start, end in motion_windows]
     kinds, phases, page_types, limit_reasons = Counter(), Counter(), Counter(), Counter()
-    page_sequences = {name: SequenceSummary() for name in ("anchor", "load", "execution", "timing", "statistics")}
+    page_sequences = {name: SequenceSummary() for name in ("anchor", "load", "execution", "timing", "statistics", "reference")}
+    reference_modes = Counter()
+    reference_age = NumericSummary()
+    nominal_offsets = [NumericSummary() for _ in range(6)]
+    latest_reference_error = [NumericSummary() for _ in range(6)]
+    last_reference = final_statistics = None
     identities = {name: SequenceSummary() for name in
                   ("model_sample_seq", "generated_seq", "submitted_seq", "adopted_seq", "frame")}
     running_load_sequences = SequenceSummary()
@@ -1171,12 +1178,15 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
             "各轴相对锚点实际位置包络_rad": [[-margin, margin] for margin in margins],
         }
         if mode == "admittance":
+            from UR_Utils.admittance_config import joint_command_limits
+
+            offsets, speeds, accelerations, tracking = joint_command_limits(config)
             actual_motion_limits.update({
-                "允许运动轴": motion_axis + 1,
-                "命令偏移上限_rad": config["SINGLE_AXIS_MAX_OFFSET_RAD"],
-                "命令速度上限_rad_s": config["SINGLE_AXIS_MAX_QD_RAD_S"],
-                "命令加速度上限_rad_s2": config["SINGLE_AXIS_MAX_QDD_RAD_S2"],
-                "跟踪偏差上限_rad": config["SINGLE_AXIS_TRACKING_RAD"],
+                "允许运动轴": [i + 1 for i, enabled in enumerate(config["JOINT_AXES"]) if enabled],
+                "命令偏移上限_rad": offsets,
+                "命令速度上限_rad_s": speeds,
+                "命令加速度上限_rad_s2": accelerations,
+                "跟踪偏差上限_rad": tracking,
                 "停止确认速度上限_rad_s": config["SINGLE_AXIS_STOP_MAX_QD_RAD_S"],
             })
     elif (mode == "preset_joint_motion"
@@ -1439,7 +1449,22 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
             page_types[page_type] += 1
             if not page_sequences[page_type].add(control["page_seq"]):
                 continue
-            if page_type in ("anchor", "statistics"):
+            if page_type == "statistics":
+                if control["statistics"]["final"]:
+                    final_statistics = control["statistics"]
+                continue
+            if page_type == "reference":
+                page = control["continuous"]["reference"]
+                last_reference = page
+                if page["phase"] == 2 and context["reference_source"] == "teleop":
+                    reference_modes["受载保持" if page["contact_blocked"] else "追赶最新目标"] += 1
+                    reference_age.add(page["reference_age_s"], location)
+                    for axis in range(6):
+                        if anchor is not None:
+                            nominal_offsets[axis].add(page["q_nom"][axis] - anchor[axis], location)
+                        latest_reference_error[axis].add(page["q_master_latest"][axis] - page["q_nom"][axis], location)
+                continue
+            if page_type == "anchor":
                 continue
             page = control["load"] if page_type == "load" else control["continuous"][page_type]
             page_location = {**location, "page_type": page_type, "page_seq": page["page_seq"],
@@ -1468,7 +1493,7 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
                 for name, summary in servo_timings.items():
                     summary.add(page[name], page_location)
             elif page_type == "load" and page["phase"] == 2:
-                if telemetry_layout in (4, 5) and page["load_source"] != load_source:
+                if telemetry_layout in (4, 5, 6) and page["load_source"] != load_source:
                     raise ValueError(f"记录 {record['seq']} 的输入来源与本轮配置不一致")
                 if not running_load_sequences.add(page["model_sample_seq"]):
                     continue
@@ -1488,7 +1513,17 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
         "机器人连接环境": context["rtde"] if "rtde" in context else None,
         "场景": {"reference_source": context["reference_source"], "space": context["space"],
                  "diagnostic_mode": mode, "motion_axis": motion_axis + 1,
+                 "enabled_axes": [i + 1 for i, enabled in enumerate(config["JOINT_AXES"]) if enabled],
+                 "contact_context": context.get("manual_contact_context"),
                  "telemetry_layout": telemetry_layout, "load_source": load_source},
+        "选定轴最终逐周期统计": final_statistics,
+        "遥操作参考": {
+            "独立页状态数量": dict(reference_modes), "最新完整目标年龄_s": reference_age.report(),
+            "各轴参考相对锚点偏移_rad": [item.report() for item in nominal_offsets],
+            "各轴最新目标减执行参考_rad": [item.report() for item in latest_reference_error],
+            "最后参考页": last_reference,
+            "口径": "接触阻断由启用轴 drive 触发并共同制动参考；释放后限速追赶。参考页独立冻结，不能代替真实接触证据。",
+        },
         "记录数量": {"实际读取": sum(kinds.values()), "metadata记录数量": metadata["record_count"],
                      "按kind": dict(kinds)},
         "RTDE": {"总数": kinds["rtde_state"], "lifecycle_valid数量": lifecycle_count,
@@ -1654,8 +1689,8 @@ def analyze_j1_no_contact(run_dir):
         error("生效配置不符合本次 J1 首候选，不能计为该候选的验证轮次")
     if context.get("reference_source") != "fixed" or context.get("space") != "joint":
         error("必须为 fixed + joint")
-    if controller.get("telemetry_schema", {}).get("telemetry_schema_version") != 5:
-        error("缺少第五版逐周期统计协议；历史载荷抽样不能证明全程零 drive")
+    if controller.get("telemetry_schema", {}).get("telemetry_schema_version") not in (5, 6):
+        error("缺少第五或第六版逐周期统计协议；历史载荷抽样不能证明全程零 drive")
     expected_run = controller.get("run_id")
     expected_config = controller.get("config_id")
     if type(expected_run) is not int or expected_run <= 0 or type(expected_config) is not int or expected_config <= 0:
@@ -1881,9 +1916,11 @@ def analyze_j1_no_contact(run_dir):
             pages_seen[page_type].add(page_seq)
             if page_type == "statistics":
                 stats_pages += 1
-                if (page.get("statistics_schema_version") != 1 or page.get("config_id") != expected_config
+                if (page.get("statistics_schema_version") not in (1, 2) or page.get("config_id") != expected_config
                         or page.get("identity_valid") is not True or page.get("validation_errors")):
                     error("逐周期统计版本、配置身份或字段校验无效")
+                if page.get("statistics_schema_version") == 2 and page.get("observation_axis") != 1:
+                    error("J1 首阶段必须取得 J1 逐周期统计，不能使用其他轴代替")
                 if not all(type(page.get(key)) is bool for key in ("trajectory_complete", "final", "complete")):
                     error("统计完成标记缺失或类型非法")
                 if page.get("final") and page.get("phase") != 4:

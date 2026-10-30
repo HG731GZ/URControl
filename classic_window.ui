@@ -696,6 +696,9 @@ QPushButton:disabled { background: #d8dfe8; color: #8a95a5; border: 1px dashed #
          </property>
         </widget>
         <widget class="QCheckBox" name="checkBox_FTSwitch">
+         <property name="toolTip">
+          <string>勾选后显示所选来源的六轴关节力矩；取消勾选显示 TCP 广义力。</string>
+         </property>
          <property name="geometry">
           <rect>
            <x>20</x>

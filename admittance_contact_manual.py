@@ -1,7 +1,6 @@
-"""J1 人工接触联调：单次、保持计时、自动手推或边界保持，复用正式控制和日志链。"""
+"""关节人工接触联调：选择 J1、J3 或 J1+J3，记录末端或连杆接触与撤力观察。"""
 
 import argparse
-from copy import deepcopy
 import json
 import math
 from pathlib import Path
@@ -26,10 +25,18 @@ class ContactSession(QtCore.QObject):
     def __init__(self, window, args):
         super().__init__(window)
         self.window, self.args = window, args
-        # 机器人运动参数从此函数取得：命令边界为实际位置守卫的 80%（当前 ±0.40 rad），
-        # 跟踪误差 0.005 rad、实际包络 ±0.5 rad；
-        # 的调整位置及区别见 UR_Utils/admittance_config.py；下面的观测带只控制人工提示和记录。
-        self.config = admittance_config.j1_contact_config()
+        # 各轴初值在配置文件独立定义；以下观测带只控制人工提示和记录。
+        self.config = admittance_config.joint_contact_config(tuple(args.axes))
+        self.axis = (args.observation_axis if args.observation_axis is not None
+                     else self.config["DIAGNOSTIC_AXIS"]) - 1
+        self.config["DIAGNOSTIC_AXIS"] = self.axis + 1
+        self.axis_label = f"J{self.axis + 1}"
+        self.axes_label = "+".join(f"J{axis}" for axis in args.axes)
+        offsets, speeds, _, _ = admittance_config.joint_command_limits(self.config)
+        self.command_limit = offsets[self.axis]
+        self.command_speed = speeds[self.axis]
+        self.motion_text = "；".join(f"J{axis} ±{offsets[axis - 1]:g} rad / {speeds[axis - 1]:g} rad/s"
+                                   for axis in args.axes)
         self.sustained = args.protocol == "sustained"
         self.timed_push = args.protocol == "timed_push"
         self.boundary_hold = args.protocol == "boundary_hold"
@@ -45,11 +52,11 @@ class ContactSession(QtCore.QObject):
         # 保持提示时长，单位 s；边界协议自动开始，期间离开边界也不重启计时，真实停留事后单独统计。
         self.hold_duration_s = 5.
         # 边界到达检测的命令观测带，单位 rad：abs((q_cmd - q_start) - 同侧边界偏移) <= 此值。
-        # 同侧命令边界来自 self.config["SINGLE_AXIS_MAX_OFFSET_RAD"]，随候选变化，当前为 ±0.40 rad。
+        # 同侧命令边界来自选定观测轴的逐轴命令参数。
         # 0.0002 只表示距边界多近时开始提示，不会加到命令行程上。
         self.boundary_command_band_rad = .0002
         # 边界到达检测的实际位置观测带，单位 rad：abs((actual_q - q_start) - 同侧边界偏移) <= 此值。
-        # 当前正向示例为相对锚点 +0.399～+0.401 rad；允许观测实际跟踪偏差，命令仍限于 +0.40 rad。
+        # 允许观测实际跟踪偏差，命令仍限制在本轮所选轴的边界内。
         # 这是保持提示及事后停留统计的范围，不是 0.005 rad 跟踪停止阈值或 ±0.5 rad 实际位置守卫。
         self.boundary_actual_band_rad = .001
         # 到达确认时间，单位 s：两类观测连续满足同侧边界条件后，才开始保持提示倒计时。
@@ -81,13 +88,12 @@ class ContactSession(QtCore.QObject):
         self.window.ui.comboBox_AdmittanceSpace.setCurrentIndex(0)
         self.window.ui.comboBox_AngleUnit.setCurrentIndex(1)
         self.window.ui.comboBox_PlotWindow.setCurrentIndex(3)
-        self.window.parameters.prepared_parameters = deepcopy(self.config)
-        self.window.parameters.draft_parameters = deepcopy(self.config)
-        self.window._write_editors()
-        instruction = ("空法兰末端沿基座 +X，轻推让位后保持力度 5 秒，不追赶位置或继续加力"
-                       if self.sustained else "空法兰末端，沿基座 +X，明显让位或红色提示后完全松手")
+        self.window.ui.comboBox_PlotAxis.setCurrentIndex(self.axis)
+        self.window.set_candidate(self.config)
+        instruction = (f"{args.contact_point}，{args.contact_direction}；轻推让位后保持力度 5 秒，不追赶位置或继续加力"
+                       if self.sustained else f"{args.contact_point}，{args.contact_direction}；明显让位或红色提示后完全松手")
         if self.timed_push:
-            instruction = "启动后无接触 5 秒，按提示连续轻推 J1 20 秒，红色提示后完全松手；中途无需点击按钮"
+            instruction = f"启动后无接触 5 秒，按提示轻推 {self.axes_label} 20 秒，红色提示后完全松手；中途无需点击按钮"
         elif self.boundary_hold:
             instruction = "先无接触 5 秒，再缓慢推向任选一侧边界；提示保持后维持现有轻推 5 秒，红色提示后完全松手"
         self.window.ui.lineEdit_OperatorEventNote.setText(instruction)
@@ -108,20 +114,18 @@ class ContactSession(QtCore.QObject):
                 "本轮 60 秒：无接触 5 秒，最多用 20 秒缓慢推向同一侧边界。检测到接近边界后自动提示保持 5 秒，"
                 "保持已有轻推，不继续加力、不追赶位置；无需恒力或中途点击。随后红色提示要求完全松手，"
                 "留出 5 秒撤力时间，再无接触观察到结束。未到边界也按时提示松手，不自动重试。"
-                f"保持 J1 回位模型、命令 ±{self.config['SINGLE_AXIS_MAX_OFFSET_RAD']:g} rad、"
-                f"{self.config['SINGLE_AXIS_MAX_QD_RAD_S']:g} rad/s 和故障停止；"
+                f"保持 {self.axes_label} 回位模型、{self.motion_text} 和故障停止；"
                 f"{args.force_cue_n:g} N 与 {self.offset_cue_rad:g} rad 仅作数值观察。")
         elif self.timed_push:
             self.window.append_log(
                 "本轮 60 秒：前 5 秒无接触，随后连续轻推 20 秒。声音及红色提示后完全松手，"
-                "留出 5 秒撤力时间，再记录至少 20 秒计划无接触观察。仅 J1 响应，保留回位弹簧、"
-                f"命令 ±{self.config['SINGLE_AXIS_MAX_OFFSET_RAD']:g} rad、"
-                f"{self.config['SINGLE_AXIS_MAX_QD_RAD_S']:g} rad/s 和故障停止；接近行程边界时不继续加力。"
+                f"留出 5 秒撤力时间，再记录至少 20 秒计划无接触观察。{self.axes_label} 响应，保留回位弹簧、"
+                f"{self.motion_text} 和故障停止；接近行程边界时不继续加力。"
                 f"{args.force_cue_n:g} N 与 {self.offset_cue_rad:g} rad 仅作数值观察，不触发提前撤力。")
         else:
-            self.window.append_log(f"本轮 60 秒。先静止 3 秒，再点“施力开始”并沿基座 +X 缓慢推动。"
+            self.window.append_log(f"本轮 60 秒。先静止 3 秒，再点“施力开始”；{args.contact_point}，{args.contact_direction}。"
                                    f"{action}随后点“完全松手”。"
-                                   f"末端力增量 {args.force_cue_n:g} N 或 J1 偏移 {self.offset_cue_rad:g} rad 时提示撤力；提示不作为力保护。"
+                                   f"末端力增量 {args.force_cue_n:g} N 或启用轴偏移 {self.offset_cue_rad:g} rad 时提示撤力；末端测力不代表连杆接触力。"
                                    "35 秒时仍未松手也会提示，松手后至少观察 20 秒。")
         self.window.start_requested.connect(self.start)
         self.window.stop_requested.connect(self.stop)
@@ -157,7 +161,7 @@ class ContactSession(QtCore.QObject):
         if self.controller is not None:
             return
         if source != "fixed" or space != "joint" or parameters != self.config:
-            self.window.append_log("本入口仅运行已约定的 J1 候选；参数已改变，请重新打开本轮窗口。")
+            self.window.append_log(f"本入口仅运行已选择的 {self.axes_label} 候选；参数已改变，请重新打开本轮窗口。")
             return
         try:
             before = read_robot_state(self.args.robot_ip)
@@ -167,14 +171,14 @@ class ContactSession(QtCore.QObject):
             return
         self.logger = AdmittanceLogger(enabled=True)
         self.logger.start({
-            "run_id": f"j1_contact_{time.time_ns()}", "reference_source": "fixed", "space": "joint",
+            "run_id": f"joint_contact_{time.time_ns()}", "reference_source": "fixed", "space": "joint",
             "prepared_parameters": self.config, "robot_address": self.args.robot_ip,
             "debug_logging_enabled_at_start": True, "manual_validation": True,
             "manual_precheck": before, "validation_environment": self.args.environment,
             "validation_profile": "AdmittanceProcess", "manual_label": self.args.label,
-            "manual_contact_context": {"tool": "空法兰", "point": "末端",
-                                       "direction": ("任选一侧 J1 边界，保持同侧轻推" if self.boundary_hold else
-                                                     "J1 允许方向，可往返轻推" if self.timed_push else "基座 +X"),
+            "manual_contact_context": {"tool": "空法兰", "point": self.args.contact_point,
+                                       "direction": self.args.contact_direction,
+                                       "enabled_axes": self.args.axes, "observation_axis": self.axis + 1,
                                        "contact_planned": True, "single_contact": not self.timed_push,
                                        "protocol": self.args.protocol,
                                        "force_increment_cue_n": self.args.force_cue_n,
@@ -202,7 +206,8 @@ class ContactSession(QtCore.QObject):
             if self.boundary_hold:
                 observation.update(push_duration_s=None, boundary_hold={
                     "approach_timeout_s": self.push_duration_s, "hold_duration_s": self.hold_duration_s,
-                    "hold_tail_s": 2., "command_limit_rad": self.config["SINGLE_AXIS_MAX_OFFSET_RAD"],
+                    "hold_tail_s": 2., "command_limit_rad": self.command_limit,
+                    "observation_axis": self.axis + 1,
                     "command_band_rad": self.boundary_command_band_rad,
                     "actual_band_rad": self.boundary_actual_band_rad,
                     "confirmation_s": self.boundary_confirm_s,
@@ -313,9 +318,9 @@ class ContactSession(QtCore.QObject):
         if (execution is not None and execution["phase"] == 2
                 and now - execution["received_monotonic_s"] <= self.boundary_max_sample_age_s
                 and now - state["state_received_monotonic"] <= self.boundary_max_sample_age_s):
-            command_offset = execution["q_cmd"][0] - state["q_start"][0]
+            command_offset = execution["q_cmd"][self.axis] - state["q_start"][self.axis]
             side = 1 if offset >= 0 else -1
-            limit = side * self.config["SINGLE_AXIS_MAX_OFFSET_RAD"]
+            limit = side * self.command_limit
             if (abs(command_offset - limit) <= self.boundary_command_band_rad
                     and abs(offset - limit) <= self.boundary_actual_band_rad):
                 near_side = side
@@ -332,6 +337,7 @@ class ContactSession(QtCore.QObject):
                 elif now - self.boundary_candidate[1] >= self.boundary_confirm_s:
                     self.boundary_side = near_side
                     self.protocol_event("boundary_hold_started", state, boundary_side=near_side,
+                                        observation_axis=self.axis + 1,
                                         command_offset_rad=command_offset, actual_offset_rad=offset,
                                         execution_page_seq=execution["page_seq"],
                                         execution_received_monotonic_s=execution["received_monotonic_s"],
@@ -364,7 +370,7 @@ class ContactSession(QtCore.QObject):
             if "push_window_started" not in self.protocol_events:
                 self.protocol_event("push_window_started", state)
                 QtWidgets.QApplication.beep()
-            phase = f"现在可连续轻推 J1，剩余 {push_end - elapsed:.1f} 秒；中途无需点击，接近行程边界不继续加力"
+            phase = f"现在可轻推 {self.axes_label}，剩余 {push_end - elapsed:.1f} 秒；中途无需点击，接近行程边界不继续加力"
             notices = []
             if delta >= self.args.force_cue_n:
                 notices.append(f"力增量超过 {self.args.force_cue_n:g} N 观测线")
@@ -416,14 +422,15 @@ class ContactSession(QtCore.QObject):
                     self.logger.record("manual_contact_baseline", {"force_base_n": self.force_baseline,
                                                                   "display_sample_count": len(self.force_samples)})
                 delta = math.dist(state["actual_TCP_force"][:3], self.force_baseline)
-                offset = state["actual_q"][0] - state["q_start"][0]
+                offsets = [state["actual_q"][axis - 1] - state["q_start"][axis - 1] for axis in self.args.axes]
+                offset = state["actual_q"][self.axis] - state["q_start"][self.axis]
                 if self.boundary_hold:
                     phase = self.boundary_hold_phase(state, elapsed, offset)
                 elif self.timed_push:
                     phase = self.timed_push_phase(state, elapsed, delta, offset)
                 elif self.release_monotonic is None:
-                    if delta >= self.args.force_cue_n or abs(offset) >= self.offset_cue_rad or elapsed >= 35:
-                        self.cue(f"末端力增量 {delta:.1f} N，J1 偏移 {offset:.4f} rad，运行 {elapsed:.1f} 秒")
+                    if delta >= self.args.force_cue_n or max(map(abs, offsets)) >= self.offset_cue_rad or elapsed >= 35:
+                        self.cue(f"末端力增量 {delta:.1f} N，{self.axes_label} 偏移 {offsets} rad，运行 {elapsed:.1f} 秒")
                     if self.hold_started_monotonic is not None:
                         held_s = time.monotonic() - self.hold_started_monotonic
                         if held_s >= self.hold_duration_s:
@@ -439,7 +446,8 @@ class ContactSession(QtCore.QObject):
                 else:
                     released_s = time.monotonic() - self.release_monotonic
                     phase = f"松手后观察 {released_s:.1f} / 至少 20 秒，请保持无接触"
-                phase += f"；力增量 {delta:.1f} N；J1 偏移 {offset:.4f} rad"
+                phase += f"；末端力增量 {delta:.1f} N；" + " / ".join(
+                    f"J{axis} {value:+.4f} rad" for axis, value in zip(self.args.axes, offsets))
             if int(elapsed) != self.last_second:
                 print(phase, flush=True)
                 self.last_second = int(elapsed)
@@ -486,19 +494,28 @@ def main():
     parser.add_argument("--label", required=True)
     parser.add_argument("--empty-flange", action="store_true", required=True)
     parser.add_argument("--force-cue-n", type=float, required=True)
+    parser.add_argument("--axes", type=int, nargs="+", choices=(1, 3), default=[1], help="柔顺轴：1、3 或 1 3")
+    parser.add_argument("--observation-axis", type=int, choices=(1, 3), help="逐周期统计和边界提示轴，默认采用候选观测轴")
+    parser.add_argument("--contact-point", default="空法兰末端", help="记录本轮实际接触位置，例如前臂连杆中段")
+    parser.add_argument("--contact-direction", default="沿启用关节允许的方向缓慢轻推", help="记录本轮现场约定施力方向")
     parser.add_argument("--protocol", choices=("single", "sustained", "timed_push", "boundary_hold"), default="single",
                         help="single 单次施力，sustained 人工保持计时，timed_push 自动手推，boundary_hold 到边界后提示保持 5 秒")
     parser.add_argument("--preview", type=Path)
     args = parser.parse_args()
+    if tuple(args.axes) not in ((1,), (3,), (1, 3)):
+        parser.error("柔顺轴须为 1、3 或 1 3")
+    if args.observation_axis is not None and args.observation_axis not in args.axes:
+        parser.error("观测轴须属于本轮启用轴")
     if not math.isfinite(args.force_cue_n) or args.force_cue_n <= 0:
         parser.error("撤力提示值须为正有限力增量，单位 N")
     configure_high_dpi()
     app = QtWidgets.QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
-    window = AdmittanceWindow(settings=QtCore.QSettings("/tmp/urcontrol_j1_contact_20261029.ini", QtCore.QSettings.IniFormat))
-    title = {"single": "J1 单次手推联调", "sustained": "J1 持续受载联调：保持 5 秒",
-             "timed_push": "J1 连续手推联调：自动引导 20 秒",
-             "boundary_hold": "J1 边界保持联调：到边界后保持现有轻推 5 秒"}[args.protocol]
+    window = AdmittanceWindow(settings=QtCore.QSettings("/tmp/urcontrol_joint_contact.ini", QtCore.QSettings.IniFormat))
+    title = "+".join(f"J{axis}" for axis in args.axes) + " " + {
+        "single": "单次手推联调", "sustained": "持续受载联调：保持 5 秒",
+        "timed_push": "连续手推联调：自动引导 20 秒",
+        "boundary_hold": "边界保持联调：到边界后保持现有轻推 5 秒"}[args.protocol]
     window.setWindowTitle(title + " · 本轮 60 秒 · 撤力后至少观察 20 秒")
     session = ContactSession(window, args)
     def handle_signal(number, frame):
@@ -512,6 +529,8 @@ def main():
     signal.signal(signal.SIGTERM, handle_signal)
     window.showMaximized()
     if args.preview:
+        window.showNormal()
+        window.resize(1600, 1000)
         app.processEvents()
         window.grab().save(str(args.preview))
         print("离线预览已保存：" + str(args.preview))

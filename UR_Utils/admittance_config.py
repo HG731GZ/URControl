@@ -53,8 +53,8 @@ DIAGNOSTIC_MOTION_NON_MOTION_ACTUAL_MAX_QD_RAD_S = 0.1
 DIAGNOSTIC_MOTION_NON_MOTION_ACTUAL_MARGIN_RAD = 0.5
 # 微动停止确认须低于运行速度量级，不沿用普通流程的 0.01 rad/s 静止阈值。
 DIAGNOSTIC_MOTION_STOP_MAX_QD_RAD_S = 0.0001
-# 固定关节单轴导纳仅开放 J1 或 J3。这里是软件默认值，J1 人工联调会在
-# j1_contact_config() 中覆盖命令行程、速度、加速度和跟踪阈值，详见该函数旁的说明。
+# 以下单轴标量保留 J1 候选的原有修改位置；j1_contact_config() 将其写入 J1 逐轴数组。
+# J3 与 J1+J3 采用后面的 JOINT_COMMAND_*，参数分别在各自候选函数中声明。
 # 正常命令让位上限，单位 rad：最终 q_cmd 相对 q_start 限制在 ±此值，并提前按剩余距离减速。
 # 正常到达边界后继续限位保持，不因达到此值单独退出；不调整锚点，也不自动卸载。
 # 它限制发送目标，不保证 actual_q 与目标完全重合，更不是接触力上限。
@@ -85,6 +85,19 @@ SINGLE_AXIS_NON_MOTION_ACTUAL_MARGIN_RAD = 0.5
 # 停止确认速度，单位 rad/s：须程序已退出且六轴新鲜反馈均不超过此值，才确认本轮已停止。
 # 它不参与正常限速，也不是“速度低于此值就自动停止”。
 SINGLE_AXIS_STOP_MAX_QD_RAD_S = 0.0001
+# 关节导纳最终命令逐轴约束；单轴和多轴使用同一执行器，禁用轴固定在启动锚点。
+# 接触候选在 joint_contact_config() 中分别填写 J1/J3，其他轴暂不开放运动。
+JOINT_COMMAND_MAX_OFFSET_RAD = [0.004] * 6
+JOINT_COMMAND_MAX_QD_RAD_S = [0.0015] * 6
+JOINT_COMMAND_MAX_QDD_RAD_S2 = [0.02] * 6
+JOINT_COMMAND_TRACKING_RAD = [0.005] * 6
+# 遥操作只消费最新完整目标。接触时全部可执行参考减速保持，卸载后有界追赶。
+# 判据使用死区后的关节载荷；释放阈值小于进入阈值，并连续满足释放等待时间。
+TELEOP_CONTACT_ENTER_NM = [0.5] * 6
+TELEOP_CONTACT_RELEASE_NM = [0.1] * 6
+TELEOP_CONTACT_RELEASE_S = 0.3
+TELEOP_MAX_QD_RAD_S = [0.01, 0.005, 0.005, 0.003, 0.003, 0.003]
+TELEOP_MAX_QDD_RAD_S2 = [0.05, 0.025, 0.025, 0.015, 0.015, 0.015]
 DIAGNOSTIC_STATE_HZ = 500.0
 DIAGNOSTIC_SETTLE_S = 1.0
 DIAGNOSTIC_DURATION_S = 15.0
@@ -240,7 +253,71 @@ def j1_contact_config():
         # 本轮六轴提交前跟踪误差上限，单位 rad；abs(q - actual_q) > 0.005 时停止，原因 7。
         "SINGLE_AXIS_TRACKING_RAD": .005,
     })
+    for suffix in ("MAX_OFFSET_RAD", "MAX_QD_RAD_S", "MAX_QDD_RAD_S2", "TRACKING_RAD"):
+        values[f"JOINT_COMMAND_{suffix}"][0] = values[f"SINGLE_AXIS_{suffix}"]
     return validate_run_config("fixed", "joint", config=values)
+
+
+def j3_contact_config():
+    """J3 独立低速候选；这些初值不引用 J1 实测结论，需按当前姿态评价。"""
+    values = snapshot()
+    values.update(DIAGNOSTIC_MODE="admittance", DIAGNOSTIC_AXIS=3,
+                  DIAGNOSTIC_MOTION_AXIS=3, DIAGNOSTIC_DURATION_S=60.,
+                  JOINT_AXES=[0, 0, 1, 0, 0, 0], JOINT_LOAD_SOURCE="joint_torque")
+    values["JOINT_MASS"][2] = 4.
+    values["JOINT_DAMPING"][2] = 20.
+    values["JOINT_STIFFNESS"][2] = 20.
+    # 提速至 0.03 rad/s 的无接触往返残差峰值 9.15 N·m，8 N·m 候选未覆盖。
+    # 用户选择保留 10 N·m 并提速，随后明确启动力暂不调整，继续使用当前候选。
+    values["JOINT_DEADBAND_NM"][2] = 10.
+    # 命令 ±0.10 rad、0.03 rad/s、0.10 rad/s²；实际守卫仍为 ±0.5 rad、0.1 rad/s。
+    for suffix, value in (("MAX_OFFSET_RAD", .10), ("MAX_QD_RAD_S", .03),
+                          ("MAX_QDD_RAD_S2", .10), ("TRACKING_RAD", .005)):
+        values[f"JOINT_COMMAND_{suffix}"][2] = value
+    return validate_run_config("fixed", "joint", config=values)
+
+
+def j3_no_contact_config():
+    """用单次正向余弦往返观测 J3 候选速度下的残差，末尾保持 10 秒；外力不驱动命令。"""
+    values = j3_contact_config()
+    amplitude = values["JOINT_COMMAND_MAX_OFFSET_RAD"][2]
+    speed = values["JOINT_COMMAND_MAX_QD_RAD_S"][2]
+    # 余弦位移为 A/2·(1−cos(2πt/T))，取 T=πA/v 使峰速对应候选速度。
+    period = pi * amplitude / speed
+    values.update({
+        "DIAGNOSTIC_MODE": "preset_joint_motion",
+        "DIAGNOSTIC_MOTION_PROFILE": "cosine",
+        "DIAGNOSTIC_MOTION_AMPLITUDE_RAD": amplitude,
+        "DIAGNOSTIC_MOTION_PERIOD_S": period,
+        "DIAGNOSTIC_DURATION_S": period + 10.,
+        "DIAGNOSTIC_MOTION_MAX_QD_RAD_S": speed,
+        "DIAGNOSTIC_MOTION_MAX_QDD_RAD_S2": values["JOINT_COMMAND_MAX_QDD_RAD_S2"][2],
+        "DIAGNOSTIC_MOTION_TRACKING_RAD": values["JOINT_COMMAND_TRACKING_RAD"][2],
+    })
+    return validate_run_config("fixed", "joint", config=values)
+
+
+def joint_contact_config(axes=(3,), *, reference_source="fixed"):
+    """选择 J1、J3 或 J1+J3；各轴独立积分，共同受最终命令和实际运动守卫约束。"""
+    if tuple(axes) not in ((1,), (3,), (1, 3)):
+        raise ValueError("本阶段开放 J1、J3 或 J1+J3，请按升序选择且不重复")
+    values = j1_contact_config() if tuple(axes) == (1,) else j3_contact_config()
+    if tuple(axes) == (1, 3):
+        j1 = j1_contact_config()
+        for key in ("JOINT_MASS", "JOINT_DAMPING", "JOINT_STIFFNESS", "JOINT_DEADBAND_NM",
+                    "JOINT_COMMAND_MAX_OFFSET_RAD", "JOINT_COMMAND_MAX_QD_RAD_S",
+                    "JOINT_COMMAND_MAX_QDD_RAD_S2", "JOINT_COMMAND_TRACKING_RAD"):
+            values[key][0] = j1[key][0]
+        values["JOINT_AXES"][0] = 1
+    return validate_run_config(reference_source, "joint", config=values)
+
+
+def joint_command_limits(config):
+    """读取逐轴命令约束；旧日志按当时的单轴标量解释，不改变历史证据。"""
+    suffixes = ("MAX_OFFSET_RAD", "MAX_QD_RAD_S", "MAX_QDD_RAD_S2", "TRACKING_RAD")
+    if "JOINT_COMMAND_MAX_OFFSET_RAD" in config:
+        return tuple(list(config[f"JOINT_COMMAND_{suffix}"]) for suffix in suffixes)
+    return tuple([config[f"SINGLE_AXIS_{suffix}"]] * 6 for suffix in suffixes)
 
 
 def actual_guard_limits(config):
@@ -274,7 +351,7 @@ def servo_interval_contract(config):
 
 
 def stop_speed_limit(config):
-    """保持加载取证和受限单轴均使用低速停止确认，预设微动保留专用阈值。"""
+    """保持及单轴/多轴导纳均使用低速停止确认，预设微动保留专用阈值。"""
     if config["DIAGNOSTIC_MODE"] == "preset_joint_motion":
         return config["DIAGNOSTIC_MOTION_STOP_MAX_QD_RAD_S"]
     return config["SINGLE_AXIS_STOP_MAX_QD_RAD_S"]
@@ -294,7 +371,7 @@ def units(reference_source, space, *, config=None):
         "q_cmd": "rad",
         "q_master": "rad" if teleop else None,
         "q_nom": "rad",
-        "q_start": None if teleop else "rad",
+        "q_start": "rad",
         "source_seq": "接收帧计数" if teleop else None,
         "robot_timestamp": "s",
         "heartbeat_echo": "计数",
@@ -426,13 +503,28 @@ def validate_run_config(reference_source, space, *, config=None):
     if reference_source not in ("teleop", "fixed") or space not in ("joint", "cartesian"):
         raise ValueError("导纳场景或空间无效；新运行仅支持 teleop 或 fixed 来源")
     values = validate_config(config)
-    if reference_source != "fixed" or space != "joint":
-        raise ValueError("连续伺服首轮仅开放定点关节模式；遥操作与末端 IK 尚未完成模型预算验证")
+    if space != "joint":
+        raise ValueError("当前开放关节导纳；末端空间与 IK 留待独立实现")
+    if reference_source == "teleop" and values["DIAGNOSTIC_MODE"] != "admittance":
+        raise ValueError("关节遥操作须选择导纳候选，保持和预设轨迹只用于固定参考")
     if values["DIAGNOSTIC_MODE"] == "admittance":
         enabled_axes = [index + 1 for index, enabled in enumerate(values["JOINT_AXES"]) if enabled]
-        if enabled_axes not in ([1], [3]):
-            raise ValueError("当前接触导纳仅开放受限单轴联调，JOINT_AXES 必须只启用 J1 或只启用 J3")
-    if reference_source == "fixed":
+        if enabled_axes not in ([1], [3], [1, 3]):
+            raise ValueError("当前关节导纳开放 J1、J3 或 J1+J3，其他轴保持启动锚点")
+        offsets, speeds, accelerations, tracking = joint_command_limits(values)
+        actual_speeds, margins = actual_guard_limits(values)
+        for axis in (number - 1 for number in enabled_axes):
+            if offsets[axis] >= margins[axis] or speeds[axis] >= actual_speeds[axis]:
+                raise ValueError(f"J{axis + 1} 命令行程和速度须小于对应实际守卫")
+            if reference_source == "teleop" and values["TELEOP_MAX_QD_RAD_S"][axis] >= speeds[axis]:
+                raise ValueError(f"J{axis + 1} 遥操作参考速度须小于最终命令速度")
+            if reference_source == "teleop" and values["TELEOP_MAX_QDD_RAD_S2"][axis] >= accelerations[axis]:
+                raise ValueError(f"J{axis + 1} 遥操作参考加速度须小于最终命令加速度")
+            if values["TELEOP_CONTACT_RELEASE_NM"][axis] >= values["TELEOP_CONTACT_ENTER_NM"][axis]:
+                raise ValueError(f"J{axis + 1} 接触释放阈值须小于进入阈值")
+        if values["JOINT_LOAD_SOURCE"] != "joint_torque" and len(enabled_axes) > 1:
+            raise ValueError("本轮多关节与连杆柔顺使用 joint_torque，不以法兰测力替代连杆输入")
+    if reference_source in ("fixed", "teleop"):
         prefix = "JOINT" if space == "joint" else "CART"
         for suffix in ("MASS", "DAMPING", "STIFFNESS"):
             name = f"{prefix}_{suffix}"
@@ -440,10 +532,10 @@ def validate_run_config(reference_source, space, *, config=None):
                             in enumerate(zip(values[f"{prefix}_AXES"], values[name]))
                             if enabled and value <= 0]
             if invalid_axes:
-                raise ValueError(f"定点柔顺要求启用轴的 {name} 大于零，请修改第 {', '.join(invalid_axes)} 轴")
+                raise ValueError(f"撤力回参考要求启用轴的 {name} 大于零，请修改第 {', '.join(invalid_axes)} 轴")
         target_name = "JOINT_TARGET_TORQUE_NM" if space == "joint" else "CART_TARGET_WRENCH"
         if any(value != 0 for value in values[target_name]):
-            raise ValueError(f"定点柔顺要求 {target_name} 全部为零，请显式修改目标载荷后启动")
+            raise ValueError(f"撤力回参考要求 {target_name} 全部为零")
     return values
 
 

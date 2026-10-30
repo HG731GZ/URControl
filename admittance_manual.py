@@ -1,4 +1,4 @@
-"""导纳单轮人工联调入口：只读检查或显式运行 J1 无接触候选。"""
+"""导纳单轮人工联调入口：只读检查、J1/J3 无接触轨迹或选定关节的固定/遥操作联调。"""
 
 from __future__ import annotations
 
@@ -7,11 +7,13 @@ import json
 from math import isfinite
 from pathlib import Path
 import signal
+import select
 import socket
+import sys
 import time
 
 from admittance_logger import AdmittanceLogger
-from analyze_admittance_log import analyze_j1_no_contact
+from analyze_admittance_log import analyze, analyze_j1_no_contact
 from UR_Utils import admittance_config
 from UR_Utils.admittance_process import AdmittanceProcess
 from UR_Utils.admittance_telemetry import ROBOT_FIELDS
@@ -61,7 +63,7 @@ def require_stopped(observation, speed_limit):
 
 
 def require_empty_flange_ready(observation, config):
-    """检查空法兰、静止、正常安全状态及完整 J1 运动包络。"""
+    """检查空法兰、静止、正常安全状态及六轴实际运动包络。"""
     require_stopped(observation, admittance_config.stop_speed_limit(config))
     for state in observation["samples"]:
         if state["robot_mode"] != 7 or state["safety_mode"] != 1 or state["target_speed_fraction"] != 1:
@@ -75,23 +77,42 @@ def require_empty_flange_ready(observation, config):
             raise RuntimeError(f"J{axis + 1} 本轮实际运动包络触及绝对关节边界")
 
 
-def run_stage_a(args):
+def run_manual(args):
     """每次调用只运行一轮正式进程，保留完整日志，再生成只读验收报告。"""
-    config = admittance_config.j1_no_contact_config()
+    stage_a = args.command == "stage-a"
+    source = args.reference_source if args.command == "joint" else "fixed"
+    if stage_a:
+        config = admittance_config.j1_no_contact_config()
+    elif args.command == "j3-motion":
+        config = admittance_config.j3_no_contact_config()
+    else:
+        config = admittance_config.joint_contact_config(tuple(args.axes), reference_source=source)
+        config["DIAGNOSTIC_DURATION_S"] = args.duration
+        config = admittance_config.validate_run_config(source, "joint", config=config)
     before = read_robot_state(args.robot_ip)
     require_empty_flange_ready(before, config)
+    anchor = list(before["samples"][-1]["actual_q"])
+    reference = list(anchor)
+    source_seq = 0
+    reference_enabled = True
+    console_open = True
     logger = AdmittanceLogger(enabled=True)
     logger.start({
-        "run_id": f"stage_a_{args.environment}_{time.time_ns()}",
-        "reference_source": "fixed", "space": "joint", "prepared_parameters": config,
+        "run_id": f"{args.command}_{args.environment}_{time.time_ns()}",
+        "reference_source": source, "space": "joint", "prepared_parameters": config,
         "robot_address": args.robot_ip, "debug_logging_enabled_at_start": True,
         "manual_validation": True, "manual_label": args.label, "manual_precheck": before,
         "validation_environment": args.environment, "validation_profile": "AdmittanceProcess",
         "validation_scope": "正式通信进程、正常自动 GC、500 Hz 状态和实时磁盘日志；未加载完整主界面及其他设备",
-        "validation_scenario": "J1_empty_flange_no_contact", "no_contact_confirmed": True,
+        "validation_scenario": ("J1_empty_flange_no_contact" if stage_a else
+                                "J3_cosine_no_contact" if args.command == "j3-motion" else "joint_empty_flange_no_contact"),
+        "manual_reference_definition": "终端显式设定相对启动姿态的目标，100 Hz 发布；不是现场主端" if source == "teleop" else None,
+        "no_contact_confirmed": True,
         "empty_flange_confirmed": True,
     })
-    controller = AdmittanceProcess(args.robot_ip, "fixed", "joint", config=config, log_sink=logger)
+    controller = AdmittanceProcess(args.robot_ip, source, "joint", config=config, log_sink=logger,
+                                   q_master=reference if source == "teleop" else None,
+                                   source_seq=source_seq if source == "teleop" else None)
 
     def request_stop(signum, frame):
         """终端中断直接提交正式停止请求，等待新鲜静止证据后再退出。"""
@@ -101,7 +122,9 @@ def run_stage_a(args):
     old_handlers = {number: signal.signal(number, request_stop) for number in (signal.SIGINT, signal.SIGTERM)}
     path = Path(logger.get_status()["path"])
     print(json.dumps({"本轮日志": str(path), "运行秒数": config["DIAGNOSTIC_DURATION_S"],
-                      "J1参考位置": before["samples"][-1]["actual_q"][0]}, ensure_ascii=False), flush=True)
+                      "启动关节姿态": anchor}, ensure_ascii=False), flush=True)
+    if source == "teleop":
+        print("终端命令：target 后接六轴相对启动角度(rad)；pause 停止新参考以观察断流；stop 请求停止。", flush=True)
     def confirm_external_stop():
         """通信进程失效后独立确认静止，再向原拥有者交付停止证据。"""
         observation = read_robot_state(args.robot_ip)
@@ -113,9 +136,40 @@ def run_stage_a(args):
         controller.start()
         deadline = time.monotonic() + config["ADMITTANCE_START_TIMEOUT_S"] + config["DIAGNOSTIC_DURATION_S"]
         next_display = 0.
+        next_reference = 0.
         timed_stop = False
         while controller.active:
             now = time.monotonic()
+            if not stage_a and console_open and select.select([sys.stdin], [], [], 0)[0]:
+                line = sys.stdin.readline()
+                console_open = bool(line)
+                words = line.split()
+                if words == ["stop"]:
+                    controller.request_stop()
+                elif words == ["pause"] and source == "teleop":
+                    reference_enabled = False
+                    logger.record("manual_reference_paused", {"source_seq": source_seq})
+                    print("已停止发布新参考，保留通信心跳以观察机器人主端超时。", flush=True)
+                elif words and words[0] == "target" and source == "teleop":
+                    try:
+                        offsets = list(map(float, words[1:]))
+                        limits = config["JOINT_COMMAND_MAX_OFFSET_RAD"]
+                        if len(offsets) != 6 or any(not isfinite(x) or abs(x) > limits[i]
+                                                    or not config["JOINT_AXES"][i] and x != 0
+                                                    for i, x in enumerate(offsets)):
+                            raise ValueError("需要六个有限偏移，启用轴不得超过命令边界，禁用轴必须为零")
+                        reference = [q + offset for q, offset in zip(anchor, offsets)]
+                        logger.record("manual_reference_target", {"offset_rad": offsets, "q_master": reference})
+                        print("已设定最新目标：" + str(offsets), flush=True)
+                    except ValueError as error:
+                        print(f"目标未接受：{error}", flush=True)
+                elif words:
+                    print("可用命令：target 六轴偏移、pause、stop", flush=True)
+            if (source == "teleop" and reference_enabled and now >= next_reference
+                    and not controller.get_status()["stopping"]):
+                source_seq += 1
+                controller.submit_reference(reference, source_seq=source_seq)
+                next_reference = now + .01
             if now >= deadline and not timed_stop:
                 controller.request_stop()
                 timed_stop = True
@@ -130,7 +184,7 @@ def run_stage_a(args):
                                   "非零drive周期": None if statistics is None else statistics["nonzero_drive_count"]},
                                  ensure_ascii=False), flush=True)
                 next_display = now + 5
-            time.sleep(.02)
+            time.sleep(.002 if source == "teleop" else .02)
     finally:
         try:
             if controller.active:
@@ -150,12 +204,16 @@ def run_stage_a(args):
         finally:
             for number, handler in old_handlers.items():
                 signal.signal(number, handler)
-    report = analyze_j1_no_contact(path)
-    (path / "stage_a_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(json.dumps({"日志目录": str(path), "结论": report["结论"], "证据问题": report["证据问题"],
-                      "不通过原因": report["不通过原因"], "最终静止确认": status["stopped_confirmed"],
+    report = analyze_j1_no_contact(path) if stage_a else analyze(path)
+    report_name = "stage_a_report.json" if stage_a else "descriptive_report.json"
+    (path / report_name).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(json.dumps({"日志目录": str(path), "报告": report_name,
+                      "结论": report["结论"] if stage_a else "本轮描述性记录，不替代真实接触验收",
+                      "退出原因": status["exit_reason"], "错误": status["last_error"],
+                      "最终静止确认": status["stopped_confirmed"],
                       "最终安全状态": after["samples"][-1]["safety_mode"]}, ensure_ascii=False), flush=True)
-    return 0 if report["软件与记录检查通过"] else 1
+    successful = report["软件与记录检查通过"] if stage_a else status["stopped_confirmed"] and not status["last_error"]
+    return 0 if successful else 1
 
 
 def main():
@@ -171,6 +229,21 @@ def main():
     stage.add_argument("--label", required=True)
     stage.add_argument("--empty-flange", action="store_true", required=True, help="现场已确认空法兰")
     stage.add_argument("--no-contact", action="store_true", required=True, help="现场已确认整轮无人接触")
+    j3 = subparsers.add_parser("j3-motion", help="单轮 J3 正向余弦往返及 10 秒尾段；外力不驱动命令")
+    j3.add_argument("--robot-ip", required=True)
+    j3.add_argument("--environment", choices=("ursim", "real_robot"), required=True)
+    j3.add_argument("--label", required=True)
+    j3.add_argument("--empty-flange", action="store_true", required=True)
+    j3.add_argument("--no-contact", action="store_true", required=True)
+    joint = subparsers.add_parser("joint", help="单轮关节无接触联调；遥操作目标由终端显式给定")
+    joint.add_argument("--robot-ip", required=True)
+    joint.add_argument("--environment", choices=("ursim", "real_robot"), required=True)
+    joint.add_argument("--label", required=True)
+    joint.add_argument("--empty-flange", action="store_true", required=True)
+    joint.add_argument("--no-contact", action="store_true", required=True)
+    joint.add_argument("--axes", type=int, nargs="+", choices=(1, 3), default=[3])
+    joint.add_argument("--reference-source", choices=("fixed", "teleop"), default="fixed")
+    joint.add_argument("--duration", type=float, default=15., help="运行秒数，最长 60 秒")
     args = parser.parse_args()
     if args.command == "inspect":
         observation = read_robot_state(args.robot_ip)
@@ -178,7 +251,7 @@ def main():
         print(json.dumps({"状态文件": str(args.output), "控制器": observation["dashboard"],
                           "末帧": observation["samples"][-1]}, ensure_ascii=False, indent=2))
         return 0
-    return run_stage_a(args)
+    return run_manual(args)
 
 
 if __name__ == "__main__":

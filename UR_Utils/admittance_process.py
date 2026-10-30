@@ -166,7 +166,7 @@ def _process_main(arguments, event_writer, status_slot, reference_slot, stop_eve
                 backend._set_error(owner_error)
                 backend.request_stop()
         reference_sequence, reference = reference_slot.read(reference_sequence)
-        if reference is not None and not stop_event.is_set():
+        if reference is not None and not stop_event.is_set() and not backend._stop_requested.is_set():
             backend.submit_reference(reference["q"], source_seq=reference["source_seq"])
         with backend._state_lock():
             lifecycle = tuple(backend._status[name] for name in
@@ -335,19 +335,21 @@ class AdmittanceProcess:
         result["process_status_age_s"] = None if published is None else max(0.0, time.monotonic() - published)
         return result
 
-    def submit_reference(self, q, *, source_seq: int) -> None:
-        """最新主端参考覆盖旧待采用帧；源身份仍由完整控制链校验。"""
+    def submit_reference(self, q, *, source_seq: int) -> bool:
+        """覆盖最新待采用目标；异步停止开始后返回 False，不向已停止的本轮继续提交。"""
         if self.reference_source != "teleop":
             raise RuntimeError("定点柔顺期间不能提交主端关节目标")
         values, sequence = URAdmittanceController._validated_reference(q, source_seq)
         if not self.active or self._stop_event.is_set():
-            raise RuntimeError("本轮导纳正在停止或已经结束")
+            return False
         if self._submitted_seq is not None and sequence < self._submitted_seq:
             raise ValueError("主端源帧序号不能倒退")
         if sequence == self._submitted_seq and values.tolist() != self._submitted_q:
             raise ValueError("同一主端帧序号不能对应不同关节目标")
         if self._reference_slot.publish({"q": values.tolist(), "source_seq": sequence}):
             self._submitted_seq, self._submitted_q = sequence, values.tolist()
+            return True
+        return False
 
     def update_reference(self, q, *, source_seq: int) -> None:
         """沿用主端帧身份语义的显式更新入口。"""

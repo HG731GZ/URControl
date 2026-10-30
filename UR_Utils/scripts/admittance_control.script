@@ -1,11 +1,12 @@
 def ur_admittance_control():
-  # 本阶段仅开放定点关节模式。主程序为唯一运动输出者，模型和遥测线程不调用运动命令。
+  # 固定及遥操作关节模式共用唯一运动执行器；模型和遥测线程不调用运动命令。
   global adm_i = ${ADMITTANCE_INPUT_INT_BASE}
   global adm_oi = ${ADMITTANCE_OUTPUT_INT_BASE}
   global adm_of = ${ADMITTANCE_OUTPUT_FLOAT_BASE}
   global adm_run = read_input_integer_register(adm_i + 6)
   global adm_config_id = ${CONFIG_ID}
   global adm_mode = ${DIAGNOSTIC_MODE_CODE}
+  global adm_source = ${REFERENCE_SOURCE}
   global adm_profile = ${DIAGNOSTIC_MOTION_PROFILE_CODE}
   global adm_load_source = ${JOINT_LOAD_SOURCE_CODE}
   global adm_h = ${SERVO_DT_S}
@@ -46,6 +47,8 @@ def ur_admittance_control():
   global adm_tracking = ${COMMAND_MAX_TRACKING_ERROR_RAD}
   global adm_motion_actual_lower = [0., 0., 0., 0., 0., 0.]
   global adm_motion_actual_upper = [0., 0., 0., 0., 0., 0.]
+  global adm_command_lower = adm_zero
+  global adm_command_upper = adm_zero
   # 主机按运行模式分开渲染运动轴和其余轴，启动、偏置及运行使用同一组实际守卫。
   global adm_actual_max_qd = ${ACTUAL_MAX_QD_BY_AXIS}
   global adm_actual_margin = ${ACTUAL_MARGIN_BY_AXIS}
@@ -56,17 +59,20 @@ def ur_admittance_control():
   global adm_target = ${JOINT_TARGET_TORQUE_NM}
   global adm_deadband = ${JOINT_DEADBAND_NM}
   global adm_speed_max = ${JOINT_MAX_OFFSET_SPEED_RAD_S}
+  global adm_nom_max_qd = ${TELEOP_MAX_QD_RAD_S}
+  global adm_nom_max_qdd = ${TELEOP_MAX_QDD_RAD_S2}
+  global adm_contact_enter = ${TELEOP_CONTACT_ENTER_NM}
+  global adm_contact_release = ${TELEOP_CONTACT_RELEASE_NM}
+  global adm_master = adm_q_anchor
+  global adm_master_seq = -1
+  global adm_contact = False
+  global adm_q_nom = adm_q_anchor
+  global adm_v_nom = adm_zero
   global adm_alpha = adm_dt / (1.0 / (6.283185307179586 * ${JOINT_FILTER_CUTOFF_HZ}) + adm_dt)
 
   def adm_now():
     local stamp = time(0)
     return stamp.sec + stamp.nanosec / 1000000000.0
-  end
-  def adm_abs(x):
-    if x < 0.0:
-      return -x
-    end
-    return x
   end
   def adm_min(a, b):
     if a < b:
@@ -81,7 +87,12 @@ def ur_admittance_control():
     return b
   end
   def adm_clip(x, lo, hi):
-    return adm_max(lo, adm_min(x, hi))
+    if x < lo:
+      return lo
+    elif x > hi:
+      return hi
+    end
+    return x
   end
   def adm_finite(x):
     # NaN 与自身不相等；无穷减自身也不等于零，不能由死区比较回落为零 drive。
@@ -147,8 +158,9 @@ def ur_admittance_control():
 
   global adm_origin = adm_now()
   global adm_last_hb = adm_origin
+  global adm_last_reference = adm_origin
   # 引导片段仅含两帧锚点保持，生产者未推进时同样耗尽停止。
-  global adm_current = struct(run_id=adm_run, seq=0, based_on=-1, sample_time=0., generated_time=0., submitted_time=0., first=1, last=2, q0=adm_q_anchor, q1=adm_q_anchor, v0=adm_zero, v1=adm_zero, limit=0)
+  global adm_current = struct(run_id=adm_run, seq=0, based_on=-1, sample_time=0., generated_time=0., submitted_time=0., first=1, last=2, q0=adm_q_anchor, q1=adm_q_anchor, v0=adm_zero, v1=adm_zero, n0=adm_q_anchor, n1=adm_q_anchor, nv0=adm_zero, nv1=adm_zero, master=adm_q_anchor, source_seq=-1, contact=False, limit=0)
   global adm_pending = adm_current
   global adm_executed_segment = adm_current
 
@@ -157,7 +169,7 @@ def ur_admittance_control():
     if read_input_integer_register(adm_i) != 1:
       return 1
     end
-    if read_input_integer_register(adm_i + 3) != 1 or read_input_integer_register(adm_i + 4) != 3 or read_input_integer_register(adm_i + 6) != adm_run:
+    if read_input_integer_register(adm_i + 3) != 1 or read_input_integer_register(adm_i + 4) != adm_source or read_input_integer_register(adm_i + 6) != adm_run:
       return 4
     end
     local hb = read_input_integer_register(adm_i + 1)
@@ -171,31 +183,84 @@ def ur_admittance_control():
     if check_scaling and read_input_integer_register(adm_i + 7) != 1:
       return 17
     end
+    if adm_source == 1 and now - adm_last_reference >= ${MASTER_FRAME_TIMEOUT_S}:
+      return 3
+    end
     return 0
   end
 
   # 逐帧前向距离包含本帧 v*h；v²/(2a)+v*h 是离散减速距离的保守上界。
   # 与前帧加速度可行区间求交，不允许限速之后再被加速度夹紧推回边界之外。
   def adm_step(q, v, desired, lower, upper, vmax, amax):
+    if desired == q and v == 0.:
+      return [q, 0., 0.]
+    end
     local ah = amax * adm_h
-    local cap_hi = sqrt(ah * ah + 2.0 * amax * adm_max(0., upper - q)) - ah
-    local cap_lo = sqrt(ah * ah + 2.0 * amax * adm_max(0., q - lower)) - ah
-    local lo = adm_max(-vmax, adm_max(v - ah, -cap_lo))
-    local hi = adm_min(vmax, adm_min(v + ah, cap_hi))
+    local wanted = (desired - q) / adm_h
+    # 已满足全部约束的候选直接采用；仍检查速度、加速度、边界与同一保守制动距离。
+    local brake_distance = wanted * wanted / (2.0 * amax) + norm(wanted) * adm_h
+    if norm(wanted) <= vmax and norm(wanted - v) <= ah and desired >= lower and desired <= upper:
+      if (wanted >= 0. and upper - q >= brake_distance) or (wanted < 0. and q - lower >= brake_distance):
+        return [desired, wanted, 0.]
+      end
+    end
+    local distance_hi = upper - q
+    local distance_lo = q - lower
+    if distance_hi < 0.:
+      distance_hi = 0.
+    end
+    if distance_lo < 0.:
+      distance_lo = 0.
+    end
+    local cap_hi = sqrt(ah * ah + 2.0 * amax * distance_hi) - ah
+    local cap_lo = sqrt(ah * ah + 2.0 * amax * distance_lo) - ah
+    local lo = v - ah
+    local hi = v + ah
+    if lo < -vmax:
+      lo = -vmax
+    end
+    if lo < -cap_lo:
+      lo = -cap_lo
+    end
+    if hi > vmax:
+      hi = vmax
+    end
+    if hi > cap_hi:
+      hi = cap_hi
+    end
     if lo > hi + 0.000000000001:
       adm_fail(8)
       return [q, v, 4.]
     end
-    local wanted = (desired - q) / adm_h
     local velocity = adm_clip(wanted, lo, hi)
     local limit = 0.
-    if adm_abs(velocity - wanted) > 0.000000000001:
+    if norm(velocity - wanted) > 0.000000000001:
       limit = 1.
     end
     if velocity >= cap_hi or velocity <= -cap_lo:
       limit = 2.
     end
     return [q + velocity * adm_h, velocity, limit]
+  end
+
+  def adm_reference_step(q, v, target, lower, upper, vmax, amax):
+    # 参考始终追赶包络内的目标。目标改变时最多按 amax 制动，再转向最新目标。
+    # 同向距离按 v²/(2a)+v*h 限速；反向目标使原速度按最大允许加速度减小。
+    if q == target and v == 0.:
+      return [q, 0.]
+    end
+    local destination = adm_clip(target, lower, upper)
+    local distance = destination - q
+    local ah = amax * adm_h
+    local wanted = sqrt(ah * ah + 2.0 * amax * norm(distance)) - ah
+    if wanted > vmax:
+      wanted = vmax
+    end
+    if distance < 0.:
+      wanted = -wanted
+    end
+    local velocity = adm_clip(wanted, v - ah, v + ah)
+    return [q + velocity * adm_h, velocity]
   end
 
   # 每个载荷对象只在整次采样完成后替换，序号、偏置和计时不分开暴露。
@@ -226,6 +291,7 @@ def ur_admittance_control():
     local submitted_seq = 0
     local submitted_time = 0.0
     local statistics = adm_statistics
+    local release_started = -1.0
     while adm_reason == 0:
       enter_critical
       local base = adm_current
@@ -242,6 +308,30 @@ def ur_admittance_control():
         end
         last_sample = started
         sample_seq = sample_seq + 1
+        if adm_source == 1:
+          # 序号包围六轴读取，只接纳完整新目标；重复序号不刷新主端年龄。
+          local source_seq = read_input_integer_register(adm_i + 2)
+          if source_seq != adm_master_seq and source_seq >= 0:
+            local master = adm_zero
+            local k = 0
+            while k < 6:
+              master[k] = read_input_float_register(${ADMITTANCE_INPUT_FLOAT_BASE} + k)
+              k = k + 1
+            end
+            if source_seq == read_input_integer_register(adm_i + 2):
+              k = 0
+              while k < 6:
+                if not adm_finite(master[k]) or norm(master[k]) > adm_q_limit[k]:
+                  adm_fail(8)
+                end
+                k = k + 1
+              end
+              global adm_master = master
+              global adm_master_seq = source_seq
+              global adm_last_reference = started
+            end
+          end
+        end
         local load_started = adm_now()
         local raw = adm_zero
         local valid_load = True
@@ -312,6 +402,10 @@ def ur_admittance_control():
         local load_duration = adm_now() - load_started
         local desired0 = adm_q_anchor
         local desired1 = adm_q_anchor
+        local nominal0 = base.n1
+        local nominal1 = base.n1
+        local nominal_v0 = base.nv1
+        local nominal_v1 = base.nv1
         # 约束码沿用 0 无限制、1 速度或加速度、2 位置边界、4 可行区间失败。
         # 模型提前裁剪也计入本片段，避免持续限速或贴住边界时执行页误报为零。
         local limit = 0
@@ -330,12 +424,59 @@ def ur_admittance_control():
               valid_load = False
               adm_fail(21)
             end
+            k = k + 1
+          end
+          if adm_source == 1:
+            local contact_entered = False
+            local contact_released = True
+            k = 0
+            while k < 6:
+              if adm_axes[k] == 1:
+                contact_entered = contact_entered or norm(drive[k]) >= adm_contact_enter[k]
+                contact_released = contact_released and norm(drive[k]) <= adm_contact_release[k]
+              end
+              k = k + 1
+            end
+            if contact_entered:
+              global adm_contact = True
+              release_started = -1.0
+            elif adm_contact:
+              if not contact_released:
+                release_started = -1.0
+              elif release_started < 0.:
+                release_started = started
+              elif started - release_started >= ${TELEOP_CONTACT_RELEASE_S}:
+                global adm_contact = False
+              end
+            end
+          end
+          k = 0
+          while k < 6:
             if valid_load and adm_mode == 0 and adm_axes[k] == 1:
+              if adm_source == 1:
+                # 任一启用轴受载时共同制动参考，保留各轴柔顺；不会被下一主端帧覆盖。
+                local wanted_nominal = adm_master[k]
+                if adm_contact:
+                  wanted_nominal = base.n1[k]
+                end
+                local nom_lower = adm_command_lower[k]
+                local nom_upper = adm_command_upper[k]
+                local nom_first = adm_reference_step(base.n1[k], base.nv1[k], wanted_nominal, nom_lower, nom_upper, adm_nom_max_qd[k], adm_nom_max_qdd[k])
+                if adm_contact:
+                  wanted_nominal = nom_first[0]
+                end
+                local nom_second = adm_reference_step(nom_first[0], nom_first[1], wanted_nominal, nom_lower, nom_upper, adm_nom_max_qd[k], adm_nom_max_qdd[k])
+                nominal0[k] = nom_first[0]
+                nominal_v0[k] = nom_first[1]
+                nominal1[k] = nom_second[0]
+                nominal_v1[k] = nom_second[1]
+              end
               # 从已承诺末状态更新模型速度，再分别准备两个基础帧期望点。
               # 两帧不能复用同一终点，否则首帧到位后第二帧会归零并丢失模型速度。
-              local displacement = base.q1[k] - adm_q_anchor[k]
-              local acceleration = (drive[k] - adm_damping[k] * base.v1[k] - adm_stiffness[k] * displacement) / adm_mass[k]
-              local requested_velocity = base.v1[k] + acceleration * adm_dt
+              local displacement = base.q1[k] - base.n1[k]
+              local relative_velocity = base.v1[k] - base.nv1[k]
+              local acceleration = (drive[k] - adm_damping[k] * relative_velocity - adm_stiffness[k] * displacement) / adm_mass[k]
+              local requested_velocity = relative_velocity + acceleration * adm_dt
               local velocity = adm_clip(requested_velocity, -adm_speed_max[k], adm_speed_max[k])
               if velocity != requested_velocity:
                 limit = 1
@@ -347,8 +488,8 @@ def ur_admittance_control():
               if offset0 != requested_offset0 or offset1 != requested_offset1:
                 limit = 2
               end
-              desired0[k] = adm_q_anchor[k] + offset0
-              desired1[k] = adm_q_anchor[k] + offset1
+              desired0[k] = nominal0[k] + offset0
+              desired1[k] = nominal1[k] + offset1
             end
             k = k + 1
           end
@@ -359,8 +500,8 @@ def ur_admittance_control():
         local v1 = base.v1
         local k = 0
         while k < 6:
-          local lower = adm_max(-adm_q_limit[k], adm_q_anchor[k] - adm_offset_max[k])
-          local upper = adm_min(adm_q_limit[k], adm_q_anchor[k] + adm_offset_max[k])
+          local lower = adm_command_lower[k]
+          local upper = adm_command_upper[k]
           local vmax = adm_max_qd[k]
           local amax = adm_max_qdd[k]
           local des0 = desired0[k]
@@ -412,7 +553,7 @@ def ur_admittance_control():
           adm_fail(8)
         end
         local generated_time = adm_now() - adm_origin
-        local segment = struct(run_id=adm_run, seq=base.seq+1, based_on=base.seq, sample_time=sample_time, generated_time=generated_time, submitted_time=generated_time, first=base.last+1, last=base.last+2, q0=q0, q1=q1, v0=v0, v1=v1, limit=limit)
+        local segment = struct(run_id=adm_run, seq=base.seq+1, based_on=base.seq, sample_time=sample_time, generated_time=generated_time, submitted_time=generated_time, first=base.last+1, last=base.last+2, q0=q0, q1=q1, v0=v0, v1=v1, n0=nominal0, n1=nominal1, nv0=nominal_v0, nv1=nominal_v1, master=adm_master, source_seq=adm_master_seq, contact=adm_contact, limit=limit)
         local sample = struct(seq=sample_seq, sample_time=sample_time, raw=measured_raw, bias=bias, filtered=filtered, drive=drive, bias_std=bias_std, bias_count=bias_count, bias_ready=bias_ready, model_interval=model_interval, model_max=model_max, compute=0., compute_max=compute_max, load_duration=load_duration, generated_seq=segment.seq, submitted_seq=submitted_seq, generated_time=generated_time, submitted_time=submitted_time, limit=limit)
         if model_phase == 2:
           if statistics.start_seq < 0:
@@ -423,15 +564,15 @@ def ur_admittance_control():
           statistics.end_time = sample_time
           if valid_load:
             if statistics.valid_count == 0:
-              statistics.filtered_min = filtered[0]
-              statistics.filtered_max = filtered[0]
+              statistics.filtered_min = filtered[${DIAGNOSTIC_AXIS} - 1]
+              statistics.filtered_max = filtered[${DIAGNOSTIC_AXIS} - 1]
             else:
-              statistics.filtered_min = adm_min(statistics.filtered_min, filtered[0])
-              statistics.filtered_max = adm_max(statistics.filtered_max, filtered[0])
+              statistics.filtered_min = adm_min(statistics.filtered_min, filtered[${DIAGNOSTIC_AXIS} - 1])
+              statistics.filtered_max = adm_max(statistics.filtered_max, filtered[${DIAGNOSTIC_AXIS} - 1])
             end
             statistics.valid_count = statistics.valid_count + 1
-            statistics.max_drive = adm_max(statistics.max_drive, adm_abs(drive[0]))
-            if drive[0] != 0.:
+            statistics.max_drive = adm_max(statistics.max_drive, norm(drive[${DIAGNOSTIC_AXIS} - 1]))
+            if drive[${DIAGNOSTIC_AXIS} - 1] != 0.:
               statistics.nonzero_count = statistics.nonzero_count + 1
               if statistics.first_nonzero_seq < 0:
                 statistics.first_nonzero_seq = sample_seq
@@ -491,6 +632,11 @@ def ur_admittance_control():
     local limit = adm_limit
     local q_cmd = adm_q_cmd
     local qd_cmd = adm_qd_cmd
+    local q_nom = adm_q_nom
+    local v_nom = adm_v_nom
+    local latest_master = adm_master
+    local latest_source_seq = adm_master_seq
+    local reference_age = started - adm_last_reference
     local adopted_time = adm_adopted_time
     local age = adm_age
     local age_max = adm_age_max
@@ -522,15 +668,25 @@ def ur_admittance_control():
         extra[10] = 1.
       end
     elif layout == 5:
-      extra = [1, adm_config_id, statistics.start_seq, statistics.end_seq, statistics.valid_count, statistics.nonzero_count, statistics.first_nonzero_seq, statistics.invalid_count, statistics.trajectory_complete, statistics.final, statistics.complete, floor(stamp*1000000.)]
+      extra = [2, adm_config_id, statistics.start_seq, statistics.end_seq, statistics.valid_count, statistics.nonzero_count, statistics.first_nonzero_seq, statistics.invalid_count, statistics.trajectory_complete, statistics.final, statistics.complete, floor(stamp*1000000.)]
       f0 = [statistics.start_time, statistics.end_time, statistics.filtered_min, statistics.filtered_max, statistics.max_drive, statistics.first_nonzero_time]
+      f1 = [${DIAGNOSTIC_AXIS}, 0., 0., 0., 0., 0.]
+    elif layout == 6:
+      extra = [latest_source_seq, segment.source_seq, 0, floor(reference_age*1000000.), frame, adopted, 0, 0, 0, 0, 0, floor(stamp*1000000.)]
+      if segment.contact:
+        extra[2] = 1
+      end
+      f0 = latest_master
+      f1 = q_nom
+      f2 = segment.master
+      f3 = v_nom
     else:
       extra = [sample.generated_seq, sample.submitted_seq, adopted, frame, segment.based_on, segment.first, segment.last, gaps, limit, floor(servo_interval*1000000.), floor(servo_max*1000000.), floor(stamp*1000000.)]
       if layout == 3:
         f0 = q_cmd
         f1 = qd_cmd
-        f2 = adm_q_anchor
-        f3 = q_cmd - adm_q_anchor
+        f2 = q_nom
+        f3 = q_cmd - q_nom
       else:
         f0 = [sample_time, sample.generated_time, sample.submitted_time, adopted_time, age, age_max]
         f1 = [sample.model_interval, sample.model_max, servo_interval, servo_max, adm_base, adm_dt]
@@ -549,9 +705,9 @@ def ur_admittance_control():
     write_output_integer_register(adm_oi + 8, adm_page_seq)
     write_output_integer_register(adm_oi, phase)
     write_output_integer_register(adm_oi + 1, reason)
-    write_output_integer_register(adm_oi + 2, -1)
+    write_output_integer_register(adm_oi + 2, segment.source_seq)
     write_output_integer_register(adm_oi + 3, sample_seq)
-    write_output_integer_register(adm_oi + 4, 3)
+    write_output_integer_register(adm_oi + 4, adm_source)
     write_output_integer_register(adm_oi + 5, hb)
     write_output_integer_register(adm_oi + 6, hb_age)
     write_output_integer_register(adm_oi + 7, hb_max)
@@ -580,7 +736,7 @@ def ur_admittance_control():
       adm_publish(layout)
       if adm_phase == 0:
         layout = 1
-      elif layout == 1 or layout == 5:
+      elif layout == 1 or layout == 6:
         layout = 2
       else:
         layout = layout + 1
@@ -602,32 +758,39 @@ def ur_admittance_control():
   end
   adm_q_anchor = get_actual_joint_positions()
   adm_q_cmd = adm_q_anchor
+  adm_q_nom = adm_q_anchor
   adm_current.q0 = adm_q_anchor
   adm_current.q1 = adm_q_anchor
+  adm_current.n0 = adm_q_anchor
+  adm_current.n1 = adm_q_anchor
   adm_pending = adm_current
   adm_executed_segment = adm_current
   global adm_hold_started = adm_now() - adm_origin
   local initial_speed = get_actual_joint_speeds()
+  if adm_mode == 0:
+    adm_offset_max = ${JOINT_COMMAND_MAX_OFFSET_RAD}
+    adm_speed_max = ${JOINT_COMMAND_MAX_QD_RAD_S}
+    adm_max_qd = ${JOINT_COMMAND_MAX_QD_RAD_S}
+    adm_max_qdd = ${JOINT_COMMAND_MAX_QDD_RAD_S2}
+    adm_tracking = ${JOINT_COMMAND_TRACKING_RAD}
+  end
   local k = 0
   while k < 6:
     if not adm_finite(initial_speed[k]) or not adm_finite(adm_q_anchor[k]):
       adm_fail(21)
-    elif adm_abs(initial_speed[k]) > adm_actual_max_qd[k]:
+    elif norm(initial_speed[k]) > adm_actual_max_qd[k]:
       adm_fail(19)
-    elif adm_abs(initial_speed[k]) > ${STATIONARY_MAX_QD_RAD_S}:
+    elif norm(initial_speed[k]) > ${STATIONARY_MAX_QD_RAD_S}:
       adm_fail(10)
-    elif adm_abs(adm_q_anchor[k]) > adm_q_limit[k]:
+    elif norm(adm_q_anchor[k]) > adm_q_limit[k]:
       adm_fail(8)
     end
-    if adm_mode == 0:
-      adm_offset_max[k] = ${SINGLE_AXIS_MAX_OFFSET_RAD}
-      adm_speed_max[k] = ${SINGLE_AXIS_MAX_QD_RAD_S}
-      adm_max_qd[k] = ${SINGLE_AXIS_MAX_QD_RAD_S}
-      adm_max_qdd[k] = ${SINGLE_AXIS_MAX_QDD_RAD_S2}
-      adm_tracking[k] = ${SINGLE_AXIS_TRACKING_RAD}
-    elif adm_mode == 2:
+    if adm_mode == 2:
       adm_tracking[k] = ${DIAGNOSTIC_MOTION_TRACKING_RAD}
     end
+    # 固定锚点包络只计算一次，避免在每个模型周期重复相同的限幅函数调用。
+    adm_command_lower[k] = adm_max(-adm_q_limit[k], adm_q_anchor[k] - adm_offset_max[k])
+    adm_command_upper[k] = adm_min(adm_q_limit[k], adm_q_anchor[k] + adm_offset_max[k])
     # 第二版位置守卫直接相对启动锚点，不叠加命令行程；覆盖启动、偏置和运行阶段。
     adm_motion_actual_lower[k] = adm_q_anchor[k] - adm_actual_margin[k]
     adm_motion_actual_upper[k] = adm_q_anchor[k] + adm_actual_margin[k]
@@ -642,7 +805,7 @@ def ur_admittance_control():
   if not is_within_safety_limits(adm_q_anchor):
     adm_fail(8)
   end
-  if adm_abs(adm_base - adm_h) > ${TIMING_TOLERANCE_S}:
+  if norm(adm_base - adm_h) > ${TIMING_TOLERANCE_S}:
     adm_fail(16)
   end
   local publisher = run adm_telemetry()
@@ -684,13 +847,13 @@ def ur_admittance_control():
     while k < 6:
       if not adm_finite(actual[k]) or not adm_finite(actual_speed[k]) or not adm_finite(q[k]):
         adm_fail(21)
-      elif adm_abs(actual_speed[k]) > adm_actual_max_qd[k]:
+      elif norm(actual_speed[k]) > adm_actual_max_qd[k]:
         adm_fail(19)
       elif actual[k] < adm_motion_actual_lower[k] or actual[k] > adm_motion_actual_upper[k]:
         adm_fail(20)
-      elif adm_phase < 2 and adm_abs(actual_speed[k]) > ${STATIONARY_MAX_QD_RAD_S}:
+      elif adm_phase < 2 and norm(actual_speed[k]) > ${STATIONARY_MAX_QD_RAD_S}:
         adm_fail(10)
-      elif adm_abs(q[k] - actual[k]) > adm_tracking[k]:
+      elif norm(q[k] - actual[k]) > adm_tracking[k]:
         adm_fail(7)
       end
       k = k + 1
@@ -727,6 +890,12 @@ def ur_admittance_control():
       adm_frame = next_frame
       adm_q_cmd = q
       adm_qd_cmd = v
+      adm_q_nom = selected.n0
+      adm_v_nom = selected.nv0
+      if next_frame == selected.last:
+        adm_q_nom = selected.n1
+        adm_v_nom = selected.nv1
+      end
       adm_adopted = selected.seq
       adm_adopted_time = servo_started - adm_origin
       adm_age = adm_adopted_time - selected.sample_time

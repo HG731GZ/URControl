@@ -26,6 +26,7 @@ from UR_Utils.URRTDEController import URRTDEController
 from UR_Utils import admittance_config
 from UR_Utils.URAdmittanceController import PHASE_NAMES, EXIT_REASONS, idle_admittance_status
 from UR_Utils.URRTDETorqueClient import URRTDETorqueClient
+from UR_Utils.URCompensatedTorqueReader import URCompensatedTorqueReader
 from UR_Utils.URTcpClient import URTcpError
 from UR_Utils.URUdpClient import URUDPClient, UDPControlMode
 from UR_Utils.ur5e_visualizer import UR5eDualVisualizer
@@ -46,6 +47,10 @@ ROBOT_STATE_TIMEOUT_S = 0.5
 ROBOT_MODE_RUNNING = 7
 UR_HOME_RAD = [-np.pi / 2, -np.pi / 2, -np.pi / 2, -np.pi / 2, np.pi / 2, 0]
 UR_RTDE_FREQ_HZ = 500
+# 主窗口勾选“力矩”后的显示来源；修改后重启程序生效。
+# True：raw（actual_current_as_torque）；False：UR 内部补偿力矩（get_joint_torques）。
+# 补偿值尚未减去导纳启动偏置，也未经过滤波或死区；本开关只影响显示。
+SHOW_RAW_JOINT_TORQUES = False
 UR_485_PORT = 54321
 DATA_COLLECT_FREQ = 20.0
 DATA_DIRECTORY = 'data'
@@ -352,7 +357,7 @@ class MainWindow(QMainWindow):
             return False
         self.stop_control()
         # 确认运动退出后才能释放连接；停止失败时保留当前控制后端。
-        for name in ('rtde_controller', 'torque_client', 'gripper',
+        for name in ('torque_client', 'rtde_controller', 'gripper',
                      'realtime_client', 'dashboard_client'):
             client = getattr(self, name)
             if client is not None:
@@ -532,6 +537,9 @@ class MainWindow(QMainWindow):
     def release_unready_controller(self):
         """机器人失去就绪状态后，仅在停止确认后释放原控制器。"""
         if not self.robot_ready and self.rtde_controller is not None and not self._control_stop_failed:
+            if self.torque_client is not None:
+                self.torque_client.close()
+                self.torque_client = None
             self.rtde_controller.close()
             self.rtde_controller = None
 
@@ -739,7 +747,8 @@ class MainWindow(QMainWindow):
         if self.torque_client is not None:
             torque = self.torque_client.get_latest()
             if torque is not None:
-                ft_sensor = {'name': '原始关节力矩订阅', 'timestamp': torque[0],
+                ft_sensor = {'name': ('原始关节力矩订阅' if SHOW_RAW_JOINT_TORQUES else 'UR 内部补偿关节力矩'),
+                             'timestamp': torque[0],
                              'values': torque[1], 'received_monotonic': None}
         status = self._last_admittance_status
         if (self.admittance_mode != 'off' and self._admittance_handoff_complete
@@ -1166,10 +1175,19 @@ class MainWindow(QMainWindow):
             self.rtde_controller.set_speed_slider(speed_percent / 100)
 
     def update_torque_subscription(self):
+        """按全局配置选择显示来源，两种来源均由后台读取。"""
+        source_text = ('raw：实际电流换算关节力矩，保留重力、摩擦等分量。'
+                       if SHOW_RAW_JOINT_TORQUES else
+                       'UR 内部补偿关节力矩：未减导纳启动偏置，未滤波、未过死区。无有效当前测量时留空。')
+        self.checkBox_FTSwitch.setToolTip(source_text + ' 取消勾选显示 TCP 广义力。')
         enabled = self.checkBox_FTSwitch.isChecked() and self.robot_ready
+        if not SHOW_RAW_JOINT_TORQUES:
+            enabled = enabled and self.rtde_controller is not None
         if enabled and self.torque_client is None:
             try:
-                self.torque_client = URRTDETorqueClient(self.connected_ip, UR_RTDE_FREQ_HZ)
+                self.torque_client = (URRTDETorqueClient(self.connected_ip, UR_RTDE_FREQ_HZ)
+                                      if SHOW_RAW_JOINT_TORQUES else
+                                      URCompensatedTorqueReader(self.rtde_controller))
                 self.torque_client.start_reader_thread()
             except (OSError, RTDEException, RuntimeError, ValueError) as exc:
                 self.checkBox_FTSwitch.setChecked(False)
@@ -1238,12 +1256,12 @@ class MainWindow(QMainWindow):
                 (UDP_REMOTE_IP, UDP_REMOTE_PORT), self.robot_state.q_actual,
                 UDPControlMode.OFF, gripper_values, max_age=ROBOT_STATE_TIMEOUT_S)
 
-        if self.torque_client is not None:
-            sample = self.torque_client.get_latest()
-            if sample is not None:
-                for index, torque_nm in enumerate(sample[1], 1):
-                    getattr(self, f'lineEdit_Fex{index}').setText(f'{torque_nm:.3f}')
-            error = self.torque_client.get_last_error()
+        if self.checkBox_FTSwitch.isChecked():
+            sample = None if self.torque_client is None else self.torque_client.get_latest()
+            for index in range(1, 7):
+                text = '' if sample is None else f'{sample[1][index - 1]:.3f}'
+                getattr(self, f'lineEdit_Fex{index}').setText(text)
+            error = None if self.torque_client is None else self.torque_client.get_last_error()
             if error is not None:
                 self.checkBox_FTSwitch.setChecked(False)
                 self.append_message(f'力矩读取失败：{error}')

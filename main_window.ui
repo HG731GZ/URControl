@@ -2634,6 +2634,9 @@ QPushButton#pushButton_TUp6:disabled, QPushButton#pushButton_TDown6:disabled, QP
              </item>
              <item>
               <widget class="QCheckBox" name="checkBox_FTSwitch">
+               <property name="toolTip">
+                <string>勾选后显示所选来源的六轴关节力矩；取消勾选显示 TCP 广义力。</string>
+               </property>
                <property name="text">
                 <string>显示关节力矩（N·m）</string>
                </property>

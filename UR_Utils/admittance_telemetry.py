@@ -28,10 +28,10 @@ ROBOT_FIELDS = (
 )
 
 _TYPE_BYTES = {"DOUBLE": 8, "UINT32": 4, "INT32": 4, "VECTOR6D": 48, "VECTOR3D": 24}
-TELEMETRY_SCHEMA_VERSION = 5
-STATISTICS_SCHEMA_VERSION = 1
+TELEMETRY_SCHEMA_VERSION = 6
+STATISTICS_SCHEMA_VERSION = 2
 LOAD_SOURCE_CODES = {"joint_torque": 0, "flange_wrench": 1}
-PAGE_NAMES = {1: "anchor", 2: "load", 3: "execution", 4: "timing", 5: "statistics"}
+PAGE_NAMES = {1: "anchor", 2: "load", 3: "execution", 4: "timing", 5: "statistics", 6: "reference"}
 _COMMON_INT_FIELDS = (
     "phase", "exit_reason", "adopted_source_seq", "model_sample_seq", "reference_source",
     "heartbeat_echo", "heartbeat_age_us", "heartbeat_max_interval_us", "page_seq_begin",
@@ -52,6 +52,8 @@ _PAGE_INT_FIELDS = {
     5: ("statistics_schema_version", "config_id", "start_sample_seq", "end_sample_seq",
         "valid_cycle_count", "nonzero_drive_count", "first_nonzero_sample_seq", "invalid_cycle_count",
         "trajectory_complete", "final", "complete", "snapshot_time_us"),
+    6: ("latest_source_seq", "executed_source_seq", "contact_blocked", "reference_age_us",
+        "frame", "adopted_seq", "reserved", "reserved", "reserved", "reserved", "reserved", "snapshot_time_us"),
 }
 TIMING_FLOAT_FIELDS = (
     "sample_time_s", "generated_time_s", "submitted_time_s", "adopted_time_s",
@@ -73,7 +75,7 @@ def output_int_count(config: dict) -> int:
 
 
 def state_frequency(config: dict) -> float:
-    """保持、微动及受限单轴导纳均保留高频原始状态，核对逐帧运动。"""
+    """保持、微动及关节导纳均保留高频原始状态，核对逐帧运动。"""
     return config["DIAGNOSTIC_STATE_HZ"]
 
 
@@ -117,7 +119,7 @@ def load_source_description(source: str) -> str:
 
 
 def log_schema(config: dict, space: str) -> dict:
-    """记录第五版逐模型周期统计及冻结页，历史缺失值不可作为零值。"""
+    """记录第六版参考页和选定轴统计，历史缺失值不可作为零值。"""
     int_base = config["ADMITTANCE_OUTPUT_INT_BASE"]
     float_base = config["ADMITTANCE_OUTPUT_FLOAT_BASE"]
     registers = {f"output_int_register_{int_base + index}": name
@@ -133,7 +135,8 @@ def log_schema(config: dict, space: str) -> dict:
             "load": f"{('input_raw_nm', 'bias_nm', 'filtered_nm', 'drive')[block]}[{axis}]",
             "execution": f"{('q_cmd', 'qd_cmd', 'q_nom', 'delta_q')[block]}[{axis}]",
             "timing": TIMING_FLOAT_FIELDS[index],
-            "statistics": STATISTICS_FLOAT_FIELDS[index] if index < 6 else "未使用",
+            "statistics": STATISTICS_FLOAT_FIELDS[index] if index < 6 else "observation_axis" if index == 6 else "未使用",
+            "reference": f"{('q_master_latest', 'q_nom', 'q_master_adopted', 'qd_nom')[block]}[{axis}]",
         }
     return {
         "telemetry_schema_version": TELEMETRY_SCHEMA_VERSION,
@@ -158,7 +161,8 @@ def log_schema(config: dict, space: str) -> dict:
         "page_identity": "每页有 run_id、page_seq、model_sample_seq、snapshot_time_s 和到达关联时间；缓存保留各自身份，不跨页拼成同步样本",
         "continuous.execution": "最近完整执行页；q_cmd/qd_cmd 为执行器已采用命令，生成和提交身份不代表已经执行",
         "continuous.timing": "最近完整计时页；最大间隔、缺口计数由执行器累计，发布丢页不会清零",
-        "statistics": "机器人端 phase 2 每个模型周期累计的 J1 滤波输入与死区后 drive；每页冻结，非零计数不可清零。统计页版本为 1，缺失值保留 None，旧日志不得补零",
+        "statistics": "机器人端 phase 2 每个模型周期累计 DIAGNOSTIC_AXIS 的滤波输入与 drive；统计页版本 2 显式记录 observation_axis。旧版 1 仅指 J1，不推广为多轴全周期统计",
+        "continuous.reference": "独立冻结页：机器人最新完整主端目标、执行参考、采用目标、参考速度、接触阻断和新目标年龄；与执行页不得拼作同次采样",
         "statistics_identity": "run_id 标识运行，config_id 是每轮独立生成并固化到脚本及锚点的正整数配置令牌；元数据保存令牌和完整参数，不以它替代参数内容",
         "statistics_completion": "final 表示停止后冻结；complete 还要求正常定时结束、完整预设轨迹及尾段、连续统计范围、有效周期数大于零且无失效周期。身份或字段异常、无终态、旧页与缺失统计均不能通过",
         "statistics_invalid_cycle_count": "只统计 phase 2 中载荷或滤波/drive 失效的模型周期；执行器实际状态非有限另记退出原因 21 并令 complete 为假。零失效周期不替代原始状态和退出原因检查",
@@ -166,7 +170,7 @@ def log_schema(config: dict, space: str) -> dict:
         "load": "最近完整六轴载荷页；input_raw_nm/bias_nm/filtered_nm/drive 同页冻结，每页明确 load_source；偏置未完成时后三项为 None。布局3的 tau_raw_nm 仅代表历史补偿关节力矩",
         "q_start": "本轮固定锚点，只在完整锚点页确认一次，不因页面切换改变",
         "q_cmd": "仅当前执行页有效；其他类型页清空顶层命令，展示历史采用值需读取带身份的 continuous.execution",
-        "drive": "仅当前载荷页且偏置已完成时有效；六轴均保留死区后的载荷，只有启用轴在受限单轴导纳中积分；保持及预设微动不以外力驱动轨迹",
+        "drive": "仅当前载荷页且偏置已完成时有效；六轴均保留死区后的载荷，只有启用轴在关节导纳中积分；保持及预设微动不以外力驱动轨迹",
         "time_encoding": "整数 _us 为相对脚本起点或间隔的微秒，浮点 _s 为秒；未获得的负计时解码为 None；bias_std_nm 是六轴总体标准差",
         "host_monotonic_s": "主机单调时间，用于对齐接收、发送和控制诊断",
         "host_time_unix_s": "主机 Unix 时间，用于与外部日志对齐",

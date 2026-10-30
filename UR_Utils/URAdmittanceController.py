@@ -63,7 +63,7 @@ def idle_admittance_status() -> dict:
         "controller_version": None, "diagnostic": None,
         "telemetry_layout": admittance_telemetry.TELEMETRY_SCHEMA_VERSION,
         "run_id": None, "config_id": None, "page_type": None, "page_seq": None, "model_sample_seq": None,
-        "continuous": {"execution": None, "timing": None}, "load": None,
+        "continuous": {"execution": None, "timing": None, "reference": None}, "load": None,
         "statistics": None, "statistics_final_received": False, "statistics_validation_errors": [],
         "scaling_ok": False, "scaling_confirmed": False,
         "scaling_change_received_monotonic_s": None,
@@ -881,7 +881,7 @@ class URAdmittanceController:
                     if old_page is None or old_page["page_seq"] != page["page_seq"]:
                         self._status["load"] = page
                     self._status["drive"] = page["drive"]
-                elif ints[10] in (3, 4):
+                elif ints[10] in (3, 4, 6):
                     page_name = admittance_telemetry.PAGE_NAMES[ints[10]]
                     old_page = self._status["continuous"][page_name]
                     if old_page is None or old_page["page_seq"] != page["page_seq"]:
@@ -951,7 +951,7 @@ class URAdmittanceController:
                 self._record("controller_error", {"message": control["last_error"], "status": control})
 
     def _decode_page(self, ints: list[int], values: list[float]) -> dict:
-        """按第五版布局解码冻结页，来源由已核对锚点的本轮配置确定。"""
+        """按第六版布局解码冻结页，来源和观测轴由本轮配置确定。"""
         def seconds(value: int) -> Optional[float]:
             """整数时间以微秒传输，负值表示尚无该测量。"""
             return value / 1_000_000 if value >= 0 else None
@@ -981,13 +981,15 @@ class URAdmittanceController:
             )
         elif layout == 5:
             page["exit_reason"] = ints[1]
+            page["observation_axis"] = int(values[6])
             page.update(zip(("statistics_schema_version", "config_id", "start_sample_seq",
                              "end_sample_seq", "valid_cycle_count", "nonzero_drive_count",
                              "first_nonzero_sample_seq", "invalid_cycle_count"), ints[12:20]))
             page.update(trajectory_complete=ints[20] == 1, final=ints[21] == 1,
                         complete=ints[22] == 1,
                         identity_valid=(ints[12] == admittance_telemetry.STATISTICS_SCHEMA_VERSION
-                                        and ints[13] == self._config_id and ints[11] == self._run_id),
+                                        and ints[13] == self._config_id and ints[11] == self._run_id
+                                        and values[6] == self.parameters["DIAGNOSTIC_AXIS"]),
                         validation_errors=[])
             for name, value in zip(admittance_telemetry.STATISTICS_FLOAT_FIELDS, values[:6]):
                 page[name] = value
@@ -1000,6 +1002,11 @@ class URAdmittanceController:
                     page[name] = None
             if any(value not in (0, 1) for value in ints[20:23]):
                 page["validation_errors"].append("statistics flags must be 0 or 1")
+        elif layout == 6:
+            page.update(latest_source_seq=ints[12], executed_source_seq=ints[13],
+                        contact_blocked=bool(ints[14]), reference_age_s=seconds(ints[15]),
+                        frame=ints[16], adopted_seq=ints[17], q_master_latest=values[:6],
+                        q_nom=values[6:12], q_master_adopted=values[12:18], qd_nom=values[18:24])
         else:
             page.update(dict(zip(("generated_seq", "submitted_seq", "adopted_seq", "frame", "based_on_seq",
                                   "start_frame", "end_frame", "gap_count", "limit_reason"), ints[12:21])))
