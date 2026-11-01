@@ -1116,10 +1116,10 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
     mode = config["DIAGNOSTIC_MODE"]
     telemetry_schema = context["controller"]["telemetry_schema"] if "controller" in context else None
     telemetry_layout = None if telemetry_schema is None else telemetry_schema["telemetry_schema_version"]
-    if telemetry_layout not in (None, 3, 4, 5, 6, 7):
+    if telemetry_layout not in (None, 3, 4, 5, 6, 7, 8):
         raise ValueError(f"不支持的连续遥测布局：{telemetry_layout}")
     load_source = ("joint_torque" if telemetry_layout == 3
-                   else config["JOINT_LOAD_SOURCE"] if telemetry_layout in (4, 5, 6, 7) else None)
+                   else config["JOINT_LOAD_SOURCE"] if telemetry_layout in (4, 5, 6, 7, 8) else None)
     motion_axis = (config["DIAGNOSTIC_AXIS"] - 1
                    if mode == "admittance" and "SINGLE_AXIS_MAX_OFFSET_RAD" in config
                    else config["DIAGNOSTIC_MOTION_AXIS"] - 1)
@@ -1137,7 +1137,7 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
                 "target_speed_fraction": NumericSummary()}
                for start, end in motion_windows]
     kinds, phases, page_types, limit_reasons = Counter(), Counter(), Counter(), Counter()
-    page_sequences = {name: SequenceSummary() for name in ("anchor", "load", "execution", "timing", "statistics", "reference")}
+    page_sequences = {name: SequenceSummary() for name in ("anchor", "load", "execution", "timing", "statistics", "reference", "identification")}
     reference_modes = Counter()
     reference_age = NumericSummary()
     nominal_offsets = [NumericSummary() for _ in range(6)]
@@ -1464,7 +1464,8 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
                             nominal_offsets[axis].add(page["q_nom"][axis] - anchor[axis], location)
                         latest_reference_error[axis].add(page["q_master_latest"][axis] - page["q_nom"][axis], location)
                 continue
-            if page_type == "anchor":
+            if page_type in ("anchor", "identification"):
+                # 紧凑辨识由专用分析器按模型序号处理，不拼接到旧六轴载荷页。
                 continue
             page = control["load"] if page_type == "load" else control["continuous"][page_type]
             page_location = {**location, "page_type": page_type, "page_seq": page["page_seq"],
@@ -1493,7 +1494,7 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
                 for name, summary in servo_timings.items():
                     summary.add(page[name], page_location)
             elif page_type == "load" and page["phase"] == 2:
-                if telemetry_layout in (4, 5, 6, 7) and page["load_source"] != load_source:
+                if telemetry_layout in (4, 5, 6, 7, 8) and page["load_source"] != load_source:
                     raise ValueError(f"记录 {record['seq']} 的输入来源与本轮配置不一致")
                 if not running_load_sequences.add(page["model_sample_seq"]):
                     continue

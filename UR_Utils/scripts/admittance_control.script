@@ -9,6 +9,7 @@ def ur_admittance_control():
   global adm_source = ${REFERENCE_SOURCE}
   global adm_profile = ${DIAGNOSTIC_MOTION_PROFILE_CODE}
   global adm_load_source = ${JOINT_LOAD_SOURCE_CODE}
+  global adm_identification = ${IDENTIFICATION_COMPACT}
   global adm_h = ${SERVO_DT_S}
   global adm_dt = ${MODEL_DT_S}
   global adm_base = get_steptime()
@@ -120,10 +121,10 @@ def ur_admittance_control():
     end
     local move_frame = frame - leg * block - ${TRAJECTORY_HOLD_FRAMES}
     if move_frame <= 0:
-      return start
+      return ${DIAGNOSTIC_MOTION_DIRECTION} * start
     end
     if move_frame >= ${TRAJECTORY_TRAPEZOID_FRAMES}:
-      return start + direction * ${DIAGNOSTIC_MOTION_AMPLITUDE_RAD}
+      return ${DIAGNOSTIC_MOTION_DIRECTION} * (start + direction * ${DIAGNOSTIC_MOTION_AMPLITUDE_RAD})
     end
     local t = move_frame * adm_h
     local distance = 0.
@@ -135,7 +136,7 @@ def ur_admittance_control():
       local remaining = (${TRAJECTORY_TRAPEZOID_FRAMES} - move_frame) * adm_h
       distance = ${DIAGNOSTIC_MOTION_AMPLITUDE_RAD} - 0.5 * ${TRAJECTORY_ACCELERATION_RAD_S2} * remaining * remaining
     end
-    return start + direction * distance
+    return ${DIAGNOSTIC_MOTION_DIRECTION} * (start + direction * distance)
   end
   def adm_project_wrench(jacobian, wrench):
     # Jacobian与wrench均使用法兰作用点和基座表达，按列计算六轴J^T W。
@@ -285,6 +286,7 @@ def ur_admittance_control():
 
   # 每个载荷对象只在整次采样完成后替换，序号、偏置和计时不分开暴露。
   global adm_load_snapshot = struct(seq=0, sample_time=0., raw=adm_zero, bias=adm_zero, filtered=adm_zero, drive=adm_zero, bias_std=adm_bias_std, bias_count=0, bias_ready=False, model_interval=-1., model_max=0., compute=0., compute_max=0., load_duration=0., generated_seq=0, submitted_seq=0, generated_time=0., submitted_time=0., limit=0)
+  global adm_ident_snapshot = struct(start_time=0., end_time=0., actual=adm_zero, speed=adm_zero, q=0., v=0., adopted=0, frame=0, phase=0, running_frame=-1)
   # 仅累计有效运行段，每次模型完整计算后随该采样快照一起提交。中间页永不冒充终态。
   global adm_statistics = struct(start_seq=-1, end_seq=-1, valid_count=0, nonzero_count=0, first_nonzero_seq=-1, invalid_count=0, trajectory_complete=0, final=0, complete=0, start_time=-1., end_time=-1., filtered_min=0., filtered_max=0., max_drive=0., first_nonzero_time=-1.)
 
@@ -355,7 +357,21 @@ def ur_admittance_control():
         local load_started = adm_now()
         local raw = adm_zero
         local valid_load = True
-        if adm_load_source == 0:
+        if adm_identification:
+          # 已采用身份和命令与这次读取同区冻结，不使用模型正在生成的未来末状态。
+          # 几次设备读取有有限跨度，明确记录起止，不声称物理同时采样。
+          enter_critical
+          local capture_start = adm_now() - adm_origin
+          local capture_q = adm_q_cmd[${DIAGNOSTIC_AXIS} - 1]
+          local capture_v = adm_qd_cmd[${DIAGNOSTIC_AXIS} - 1]
+          local capture_adopted = adm_adopted
+          local capture_frame = adm_frame
+          raw = get_joint_torques()
+          local capture_actual = get_actual_joint_positions()
+          local capture_speed = get_actual_joint_speeds()
+          local capture_end = adm_now() - adm_origin
+          exit_critical
+        elif adm_load_source == 0:
           raw = get_joint_torques()
         else:
           local measured_wrench = get_tcp_force()
@@ -625,6 +641,9 @@ def ur_admittance_control():
             statistics.invalid_count = statistics.invalid_count + 1
           end
         end
+        if adm_identification:
+          local identification = struct(start_time=capture_start, end_time=capture_end, actual=capture_actual, speed=capture_speed, q=capture_q, v=capture_v, adopted=capture_adopted, frame=capture_frame, phase=model_phase, running_frame=running_frame)
+        end
         # 统计也是模型预算的一部分，不能在计时之后偷偷增加计算。
         sample.compute = adm_now() - started
         compute_max = adm_max(compute_max, sample.compute)
@@ -646,6 +665,9 @@ def ur_admittance_control():
         end
 
         global adm_load_snapshot = sample
+        if adm_identification:
+          global adm_ident_snapshot = identification
+        end
         global adm_statistics = statistics
         if adm_reason == 0:
           global adm_running_time = running_time
@@ -664,6 +686,7 @@ def ur_admittance_control():
     local started = adm_now()
     enter_critical
     local sample = adm_load_snapshot
+    local identification = adm_ident_snapshot
     local statistics = adm_statistics
     local segment = adm_executed_segment
     local phase = adm_phase
@@ -711,6 +734,17 @@ def ur_admittance_control():
       extra = [floor(sample_time*1000.), floor(sample.model_interval*1000000.), floor(sample.model_max*1000000.), floor(sample.compute*1000000.), sample.bias_count, sample.generated_seq, sample.submitted_seq, sample.limit, floor(sample.load_duration*1000000.), floor(adm_publish_duration*1000000.), 0., floor(stamp*1000.)]
       if sample.bias_ready:
         extra[10] = 1.
+      end
+    elif layout == 7:
+      local axis = ${DIAGNOSTIC_AXIS} - 1
+      f0 = sample.raw
+      f1 = identification.actual
+      f2 = identification.speed
+      # 预测残差暂为零占位；没有部署模型，原滤波和 drive 完全保持原语义。
+      f3 = [sample.bias[axis], 0., sample.filtered[axis], sample.drive[axis], identification.q, identification.v]
+      extra = [floor(identification.start_time*1000000.), floor(identification.end_time*1000000.), identification.adopted, identification.frame, 0, ${DIAGNOSTIC_AXIS}, ${TELEMETRY_SCHEMA_VERSION}, identification.phase, floor(sample.compute*1000000.), floor(sample.model_interval*1000000.), identification.running_frame, floor(stamp*1000.)]
+      if sample.bias_ready:
+        extra[4] = 1
       end
     elif layout == 5:
       extra = [2, adm_config_id, statistics.start_seq, statistics.end_seq, statistics.valid_count, statistics.nonzero_count, statistics.first_nonzero_seq, statistics.invalid_count, statistics.trajectory_complete, statistics.final, statistics.complete, floor(stamp*1000.)]
@@ -774,19 +808,32 @@ def ur_admittance_control():
     write_output_integer_register(adm_oi + 9, adm_page_seq)
     global adm_publish_duration = adm_now() - started
     global adm_publish_max = adm_max(adm_publish_max, adm_publish_duration)
+    return sample_seq
   end
   thread adm_telemetry():
     local layout = 1
+    local published_sample = -1
     while True:
-      adm_publish(layout)
-      if adm_phase == 0:
-        layout = 1
-      elif layout == 1 or layout == 6:
-        layout = 2
+      if adm_identification:
+        if adm_phase == 0:
+          adm_publish(1)
+        elif adm_load_snapshot.seq != published_sample:
+          # 仅发布新冻结快照；同步到基础帧检查，不以 sleep(4ms)+写页耗时累积漂移。
+          # 发布函数入口冻结后到返回之间仍可能产生下一样本，记住实际写出的序号。
+          published_sample = adm_publish(7)
+        end
+        sync()
       else:
-        layout = layout + 1
+        adm_publish(layout)
+        if adm_phase == 0:
+          layout = 1
+        elif layout == 1 or layout == 6:
+          layout = 2
+        else:
+          layout = layout + 1
+        end
+        sleep(${TELEMETRY_PERIOD_S})
       end
-      sleep(${TELEMETRY_PERIOD_S})
     end
   end
 
@@ -970,7 +1017,12 @@ def ur_admittance_control():
       adm_statistics.complete = 1
     end
   end
-  if adm_reason == 15:
+  if adm_identification:
+    # 先补发最后冻结样本，再保存累计预算；最终统计范围用于核对首尾缺口。
+    adm_publish(7)
+    sleep(0.004)
+  end
+  if adm_reason == 15 or adm_identification:
     # 计算超预算时先保留触发样本，避免最后执行页覆盖唯一故障计时。
     adm_publish(4)
     sleep(0.002)

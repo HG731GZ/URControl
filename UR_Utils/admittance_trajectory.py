@@ -65,8 +65,9 @@ def desired_offset(config, frame):
     leg = min(4, frame // block)
     if leg >= 4:
         return 0.
-    starts = (0., amplitude, 0., -amplitude)
-    directions = (1., -1., -1., 1.)
+    direction = config["DIAGNOSTIC_MOTION_DIRECTION"] if config["DIAGNOSTIC_MOTION_PROFILE"] == "identification_trapezoid" else 1
+    starts = (0., direction * amplitude, 0., -direction * amplitude)
+    directions = (direction, -direction, -direction, direction)
     move_frame = frame - leg * block - plan["hold_frames"]
     if move_frame <= 0:
         return starts[leg]

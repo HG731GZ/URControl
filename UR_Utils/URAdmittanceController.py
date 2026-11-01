@@ -64,6 +64,7 @@ def idle_admittance_status() -> dict:
         "telemetry_layout": admittance_telemetry.TELEMETRY_SCHEMA_VERSION,
         "run_id": None, "config_id": None, "page_type": None, "page_seq": None, "model_sample_seq": None,
         "continuous": {"execution": None, "timing": None, "reference": None}, "load": None,
+        "identification": None,
         "statistics": None, "statistics_final_received": False, "statistics_validation_errors": [],
         "scaling_ok": False, "scaling_confirmed": False,
         "scaling_change_received_monotonic_s": None,
@@ -176,6 +177,7 @@ class URAdmittanceController:
             phase=0, phase_name=PHASE_NAMES[0], reference_source=reference_source,
             space=space, parameters=deepcopy(self.parameters),
             run_id=self._run_id, config_id=self._config_id,
+            telemetry_layout=admittance_telemetry.schema_version(self.parameters),
         )
         if reference_source == "teleop":
             # 构造时保存启动参考；此时到达的停止标志仍由启动线程直接执行取消。
@@ -801,14 +803,14 @@ class URAdmittanceController:
             self._wake.set()
         source_matches = source == (1 if self.reference_source == "teleop" else 3)
         run_matches = ints[11] == self._run_id
-        page_valid = ints[8] == ints[9] and ints[8] > 0 and ints[10] in admittance_telemetry.PAGE_NAMES
+        page_valid = ints[8] == ints[9] and ints[8] > 0 and ints[10] in admittance_telemetry.allowed_pages(cfg)
         lifecycle_valid = self._uploaded and source_matches and run_matches and page_valid
         if lifecycle_valid:
             # 正整数运行身份贯穿输入及全部冻结页，不再用低周期计数猜测本轮。
             self._seen_program = True
         if (lifecycle_valid and ints[10] == 1 and reason == 0
                 and self._diagnostic_anchor is None):
-            if (ints[20] != admittance_telemetry.TELEMETRY_SCHEMA_VERSION
+            if (ints[20] != admittance_telemetry.schema_version(cfg)
                     or ints[19] != admittance_telemetry.LOAD_SOURCE_CODES[cfg["JOINT_LOAD_SOURCE"]]
                     or ints[21] != self._config_id):
                 raise RuntimeError("导纳锚点页的输入来源、遥测版本或配置身份与本轮不一致")
@@ -876,7 +878,9 @@ class URAdmittanceController:
                     self._status["last_error"] = EXIT_REASONS.get(reason, f"导纳异常退出：{reason}")
             if derived_valid:
                 self._status["q_start"] = list(self._diagnostic_anchor)
-                if ints[10] == 2:
+                if ints[10] == 7:
+                    self._status["identification"] = page
+                elif ints[10] == 2:
                     old_page = self._status["load"]
                     if old_page is None or old_page["page_seq"] != page["page_seq"]:
                         self._status["load"] = page
@@ -951,7 +955,7 @@ class URAdmittanceController:
                 self._record("controller_error", {"message": control["last_error"], "status": control})
 
     def _decode_page(self, ints: list[int], values: list[float]) -> dict:
-        """按第七版布局解码冻结页：运行时间用毫秒，短周期计时仍用微秒。"""
+        """按本轮第七/八版布局解码冻结页；紧凑辨识有独立采样起止和采用身份。"""
         def seconds(value: int) -> Optional[float]:
             """整数时间以微秒传输，负值表示尚无该测量。"""
             return value / 1_000_000 if value >= 0 else None
@@ -961,7 +965,9 @@ class URAdmittanceController:
             "run_id": ints[11], "page_seq": ints[8], "page_type": admittance_telemetry.PAGE_NAMES[layout],
             "model_sample_seq": ints[3], "phase": ints[0], "snapshot_time_s": ints[23] / 1000,
         }
-        if layout == 1:
+        if layout == 7:
+            page.update(admittance_telemetry.decode_identification(ints, values))
+        elif layout == 1:
             page.update(q_anchor=values[:6], dt_base_s=seconds(ints[13]),
                         dt_model_design_s=seconds(ints[14]), bias_sample_count=ints[15],
                         observation_axis=ints[16], motion_axis=ints[17], diagnostic_mode=ints[18],

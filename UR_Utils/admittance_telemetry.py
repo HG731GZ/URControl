@@ -29,9 +29,10 @@ ROBOT_FIELDS = (
 
 _TYPE_BYTES = {"DOUBLE": 8, "UINT32": 4, "INT32": 4, "VECTOR6D": 48, "VECTOR3D": 24}
 TELEMETRY_SCHEMA_VERSION = 7
+IDENTIFICATION_SCHEMA_VERSION = 8
 STATISTICS_SCHEMA_VERSION = 2
 LOAD_SOURCE_CODES = {"joint_torque": 0, "flange_wrench": 1}
-PAGE_NAMES = {1: "anchor", 2: "load", 3: "execution", 4: "timing", 5: "statistics", 6: "reference"}
+PAGE_NAMES = {1: "anchor", 2: "load", 3: "execution", 4: "timing", 5: "statistics", 6: "reference", 7: "identification"}
 _COMMON_INT_FIELDS = (
     "phase", "exit_reason", "adopted_source_seq", "model_sample_seq", "reference_source",
     "heartbeat_echo", "heartbeat_age_us", "heartbeat_max_interval_us", "page_seq_begin",
@@ -54,7 +55,52 @@ _PAGE_INT_FIELDS = {
         "trajectory_complete", "final", "complete", "snapshot_time_ms"),
     6: ("latest_source_seq", "executed_source_seq", "contact_blocked", "reference_age_us",
         "frame", "adopted_seq", "reserved", "reserved", "reserved", "reserved", "reserved", "snapshot_time_ms"),
+    7: ("sample_start_us", "sample_end_us", "adopted_seq", "frame", "bias_ready",
+        "observation_axis", "telemetry_schema_version", "sample_phase", "compute_duration_us",
+        "dt_model_actual_us", "running_frame", "snapshot_time_ms"),
 }
+IDENTIFICATION_FLOAT_FIELDS = (
+    *(f"input_raw_nm[{axis}]" for axis in range(6)),
+    *(f"q_actual_rad[{axis}]" for axis in range(6)),
+    *(f"qd_actual_rad_s[{axis}]" for axis in range(6)),
+    "bias_nm", "predicted_residual_nm", "filtered_uncorrected_nm", "drive_uncorrected_nm",
+    "adopted_q_cmd_rad", "adopted_qd_cmd_rad_s",
+)
+
+
+def schema_version(config):
+    """新布局只由本轮显式选择；历史元数据仍按其已记录版本解释。"""
+    return IDENTIFICATION_SCHEMA_VERSION if config["IDENTIFICATION_TELEMETRY"] == "compact" else TELEMETRY_SCHEMA_VERSION
+
+
+def allowed_pages(config):
+    """旧模式不接纳辨识页，紧凑模式只使用锚点、辨识和停止收尾页。"""
+    return (1, 3, 4, 5, 7) if schema_version(config) == IDENTIFICATION_SCHEMA_VERSION else (1, 2, 3, 4, 5, 6)
+
+
+def decode_identification(ints, values):
+    """独立解码第八版同步采样；不读取六轴旧页缓存。"""
+    if ints[18] != IDENTIFICATION_SCHEMA_VERSION or ints[16] not in (0, 1) or not 1 <= ints[17] <= 6:
+        raise ValueError("紧凑辨识页版本、偏置标志或观测轴无效")
+    ready = bool(ints[16])
+    return {
+        "telemetry_schema_version": ints[18], "sample_phase": ints[19],
+        "sample_start_s": ints[12] / 1_000_000, "sample_end_s": ints[13] / 1_000_000,
+        "sample_span_s": (ints[13] - ints[12]) / 1_000_000,
+        "adopted_seq": ints[14], "frame": ints[15], "running_frame": ints[22],
+        "bias_ready": ready, "observation_axis": ints[17],
+        "compute_duration_s": ints[20] / 1_000_000,
+        "dt_model_actual_s": ints[21] / 1_000_000 if ints[21] >= 0 else None,
+        "input_raw_nm": values[:6], "q_actual_rad": values[6:12], "qd_actual_rad_s": values[12:18],
+        "bias_nm": values[18] if ready else None,
+        # 阶段 A 没有辨识模型；零占位明确标为 off，不能当成已验证的预测。
+        "residual_model_mode": "off", "predicted_residual_nm": values[19] if ready else None,
+        "filtered_uncorrected_nm": values[20] if ready else None,
+        "drive_uncorrected_nm": values[21] if ready else None,
+        "adopted_q_cmd_rad": values[22], "adopted_qd_cmd_rad_s": values[23],
+    }
+
+
 TIMING_FLOAT_FIELDS = (
     "sample_time_s", "generated_time_s", "submitted_time_s", "adopted_time_s",
     "target_age_s", "target_max_age_s", "dt_model_actual_s", "dt_model_max_s",
@@ -119,7 +165,7 @@ def load_source_description(source: str) -> str:
 
 
 def log_schema(config: dict, space: str) -> dict:
-    """记录第七版长时运行时间编码及选定轴统计，历史缺失值不可作为零值。"""
+    """记录本轮第七/八版布局及选定轴统计，历史缺失值不可作为零值。"""
     int_base = config["ADMITTANCE_OUTPUT_INT_BASE"]
     float_base = config["ADMITTANCE_OUTPUT_FLOAT_BASE"]
     registers = {f"output_int_register_{int_base + index}": name
@@ -137,15 +183,18 @@ def log_schema(config: dict, space: str) -> dict:
             "timing": TIMING_FLOAT_FIELDS[index],
             "statistics": STATISTICS_FLOAT_FIELDS[index] if index < 6 else "observation_axis" if index == 6 else "未使用",
             "reference": f"{('q_master_latest', 'q_nom', 'q_master_adopted', 'qd_nom')[block]}[{axis}]",
+            "identification": IDENTIFICATION_FLOAT_FIELDS[index],
         }
     return {
-        "telemetry_schema_version": TELEMETRY_SCHEMA_VERSION,
+        "telemetry_schema_version": schema_version(config),
+        "allowed_page_types": [PAGE_NAMES[page] for page in allowed_pages(config)],
         "load_source": {
             "name": config["JOINT_LOAD_SOURCE"],
             "code": LOAD_SOURCE_CODES[config["JOINT_LOAD_SOURCE"]],
             "description": load_source_description(config["JOINT_LOAD_SOURCE"]),
         },
-        "layout": "continuous_servo_frozen_pages",
+        "layout": "fixed_joint_identification" if schema_version(config) == 8 else "continuous_servo_frozen_pages",
+        "identification": "第八版页7：六轴 UR 补偿力矩、实际位置、实际速度在同模型周期读取，采样起止为脚本相对微秒；只用于最长60秒的辨识。观测轴命令与已采用片段/帧在读取前同临界区冻结，不是未来片段终点。sample_phase 属于该样本，公共 phase/exit_reason 属于发布时生命周期。predicted_residual_nm 为0占位且模型 off；filtered_uncorrected_nm/drive_uncorrected_nm 为原链路，未提供修正后或候选 drive。每次新模型快照只发布一次，主机按 run_id/model_sample_seq 去重，缺口不插值。停止后页4提供累计预算，页5提供完整运行统计范围。",
         "robot_fields": {name: {"rtde_type": field_type, "unit": unit, "description": description}
                          for name, field_type, unit, description in ROBOT_FIELDS},
         "output_registers": registers,

@@ -34,6 +34,9 @@ DIAGNOSTIC_MOTION_AXIS = 1
 DIAGNOSTIC_MOTION_AMPLITUDE_RAD = 0.004
 DIAGNOSTIC_MOTION_PERIOD_S = 8.0
 DIAGNOSTIC_MOTION_PROFILE = "cosine"
+# 紧凑辨识页仅用于固定参考的单轴无接触轨迹，不改变日常六轴页或力矩驱动。
+IDENTIFICATION_TELEMETRY = "off"
+DIAGNOSTIC_MOTION_DIRECTION = 1
 DIAGNOSTIC_MOTION_NODE_HOLD_S = 2.0
 DIAGNOSTIC_MOTION_TAIL_HOLD_S = 10.0
 DIAGNOSTIC_MOTION_MAX_QD_RAD_S = 0.003
@@ -369,6 +372,42 @@ def joint_contact_config(axes=(3,), *, reference_source="fixed"):
     return validate_run_config(reference_source, "joint", config=values)
 
 
+def residual_identification_config(axis, *, amplitude=.03, speed=.03, acceleration=.1,
+                                   hold=2., direction=1):
+    """构造局部无接触辨识轨迹；固定小包络，参数不得自动扩大现场运动范围。"""
+    # 在轨迹量化前处理输入契约，避免非正速度进入离散梯形计算。
+    validate_identification_motion(amplitude, speed, acceleration, hold, direction)
+    values = joint_no_contact_config(axis)
+    values.update({
+        "IDENTIFICATION_TELEMETRY": "compact",
+        "DIAGNOSTIC_MOTION_PROFILE": "identification_trapezoid",
+        "DIAGNOSTIC_MOTION_DIRECTION": direction,
+        "DIAGNOSTIC_MOTION_AMPLITUDE_RAD": amplitude,
+        "DIAGNOSTIC_MOTION_MAX_QD_RAD_S": speed,
+        "DIAGNOSTIC_MOTION_MAX_QDD_RAD_S2": acceleration,
+        "DIAGNOSTIC_MOTION_NODE_HOLD_S": hold,
+        "DIAGNOSTIC_MOTION_TAIL_HOLD_S": 10.,
+        "DIAGNOSTIC_MOTION_ACTUAL_MARGIN_RAD": .05,
+        "DIAGNOSTIC_MOTION_ACTUAL_MAX_QD_RAD_S": .06,
+        "DIAGNOSTIC_MOTION_NON_MOTION_ACTUAL_MARGIN_RAD": .01,
+        "DIAGNOSTIC_MOTION_NON_MOTION_ACTUAL_MAX_QD_RAD_S": .02,
+    })
+    values["DIAGNOSTIC_DURATION_S"] = profile_parameters(values)["duration_s"]
+    return validate_run_config("fixed", "joint", config=values)
+
+
+def validate_identification_motion(amplitude, speed, acceleration, hold, direction):
+    """辨识轨迹的唯一参数边界；构造器与直接配置上传共用。"""
+    for name, value, lower, upper in (("幅度(rad)", amplitude, .001, .03),
+                                     ("速度(rad/s)", speed, .005, .03),
+                                     ("加速度(rad/s²)", acceleration, .05, .2),
+                                     ("节点停留(s)", hold, .5, 10.)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(value) or not lower <= value <= upper:
+            raise ValueError(f"辨识{name}须为 {lower}～{upper} 的有限数值")
+    if type(direction) is not int or direction not in (-1, 1):
+        raise ValueError("辨识首段方向须为 -1 或 1")
+
+
 def joint_command_limits(config):
     """读取逐轴命令约束；旧日志按当时的单轴标量解释，不改变历史证据。"""
     suffixes = ("MAX_OFFSET_RAD", "MAX_QD_RAD_S", "MAX_QDD_RAD_S2", "TRACKING_RAD")
@@ -487,9 +526,15 @@ def validate_config(config=None):
         elif name == "JOINT_LOAD_SOURCE":
             if value not in ("joint_torque", "flange_wrench"):
                 raise ValueError("JOINT_LOAD_SOURCE 必须为 joint_torque 或 flange_wrench")
+        elif name == "IDENTIFICATION_TELEMETRY":
+            if value not in ("off", "compact"):
+                raise ValueError("IDENTIFICATION_TELEMETRY 必须为 off 或 compact")
+        elif name == "DIAGNOSTIC_MOTION_DIRECTION":
+            if type(value) is not int or value not in (-1, 1):
+                raise ValueError("DIAGNOSTIC_MOTION_DIRECTION 必须为 -1 或 1")
         elif name == "DIAGNOSTIC_MOTION_PROFILE":
-            if value not in ("cosine", "bidirectional_trapezoid"):
-                raise ValueError("DIAGNOSTIC_MOTION_PROFILE 必须为 cosine 或 bidirectional_trapezoid")
+            if value not in ("cosine", "bidirectional_trapezoid", "identification_trapezoid"):
+                raise ValueError("预设轨迹类型无效")
         elif isinstance(default, str):
             if value not in ("base", "tool_start"):
                 raise ValueError("CART_FRAME 必须为 base 或 tool_start")
@@ -517,14 +562,35 @@ def validate_config(config=None):
         raise ValueError("本阶段伺服启动间隔退出上限必须在一个至两个设计周期之间")
     if values["DIAGNOSTIC_MOTION_AMPLITUDE_RAD"] > min(values["JOINT_MAX_OFFSET_RAD"]):
         raise ValueError("预设微动幅度不能超过关节偏移边界")
-    if values["DIAGNOSTIC_MOTION_PROFILE"] == "bidirectional_trapezoid":
+    identification = values["IDENTIFICATION_TELEMETRY"] == "compact"
+    if identification != (values["DIAGNOSTIC_MOTION_PROFILE"] == "identification_trapezoid"):
+        raise ValueError("紧凑辨识页与专用辨识轨迹必须同时选择")
+    if not identification and values["DIAGNOSTIC_MOTION_DIRECTION"] != 1:
+        raise ValueError("反向首段只适用于专用辨识轨迹，不改变已有候选含义")
+    if identification:
+        validate_identification_motion(values["DIAGNOSTIC_MOTION_AMPLITUDE_RAD"],
+                                       values["DIAGNOSTIC_MOTION_MAX_QD_RAD_S"],
+                                       values["DIAGNOSTIC_MOTION_MAX_QDD_RAD_S2"],
+                                       values["DIAGNOSTIC_MOTION_NODE_HOLD_S"],
+                                       values["DIAGNOSTIC_MOTION_DIRECTION"])
+        if values["DIAGNOSTIC_STATE_HZ"] != 500:
+            raise ValueError("紧凑辨识使用 500 Hz RTDE，仍须根据模型序号检查缺口")
+        for suffix, maximum in (("ACTUAL_MARGIN_RAD", .05), ("ACTUAL_MAX_QD_RAD_S", .06),
+                                ("NON_MOTION_ACTUAL_MARGIN_RAD", .01), ("NON_MOTION_ACTUAL_MAX_QD_RAD_S", .02)):
+            if values[f"DIAGNOSTIC_MOTION_{suffix}"] > maximum:
+                raise ValueError(f"辨识轨迹的 {suffix} 不得超过局部采集包络 {maximum}")
+    if values["DIAGNOSTIC_MOTION_PROFILE"] in ("bidirectional_trapezoid", "identification_trapezoid"):
         motion_axis = values["DIAGNOSTIC_MOTION_AXIS"]
         if values["DIAGNOSTIC_MODE"] != "preset_joint_motion" or values["DIAGNOSTIC_AXIS"] != motion_axis:
             raise ValueError("双向梯形仅用于单轴预设无接触采集，观测轴须与运动轴相同")
         if values["JOINT_LOAD_SOURCE"] != "joint_torque" or values["JOINT_AXES"] != [int(i + 1 == motion_axis) for i in range(6)]:
             raise ValueError("无接触采集须仅启用所选运动轴，并保持关节载荷通道")
-        if values["DIAGNOSTIC_MOTION_NODE_HOLD_S"] < 2. or values["DIAGNOSTIC_MOTION_TAIL_HOLD_S"] < 10.:
-            raise ValueError("无接触采集节点至少保持 2 秒，末尾至少保持 10 秒")
+        minimum_hold = .5 if identification else 2.
+        if values["DIAGNOSTIC_MOTION_NODE_HOLD_S"] < minimum_hold or values["DIAGNOSTIC_MOTION_TAIL_HOLD_S"] < 10.:
+            raise ValueError(f"本轨迹节点至少保持 {minimum_hold} 秒，末尾至少保持 10 秒")
+        if (values["DIAGNOSTIC_MOTION_AMPLITUDE_RAD"] >= values["DIAGNOSTIC_MOTION_ACTUAL_MARGIN_RAD"]
+                or values["DIAGNOSTIC_MOTION_MAX_QD_RAD_S"] >= values["DIAGNOSTIC_MOTION_ACTUAL_MAX_QD_RAD_S"]):
+            raise ValueError("预设命令幅度和速度须小于实际运动守卫")
         if abs(values["DIAGNOSTIC_DURATION_S"] - profile_parameters(values)["duration_s"]) > 1e-9:
             raise ValueError("双向梯形的运行时长必须等于量化轨迹及完整尾段时长")
     for name, width in (("ADMITTANCE_INPUT_INT_BASE", 8), ("ADMITTANCE_INPUT_FLOAT_BASE", 6),
@@ -571,6 +637,8 @@ def validate_run_config(reference_source, space, *, config=None):
     if reference_source not in ("teleop", "fixed") or space not in ("joint", "cartesian"):
         raise ValueError("导纳场景或空间无效；新运行仅支持 teleop 或 fixed 来源")
     values = validate_config(config)
+    if values["IDENTIFICATION_TELEMETRY"] == "compact" and (reference_source != "fixed" or space != "joint"):
+        raise ValueError("紧凑辨识仅适用于固定参考关节空间")
     if space != "joint":
         raise ValueError("当前开放关节导纳；末端空间与 IK 留待独立实现")
     if reference_source == "teleop" and values["DIAGNOSTIC_MODE"] != "admittance":
@@ -618,7 +686,8 @@ def render_script(reference_source, space, *, config=None, config_id=0):
         raise ValueError("config_id 必须为非负 32 位整数")
     rendered = {name: repr(value) for name, value in values.items()}
     rendered["CONFIG_ID"] = str(config_id)
-    rendered["DIAGNOSTIC_MOTION_PROFILE_CODE"] = "1" if values["DIAGNOSTIC_MOTION_PROFILE"] == "bidirectional_trapezoid" else "0"
+    rendered["DIAGNOSTIC_MOTION_PROFILE_CODE"] = "0" if values["DIAGNOSTIC_MOTION_PROFILE"] == "cosine" else "1"
+    rendered["IDENTIFICATION_COMPACT"] = repr(values["IDENTIFICATION_TELEMETRY"] == "compact")
     speeds, margins = actual_guard_limits(values)
     rendered["ACTUAL_MAX_QD_BY_AXIS"] = repr(speeds)
     rendered["ACTUAL_MARGIN_BY_AXIS"] = repr(margins)
@@ -628,7 +697,7 @@ def render_script(reference_source, space, *, config=None, config_id=0):
     rendered["ADMITTANCE_SPACE"] = "1" if space == "joint" else "2"
     rendered["DIAGNOSTIC_MODE_CODE"] = str({"admittance": 0, "fixed_joint_hold": 1, "preset_joint_motion": 2}[values["DIAGNOSTIC_MODE"]])
     rendered["JOINT_LOAD_SOURCE_CODE"] = str({"joint_torque": 0, "flange_wrench": 1}[values["JOINT_LOAD_SOURCE"]])
-    rendered["TELEMETRY_SCHEMA_VERSION"] = str(admittance_telemetry.TELEMETRY_SCHEMA_VERSION)
+    rendered["TELEMETRY_SCHEMA_VERSION"] = str(admittance_telemetry.schema_version(values))
     rendered["ACTIVE_MOTION_AXIS"] = str(
         values["JOINT_AXES"].index(1) + 1 if values["DIAGNOSTIC_MODE"] == "admittance"
         else values["DIAGNOSTIC_MOTION_AXIS"])

@@ -83,6 +83,10 @@ def run_manual(args):
     source = args.reference_source if args.command == "joint" else "fixed"
     if stage_a:
         config = admittance_config.j1_no_contact_config()
+    elif args.command == "identify":
+        config = admittance_config.residual_identification_config(
+            args.axis, amplitude=args.amplitude, speed=args.speed,
+            acceleration=args.acceleration, hold=args.hold, direction=args.direction)
     elif args.command == "j3-motion":
         config = admittance_config.j3_no_contact_config()
     elif args.command == "joint-motion":
@@ -107,6 +111,7 @@ def run_manual(args):
         "validation_environment": args.environment, "validation_profile": "AdmittanceProcess",
         "validation_scope": "正式通信进程、正常自动 GC、500 Hz 状态和实时磁盘日志；未加载完整主界面及其他设备",
         "validation_scenario": ("J1_empty_flange_no_contact" if stage_a else
+                                f"J{args.axis}_residual_identification_no_contact" if args.command == "identify" else
                                 "J3_cosine_no_contact" if args.command == "j3-motion" else
                                 f"J{args.axis}_bidirectional_no_contact" if args.command == "joint-motion" else
                                 "joint_empty_flange_no_contact"),
@@ -183,10 +188,20 @@ def run_manual(args):
             if now >= next_display:
                 state = controller.get_status()
                 statistics = state["statistics"]
-                print(json.dumps({"阶段": state["phase_name"], "退出": state["exit_reason"],
-                                  "错误": state["last_error"],
-                                  "非零drive周期": None if statistics is None else statistics["nonzero_drive_count"]},
-                                 ensure_ascii=False), flush=True)
+                display = {"阶段": state["phase_name"], "退出": state["exit_reason"],
+                           "错误": state["last_error"],
+                           "非零drive周期": None if statistics is None else statistics["nonzero_drive_count"]}
+                if args.command == "identify" and state["identification"] is not None:
+                    sample = state["identification"]
+                    axis = sample["observation_axis"] - 1
+                    display["最近辨识样本"] = {
+                        "模型序号": sample["model_sample_seq"], "已采用帧": sample["frame"],
+                        "UR补偿力矩_Nm": sample["input_raw_nm"][axis],
+                        "原链路滤波残差_Nm": sample["filtered_uncorrected_nm"],
+                        "已采用命令_rad": sample["adopted_q_cmd_rad"],
+                        "实际位置_rad": sample["q_actual_rad"][axis],
+                    }
+                print(json.dumps(display, ensure_ascii=False), flush=True)
                 next_display = now + 5
             time.sleep(.002 if source == "teleop" else .02)
     finally:
@@ -211,6 +226,13 @@ def run_manual(args):
     report = analyze_j1_no_contact(path) if stage_a else analyze(path)
     report_name = "stage_a_report.json" if stage_a else "descriptive_report.json"
     (path / report_name).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    if args.command == "identify":
+        from analyze_admittance_residual import analyze_run
+        residual_report, _ = analyze_run(path)
+        (path / "residual_report.json").write_text(
+            json.dumps(residual_report, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(json.dumps({"辨识采样质量": residual_report["sampling"],
+                          "允许离线辨识": residual_report["eligible_for_fitting"]}, ensure_ascii=False), flush=True)
     if args.command == "joint-motion":
         print(json.dumps({"观测轴": args.axis, "死区_Nm": config["JOINT_DEADBAND_NM"][args.axis - 1],
                           "最终逐周期统计": report["选定轴最终逐周期统计"]}, ensure_ascii=False), flush=True)
@@ -220,6 +242,8 @@ def run_manual(args):
                       "最终静止确认": status["stopped_confirmed"],
                       "最终安全状态": after["samples"][-1]["safety_mode"]}, ensure_ascii=False), flush=True)
     successful = report["软件与记录检查通过"] if stage_a else status["stopped_confirmed"] and not status["last_error"]
+    if args.command == "identify":
+        successful = successful and residual_report["eligible_for_fitting"]
     return 0 if successful else 1
 
 
@@ -249,6 +273,18 @@ def main():
     motion.add_argument("--empty-flange", action="store_true", required=True)
     motion.add_argument("--no-contact", action="store_true", required=True)
     motion.add_argument("--axis", type=int, choices=range(1, 7), required=True)
+    identify = subparsers.add_parser("identify", help="单轮固定参考紧凑辨识；关节力矩仅记录，不参与轨迹驱动")
+    identify.add_argument("--robot-ip", required=True)
+    identify.add_argument("--environment", choices=("ursim", "real_robot"), required=True)
+    identify.add_argument("--label", required=True)
+    identify.add_argument("--empty-flange", action="store_true", required=True)
+    identify.add_argument("--no-contact", action="store_true", required=True)
+    identify.add_argument("--axis", type=int, choices=range(1, 7), required=True)
+    identify.add_argument("--amplitude", type=float, default=.03, help="单侧幅度，最多0.03 rad")
+    identify.add_argument("--speed", type=float, default=.03, help="命令速度，0.005～0.03 rad/s")
+    identify.add_argument("--acceleration", type=float, default=.1, help="加速度，0.05～0.2 rad/s²")
+    identify.add_argument("--hold", type=float, default=2., help="节点保持秒数，至少0.5秒；尾段固定10秒")
+    identify.add_argument("--direction", type=int, choices=(-1, 1), default=1, help="首段运动方向")
     joint = subparsers.add_parser("joint", help="单轮关节无接触联调；遥操作目标由终端显式给定")
     joint.add_argument("--robot-ip", required=True)
     joint.add_argument("--environment", choices=("ursim", "real_robot"), required=True)
