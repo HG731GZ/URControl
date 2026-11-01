@@ -5,7 +5,7 @@
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for a full history of changes.
+模型版本记录已整合至[项目现状](../../URControl_项目现状.md#model-provenance)。
 
 ## Overview
 
