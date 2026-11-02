@@ -101,6 +101,21 @@ python -m pip --version
 
 补偿显示在普通控制时由后台读取；导纳运行时复用 `joint_torque` 载荷页的 `input_raw_nm`。没有有效样本时留空。该开关只选择显示源，不改变导纳输入或控制参数。
 
+主面板连接机械臂后，点击“开始遥测”即可独立记录 500 Hz 标准 RTDE 状态，静止、普通运动和导纳运行期间均可使用，再次点击停止并保存。按钮旁显示当前六轴中最大的偏差、碰撞比例；悬停可查看目录及记录数量，结束路径也写入消息区。记录保存在 `logs/telemetry/`，无需开启主界面采集。
+
+遥测同时记录六轴 raw 力矩和 UR 补偿后力矩，单位均为 N·m，轴顺序为 J1～J6：
+
+| 数据 | `records.jsonl` 中的位置 | 来源 |
+| --- | --- | --- |
+| raw 力矩 | `payload.raw.actual_current_as_torque` | 标准 RTDE 电流换算力矩，保留重力、摩擦等分量，与本包标准状态共用时间戳 |
+| 补偿后力矩 | `payload.compensated_joint_torque.sample.values_nm` | UR `get_joint_torques()`，未减导纳启动偏置、未滤波、未过死区 |
+
+补偿力矩与“力矩”显示共用后台读取，记录不依赖显示开关。普通控制时通过当前 `getJointTorques` 通道读取，保存主机调用起止时刻及关联 RTDE 时间；导纳运行时复用载荷页，保存 `run_id`、`model_sample_seq`、`page_seq` 和相对脚本起点的 `sample_time_s`。`status=available` 表示样本有效；程序未运行、控制交接或缺少有效载荷页时，记录 `status=unavailable`、`sample=null` 和原因。读取错误明确报告并结束本次遥测。补偿缓存可重复出现在相邻 RTDE 帧中，更新频率以来源身份为准，不视为与 raw 同步的 500 Hz 测量。补偿定义见 [UR 官方说明](https://www.universal-robots.com/manuals/EN/HTML/SW5_23/Content/prod-scriptmanual/all_scripts/get_joint_torques.htm)。
+
+勾选主面板“导纳诊断日志”则开启本轮导纳的原始反馈及内部模型、片段、伺服计时记录，可在启动前选择或运行中切换，与导纳窗口日志开关同步，文件保存在 `logs/admittance/`。两个记录入口均不启动运动；单独的标准遥测不包含导纳内部寄存器页。
+
+当前配方包含 `joint_position_deviation_ratios` 和 `collision_detection_ratios`，要求控制器支持这两个字段（本项目实机为 PolyScope 5.26.3，URSim 也须使用支持字段的版本）。两项均保存 J1～J6 的原始比例，定义见 [UR 官方 RTDE 指南](https://docs.universal-robots.com/tutorials/communication-protocol-tutorials/rtde-guide.html)。字段不可用时明确报错，不自动删减配方。
+
 ### 修改与预览界面
 
 | 界面 | Designer 源文件 | 自动生成文件 |
@@ -196,7 +211,7 @@ python admittance_contact_manual.py --robot-ip 192.168.3.15 --environment real_r
 
 ## 数据与导纳日志
 
-`data/` 保存主界面 20 Hz 采集和视频。`logs/admittance/` 保存逐轮导纳调试日志，无需开启主界面采集；两个日常入口默认关闭，可显式开启。主程序中隐藏监视窗口不停止已开启的日志；独立入口关闭时先停止并完成日志收尾。软件不自动清理历史目录。
+`data/` 保存主界面 20 Hz 采集和视频。`logs/admittance/` 保存逐轮导纳调试日志，无需开启主界面采集；两个日常导纳入口默认关闭日志，可显式开启。主程序中隐藏监视窗口不停止已开启的日志；独立入口关闭时先停止并完成日志收尾。`logs/telemetry/` 保存主面板独立遥测，同样使用 `metadata.json` 和 `records.jsonl`；`kind=robot_telemetry` 的 `payload.raw` 为标准状态，`payload.compensated_joint_torque` 为带来源身份的补偿力矩缓存。结束摘要含采样缺口、各轴比例最大值、控制器实时线程耗时、两种力矩的各轴绝对峰值，以及附带有效/缺测补偿缓存的 RTDE 帧数；这些帧数不是独立补偿采样次数。断开机器人或关闭主程序时会完成遥测收尾。软件不自动清理历史目录。
 
 | 文件 | 内容 |
 | --- | --- |
@@ -208,19 +223,22 @@ python admittance_contact_manual.py --robot-ip 192.168.3.15 --environment real_r
 
 日志格式为 `log_schema_version=3`，诊断订阅目标 500 Hz。主机、机器人及遥测页各保留自己的身份和时间，写盘丢弃、桥接缺口、主动停记与不完整收尾分别记录。`actual_TCP_force`、电流、补偿关节力矩和死区后 `drive` 含义不同；分析须按该轮元数据解释，不能用当前参数改写历史结论。
 
+新增比例和 raw 力矩不改变导纳寄存器页版本 7；完整输出配方为 73 字段、1048 B，其中标准字段 25 项。导纳分析报告的“全阶段UR控制器诊断”汇总两种比例及 `actual_execution_time`；后者单位为 ms，是控制器实时线程耗时，不能当作导纳模型计算时间。“关节力矩_Nm”分别汇总 raw 力矩和运行载荷页的 UR 补偿力矩；后者仍位于 `payload.control.load.input_raw_nm`，仅 `load_source=joint_torque` 时适用。旧日志没有新增字段时显示缺测。
+
 只读分析完整保留的轮次，不连接设备：
 
 ```bash
 python analyze_admittance_log.py logs/admittance/20261030_175645_275707_standalone_fixed_1793354205274867198
 ```
 
-2026-11-01 精简历史日志后，仅保留 2026-10-30 17:50 的六轴 C159A0 故障轮次和 17:56 的六轴手推接受轮次，各自保留完整原始日志、元数据、停止状态和分析记录。具体目录见 [日志留存说明](URControl_项目现状.md#retained-logs)，解释与适用范围见 [部署记录](URControl_项目现状.md#deployment-evidence)。其余轮次、独立汇总及预览附件已删除，历史结论统一保存在项目现状文档，不能再逐帧复核。`data/` 与导纳日志均不纳入 Git，移交原始证据时需单独携带对应目录；本次未清理 `data/`。
+2026-11-01 精简旧版日志后，旧版仅保留 2026-10-30 17:50 的六轴 C159A0 故障轮次和 17:56 的六轴手推接受轮次，各自保留完整原始日志、元数据、停止状态和分析记录。具体目录见 [日志留存说明](URControl_项目现状.md#retained-logs)，解释与适用范围见 [部署记录](URControl_项目现状.md#deployment-evidence)。其余旧版轮次、独立汇总及预览附件已删除，历史结论统一保存在项目现状文档，不能再逐帧复核。2026-11-02 新增的 5.26.3 无接触、手推及主面板遥测联调另见 [升级验证](URControl_项目现状.md#upgrade-5263)。`data/`、导纳和独立遥测日志均不纳入 Git，移交原始证据时需单独携带对应目录。
 
 ## 代码与维护入口
 
 | 位置 | 职责 |
 | --- | --- |
 | `main.py`、`classic_window.ui` | 主界面、普通控制、设备与采集协调 |
+| `robot_telemetry.py` | 主面板独立只读 RTDE 记录、状态与收尾摘要 |
 | `admittance_window.py`、`admittance_parameters.py`、`admittance_monitor.py`、`admittance_plot.py` | 导纳窗口、参数、快照解释与曲线 |
 | `UR_Utils/admittance_config.py`、`UR_Utils/scripts/admittance_control.script` | 运行候选、约束和机器人模型/执行/遥测 |
 | `UR_Utils/URAdmittanceController.py`、`admittance_lifecycle.py` | 导纳生命周期、控制交接与停止确认 |

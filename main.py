@@ -20,6 +20,7 @@ from ui_classic_window import Ui_MainWindow
 from admittance_window import AdmittanceWindow, OPERATOR_EVENTS
 from admittance_lifecycle import AdmittanceLifecycleWorker, AdmittanceLogFinishWorker
 from admittance_logger import AdmittanceLogger
+from robot_telemetry import RobotTelemetryRecorder
 from UR_Utils.URDashboardClient import URDashboardClient
 from UR_Utils.URRealtimeClient import URRealtimeClient
 from UR_Utils.URRTDEController import URRTDEController
@@ -85,6 +86,7 @@ class MainWindow(QMainWindow):
         self.realtime_client = None
         self.rtde_controller = None
         self.torque_client = None
+        self.compensated_torque_client = None
         self.gripper = None
         self.robot_state = None
         self.robot_ready = False
@@ -104,11 +106,13 @@ class MainWindow(QMainWindow):
         self._admittance_parameters = None
         self._last_admittance_status = None
         self._last_admittance_run_id = None
-        # 日常持续运行默认不写高频调试日志，现场分析时在导纳窗口显式开启。
+        # 日常持续运行默认不写高频调试日志，可在主窗口或导纳窗口显式开启。
         self._admittance_logging_enabled = False
         self._admittance_logger = None
         self._admittance_log_finish_workers = []
         self._admittance_reported_log_error = None
+        self._telemetry_recorder = None
+        self._telemetry_finish_reported = False
         self._last_collected_admittance_time = None
         self._last_collected_submitted_seq = None
         self._last_collected_master_count = None
@@ -258,12 +262,13 @@ class MainWindow(QMainWindow):
             ('URScriptMoveJ', self.on_move_joint), ('RTDEUDP', self.on_start_udp),
             ('StopRTDE', self.on_stop_control), ('HOME', self.on_home),
             ('UDPSync', self.on_sync_udp), ('Collect', self.on_collect),
-            ('Admittance', self.on_admittance),
+            ('Admittance', self.on_admittance), ('Telemetry', self.on_telemetry),
         ):
             getattr(self, f'pushButton_{name}').clicked.connect(callback)
         self.horizontalSlider_SpeedSlider.valueChanged.connect(self.on_speed_changed)
         self.checkBox_URSim.stateChanged.connect(self.on_simulator_changed)
         self.checkBox_FTSwitch.stateChanged.connect(self.update_torque_subscription)
+        self.checkBox_AdmittanceLogging.toggled.connect(self.on_admittance_logging_toggled)
         self.bind_jog_buttons()
         self.bind_joint_validation()
 
@@ -337,8 +342,11 @@ class MainWindow(QMainWindow):
         if self.defer_until_admittance_stopped(self.disconnect_robot):
             return False
         self.stop_control()
+        if self._telemetry_recorder is not None:
+            self._telemetry_recorder.close()
+            self.update_telemetry_status()
         # 确认运动退出后才能释放连接；停止失败时保留当前控制后端。
-        for name in ('torque_client', 'rtde_controller', 'gripper',
+        for name in ('torque_client', 'compensated_torque_client', 'rtde_controller', 'gripper',
                      'realtime_client', 'dashboard_client'):
             client = getattr(self, name)
             if client is not None:
@@ -405,7 +413,7 @@ class MainWindow(QMainWindow):
         except (RuntimeError, OSError, RTDEException, URTcpError) as exc:
             self.append_message(f'未下电，需先确认机器人停止：{exc}')
             return
-        for name in ('torque_client', 'rtde_controller'):
+        for name in ('torque_client', 'compensated_torque_client', 'rtde_controller'):
             client = getattr(self, name)
             if client is not None:
                 client.close()
@@ -464,6 +472,7 @@ class MainWindow(QMainWindow):
         self.update_admittance_status()
         self.record_admittance_application_state()
         self.report_admittance_log_error()
+        self.update_telemetry_status()
         self.update_torque_subscription()
         self.update_buttons()
         mode = f'机器人模式 {state.robot_mode}' if state else '无实时状态'
@@ -489,6 +498,9 @@ class MainWindow(QMainWindow):
         self.pushButton_UDPSync.setEnabled(rtde_ready and idle and joint_command)
         self.pushButton_RTDEUDP.setEnabled(rtde_ready and idle and joint_command)
         self.pushButton_Admittance.setEnabled(True)
+        telemetry_phase = (None if self._telemetry_recorder is None else
+                           self._telemetry_recorder.get_status()['phase'])
+        self.pushButton_Telemetry.setEnabled(connected and telemetry_phase != 'stopping')
         hidden = (self.admittance_mode != 'off' and
                   (self.admittance_window is None or not self.admittance_window.isVisible()))
         self.label_AdmittanceStatus.setText(
@@ -517,9 +529,11 @@ class MainWindow(QMainWindow):
     def release_unready_controller(self):
         """机器人失去就绪状态后，仅在停止确认后释放原控制器。"""
         if not self.robot_ready and self.rtde_controller is not None and not self._control_stop_failed:
-            if self.torque_client is not None:
-                self.torque_client.close()
-                self.torque_client = None
+            for name in ('torque_client', 'compensated_torque_client'):
+                client = getattr(self, name)
+                if client is not None:
+                    client.close()
+                    setattr(self, name, None)
             self.rtde_controller.close()
             self.rtde_controller = None
 
@@ -571,6 +585,8 @@ class MainWindow(QMainWindow):
     def on_admittance_logging_toggled(self, enabled):
         """只切换诊断记录；运行中的控制参数和运动状态不随开关变化。"""
         self._admittance_logging_enabled = enabled
+        with QtCore.QSignalBlocker(self.checkBox_AdmittanceLogging):
+            self.checkBox_AdmittanceLogging.setChecked(enabled)
         if self._admittance_logger is not None and self._admittance_run is not None:
             status = (self.rtde_controller.get_status()['admittance']
                       if self._admittance_handoff_complete else self._last_admittance_status)
@@ -579,6 +595,60 @@ class MainWindow(QMainWindow):
             })
         self.append_message('导纳调试日志已开启' if enabled else '导纳调试日志已关闭')
         self.update_admittance_window_context()
+
+    def on_telemetry(self):
+        """标准 RTDE 遥测可以在静止或其他控制模式运行时独立开关。"""
+        if (self._telemetry_recorder is not None
+                and self._telemetry_recorder.get_status()['phase'] != 'finished'):
+            self._telemetry_recorder.request_stop()
+        else:
+            self._telemetry_recorder = RobotTelemetryRecorder(
+                self.connected_ip, compensated_torque_provider=self.get_telemetry_compensated_torque)
+            self._telemetry_finish_reported = False
+            self.update_torque_subscription()
+            self._telemetry_recorder.start()
+            self.append_message('正在开始 500 Hz 机器人遥测')
+        self.update_telemetry_status()
+        self.update_buttons()
+
+    def get_telemetry_compensated_torque(self):
+        """遥测仅取后台缓存；不在标准 RTDE 接收线程中等待力矩控制查询。"""
+        reader = self.compensated_torque_client
+        if reader is None:
+            return {'status': 'unavailable', 'sample': None, 'reason': '补偿力矩读取通道未就绪'}
+        return reader.get_snapshot()
+
+    def update_telemetry_status(self):
+        """显示记录进度和最终文件位置；按钮停止后的收尾由后台完成。"""
+        if self._telemetry_recorder is None:
+            return
+        status = self._telemetry_recorder.get_status()
+        phase, log = status['phase'], status['log']
+        error = status['error'] or log['error']
+        path = log['path']
+        compensated = status['compensated_joint_torque']
+        torque_text = ('' if compensated is None else '\n补偿力矩：' +
+                      ('可用' if compensated['status'] == 'available' else compensated['reason']))
+        self.label_TelemetryStatus.setToolTip(
+            f"{path}\n接收 {status['sample_count']} 帧；写盘 {log['record_count']} 条；"
+            f"丢弃 {log['dropped_count']} 条；待写 {log['pending_count']} 条"
+            + torque_text + (f'\n{error}' if error else ''))
+        if phase == 'finished':
+            self.pushButton_Telemetry.setText('开始遥测')
+            self.label_TelemetryStatus.setText('遥测记录失败' if error else f"遥测已保存 · {status['sample_count']} 帧")
+            if not self._telemetry_finish_reported:
+                self.append_message(f'遥测结束：{path}' + (f'；{error}' if error else '')
+                                    + f"；日志丢弃 {log['dropped_count']} 条")
+                self._telemetry_finish_reported = True
+        elif phase == 'stopping':
+            self.pushButton_Telemetry.setText('收尾中…')
+            self.label_TelemetryStatus.setText('正在保存遥测')
+        else:
+            self.pushButton_Telemetry.setText('停止遥测')
+            latest = status['latest']
+            self.label_TelemetryStatus.setText('正在连接遥测' if latest is None else
+                f"记录中 · 偏差 {max(latest['joint_position_deviation_ratios']):.3f} · "
+                f"碰撞 {max(latest['collision_detection_ratios']):.3f}")
 
     def record_admittance_operator_event(self, event, note):
         """标注人为观察与最近收到的机器人样本；停止意图仍交由原停止入口处理。"""
@@ -724,8 +794,9 @@ class MainWindow(QMainWindow):
                     'last_error': None if realtime_error is None else str(realtime_error),
                 }
         ft_sensor = None
-        if self.torque_client is not None:
-            torque = self.torque_client.get_latest()
+        torque_reader = self.get_display_torque_reader()
+        if torque_reader is not None:
+            torque = torque_reader.get_latest()
             if torque is not None:
                 ft_sensor = {'name': ('原始关节力矩订阅' if SHOW_RAW_JOINT_TORQUES else 'UR 内部补偿关节力矩'),
                              'timestamp': torque[0],
@@ -1155,19 +1226,15 @@ class MainWindow(QMainWindow):
             self.rtde_controller.set_speed_slider(speed_percent / 100)
 
     def update_torque_subscription(self):
-        """按全局配置选择显示来源，两种来源均由后台读取。"""
+        """按需读取 raw 显示；补偿力矩的显示和遥测共享同一后台采样。"""
         source_text = ('raw：实际电流换算关节力矩，保留重力、摩擦等分量。'
                        if SHOW_RAW_JOINT_TORQUES else
                        'UR 内部补偿关节力矩：未减导纳启动偏置，未滤波、未过死区。无有效当前测量时留空。')
         self.checkBox_FTSwitch.setToolTip(source_text + ' 取消勾选显示 TCP 广义力。')
-        enabled = self.checkBox_FTSwitch.isChecked() and self.robot_ready
-        if not SHOW_RAW_JOINT_TORQUES:
-            enabled = enabled and self.rtde_controller is not None
+        enabled = self.checkBox_FTSwitch.isChecked() and self.robot_ready and SHOW_RAW_JOINT_TORQUES
         if enabled and self.torque_client is None:
             try:
-                self.torque_client = (URRTDETorqueClient(self.connected_ip, UR_RTDE_FREQ_HZ)
-                                      if SHOW_RAW_JOINT_TORQUES else
-                                      URCompensatedTorqueReader(self.rtde_controller))
+                self.torque_client = URRTDETorqueClient(self.connected_ip, UR_RTDE_FREQ_HZ)
                 self.torque_client.start_reader_thread()
             except (OSError, RTDEException, RuntimeError, ValueError) as exc:
                 self.checkBox_FTSwitch.setChecked(False)
@@ -1175,6 +1242,22 @@ class MainWindow(QMainWindow):
         elif not enabled and self.torque_client is not None:
             self.torque_client.close()
             self.torque_client = None
+        recording = (self._telemetry_recorder is not None
+                     and self._telemetry_recorder.get_status()['phase'] != 'finished')
+        compensated_needed = (self.robot_ready and self.rtde_controller is not None
+                              and (recording or self.checkBox_FTSwitch.isChecked() and not SHOW_RAW_JOINT_TORQUES))
+        if compensated_needed and self.compensated_torque_client is None:
+            self.compensated_torque_client = URCompensatedTorqueReader(self.rtde_controller)
+            self.compensated_torque_client.start_reader_thread()
+        elif not compensated_needed and self.compensated_torque_client is not None:
+            self.compensated_torque_client.close()
+            self.compensated_torque_client = None
+
+    def get_display_torque_reader(self):
+        """显示开关只控制显示来源，不关闭遥测仍在使用的补偿采样。"""
+        if not self.checkBox_FTSwitch.isChecked():
+            return None
+        return self.torque_client if SHOW_RAW_JOINT_TORQUES else self.compensated_torque_client
 
     def update_robot_view(self):
         command = self.get_udp_snapshot()
@@ -1237,11 +1320,12 @@ class MainWindow(QMainWindow):
                 UDPControlMode.OFF, gripper_values, max_age=ROBOT_STATE_TIMEOUT_S)
 
         if self.checkBox_FTSwitch.isChecked():
-            sample = None if self.torque_client is None else self.torque_client.get_latest()
+            reader = self.get_display_torque_reader()
+            sample = None if reader is None else reader.get_latest()
             for index in range(1, 7):
                 text = '' if sample is None else f'{sample[1][index - 1]:.3f}'
                 getattr(self, f'lineEdit_Fex{index}').setText(text)
-            error = None if self.torque_client is None else self.torque_client.get_last_error()
+            error = None if reader is None else reader.get_last_error()
             if error is not None:
                 self.checkBox_FTSwitch.setChecked(False)
                 self.append_message(f'力矩读取失败：{error}')

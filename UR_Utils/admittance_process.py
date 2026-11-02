@@ -335,6 +335,14 @@ class AdmittanceProcess:
         result["process_status_age_s"] = None if published is None else max(0.0, time.monotonic() - published)
         return result
 
+    def get_load_status(self) -> dict:
+        """力矩读取仅复制载荷页及有效性，避免高频复制整份控制诊断。"""
+        with self._lock:
+            status = self._status
+            result = {"lifecycle_valid": status["lifecycle_valid"],
+                      "phase": status["phase"], "load": status["load"]}
+        return deepcopy(result)
+
     def submit_reference(self, q, *, source_seq: int) -> bool:
         """覆盖最新待采用目标；异步停止开始后返回 False，不向已停止的本轮继续提交。"""
         if self.reference_source != "teleop":

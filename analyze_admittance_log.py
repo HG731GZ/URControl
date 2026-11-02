@@ -1151,6 +1151,12 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
     current_normal_segment = None
     raw_state_transitions = []
     previous_raw_state = None
+    robot_diagnostic_ratios = {
+        name: [NumericSummary() for _ in range(6)]
+        for name in ("joint_position_deviation_ratios", "collision_detection_ratios")
+    }
+    robot_execution_time = NumericSummary()
+    raw_joint_torques = [NumericSummary() for _ in range(6)]
     abnormal_phase2_count = 0
     timestamp_intervals = NumericSummary()
     raw_timestamp_gaps = 0
@@ -1340,6 +1346,16 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
             control, robot = payload["control"], payload["raw"]
             timestamp = numeric_value(robot["timestamp"])
             location = record_location(record, timestamp)
+            robot_execution_time.add(robot["actual_execution_time"], location)
+            # 扩展配方之前的日志未保存电流换算力矩，不能由电流自行估算。
+            torques = robot["actual_current_as_torque"] if "actual_current_as_torque" in robot else [None] * 6
+            for summary, value in zip(raw_joint_torques, torques):
+                summary.add(value, location)
+            for name, summaries in robot_diagnostic_ratios.items():
+                # 5.26.3 之前的历史配方没有这两项，报告缺测而不补零。
+                values = robot[name] if name in robot else [None] * 6
+                for summary, value in zip(summaries, values):
+                    summary.add(value, location)
             received = numeric_value(payload["host_monotonic_s"] if "host_monotonic_s" in payload else None)
             raw_state = (robot["runtime_state"], robot["safety_mode"])
             state_point = {**location, "来源接收monotonic_s": received,
@@ -1546,6 +1562,18 @@ def analyze_continuous(run_dir, metadata, *, motion_windows, tail_seconds):
             "正常运行连续区间": [normal_segment_report(segment) for segment in normal_segments],
             "正常运行原始RTDE包数量": sum(segment["count"] for segment in normal_segments),
             "定义": "同时满足lifecycle_valid、phase2、runtime_state=2和safety_mode=1；任一条件中断即分段，禁止跨保护停止或暂停拼接窗口。",
+        },
+        "全阶段UR控制器诊断": {
+            "actual_execution_time_ms": robot_execution_time.report(),
+            **{name: [item.report() for item in summaries]
+               for name, summaries in robot_diagnostic_ratios.items()},
+            "口径": "原始RTDE同包字段，包含启动和停止；六轴按J1至J6排列。比例1对应UR保护停止阈值，不是应用的运动许可。actual_execution_time为控制器实时线程毫秒值，不等于导纳模型计算耗时。",
+        },
+        "关节力矩_Nm": {
+            "raw_全阶段": [item.report() for item in raw_joint_torques],
+            "UR补偿_运行载荷页": ([item.report() for item in residuals["raw"]]
+                                    if load_source == "joint_torque" else None),
+            "口径": "raw 为同包 actual_current_as_torque；UR补偿为 get_joint_torques() 的 input_raw_nm，尚未减启动偏置、滤波或过死区。补偿只按运行载荷页的独立模型身份统计，两个来源异步，不相减作为同周期补偿量。法兰 wrench 映射模式不报告 UR 补偿关节力矩。",
         },
         "连续伺服身份": {
             "各页发布序号": {name: item.report() for name, item in page_sequences.items()},

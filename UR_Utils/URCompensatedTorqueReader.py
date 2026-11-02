@@ -7,7 +7,7 @@ from rtde.rtde import RTDEException
 
 
 class URCompensatedTorqueReader:
-    """按 2 ms 周期读取补偿力矩；界面只读缓存，不等待控制接口。"""
+    """按 2 ms 目标周期读取补偿力矩；界面与遥测共用缓存，不等待控制接口。"""
 
     def __init__(self, controller):
         self._controller = controller
@@ -28,7 +28,7 @@ class URCompensatedTorqueReader:
             while not self._stop_event.is_set():
                 # 按 500 Hz 目标节拍调度，读取及等锁耗时计入本周期。
                 next_read = time.monotonic() + .002
-                sample = self._controller.get_compensated_torque_sample()
+                sample = self._controller.get_compensated_torque_snapshot()
                 received = time.monotonic()
                 self._latest = (received, sample)
                 self._stop_event.wait(max(0., next_read - received))
@@ -38,10 +38,24 @@ class URCompensatedTorqueReader:
 
     def get_latest(self):
         """等待新样本或控制通道切换超过 500 ms 时留空，不显示陈旧力矩。"""
-        latest = self._latest
-        if latest is None or time.monotonic() - latest[0] > .5:
+        snapshot = self.get_snapshot()
+        if snapshot["status"] != "available":
             return None
-        return latest[1]
+        sample = snapshot["sample"]
+        return sample["robot_timestamp_s"], sample["values_nm"]
+
+    def get_snapshot(self):
+        """返回带来源的当前测量，缺测和读取错误明确区分。"""
+        if self._last_error is not None:
+            return {"status": "error", "sample": None, "reason": str(self._last_error)}
+        latest = self._latest
+        if latest is None:
+            return {"status": "unavailable", "sample": None, "reason": "尚未取得补偿力矩"}
+        if time.monotonic() - latest[0] > .5:
+            return {"status": "unavailable", "sample": None, "reason": "补偿力矩读取已超过 500 ms 未更新"}
+        if latest[1] is None:
+            return {"status": "unavailable", "sample": None, "reason": "当前控制程序或导纳载荷页未提供有效补偿力矩"}
+        return {"status": "available", "sample": latest[1], "reason": None}
 
     def get_last_error(self):
         """返回后台读取错误，沿用主窗口的错误提示。"""

@@ -51,6 +51,7 @@ def idle_admittance_status() -> dict:
         "dashboard_stop_requested": False,
         "speed_scaling": None, "target_speed_fraction": None,
         "actual_TCP_speed": None, "actual_TCP_force": None, "actual_current": None,
+        "actual_current_as_torque": None,
         "joint_temperatures": None, "target_q": None, "target_qd": None,
         "actual_execution_time": None, "tcp_offset": None, "payload": None,
         "payload_cog": None, "payload_inertia": None, "program_seen": False,

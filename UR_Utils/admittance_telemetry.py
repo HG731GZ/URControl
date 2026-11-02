@@ -17,9 +17,12 @@ ROBOT_FIELDS = (
     ("actual_TCP_speed", "VECTOR6D", ["m/s"] * 3 + ["rad/s"] * 3, "实际 TCP 速度"),
     ("actual_TCP_force", "VECTOR6D", ["N"] * 3 + ["N*m"] * 3, "RTDE 实际 TCP 力和力矩；不是补偿关节力矩，也不是导纳处理后的 drive"),
     ("actual_current", "VECTOR6D", "A", "实际关节电流；不等同于补偿关节力矩"),
+    ("actual_current_as_torque", "VECTOR6D", "N*m", "实际电流换算的六轴 raw 力矩，保留重力、摩擦等分量；不是补偿关节力矩"),
     ("joint_temperatures", "VECTOR6D", "摄氏度", "关节温度"),
     ("target_q", "VECTOR6D", "rad", "控制器轨迹目标关节角；不等同于脚本 q_cmd"),
     ("target_qd", "VECTOR6D", "rad/s", "控制器轨迹目标关节角速度"),
+    ("joint_position_deviation_ratios", "VECTOR6D", "比例", "各关节位置偏差比例；达到 1 对应 C153/C159 保护停止条件"),
+    ("collision_detection_ratios", "VECTOR6D", "比例", "各关节碰撞检测比例；达到 1 对应 C157/C158 保护停止条件"),
     ("actual_execution_time", "DOUBLE", "ms", "控制器实时线程执行耗时"),
     ("tcp_offset", "VECTOR6D", ["m"] * 3 + ["rad"] * 3, "TCP 相对法兰的配置偏移"),
     ("payload", "DOUBLE", "kg", "当前负载质量"),
@@ -148,6 +151,11 @@ def log_schema(config: dict, space: str) -> dict:
         "layout": "continuous_servo_frozen_pages",
         "robot_fields": {name: {"rtde_type": field_type, "unit": unit, "description": description}
                          for name, field_type, unit, description in ROBOT_FIELDS},
+        "joint_torque_fields": {
+            "raw": "raw.actual_current_as_torque；六轴电流换算力矩，单位 N*m，与本包标准字段共用机器人 timestamp",
+            "compensated": "control.load.input_raw_nm；仅 load_source=joint_torque 时为 get_joint_torques() 的 UR 补偿力矩，单位 N*m，未减启动偏置、未滤波、未过死区",
+            "compensated_time": "使用载荷页自身 run_id、model_sample_seq、sample_time_s 和 received_monotonic_s；不与当前 raw 包冒充同步",
+        },
         "output_registers": registers,
         "output_packet_bytes": output_packet_size(config),
         "input_int_registers": {

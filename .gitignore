@@ -19,4 +19,5 @@ Thumbs.db
 # 运行数据
 data/
 /logs/admittance/
+/logs/telemetry/
 /.agents/

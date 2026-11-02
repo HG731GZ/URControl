@@ -1032,9 +1032,16 @@ class URRTDEController:
 
     def get_compensated_torque_sample(self):
         """供显示线程读取 UR 补偿力矩；返回机器人时间和六轴 Nm，无当前来源时返回 None。"""
+        sample = self.get_compensated_torque_snapshot()
+        if sample is None:
+            return None
+        return sample["robot_timestamp_s"], np.asarray(sample["values_nm"], dtype=float)
+
+    def get_compensated_torque_snapshot(self):
+        """读取补偿力矩及来源身份；关联 RTDE 时间不冒充精确的力矩采样时刻。"""
         with self._lifecycle_lock:
             if self._admittance is not None and self._admittance.active:
-                state = self._admittance.get_status()
+                state = self._admittance.get_load_status()
                 load = state["load"]
                 # 导纳已经调用 get_joint_torques；直接读取其偏置扣除之前的完整载荷页。
                 # 法兰映射输入不是 UR 补偿关节力矩，停止页或过期页也不作为当前测量。
@@ -1042,14 +1049,26 @@ class URRTDEController:
                         or load["load_source"] != "joint_torque"
                         or time.monotonic() - load["received_monotonic_s"] > .5):
                     return None
-                return load["robot_timestamp_s"], np.asarray(load["input_raw_nm"], dtype=float)
+                return {
+                    "source": "admittance_load_page", "values_nm": list(load["input_raw_nm"]),
+                    "robot_timestamp_s": load["robot_timestamp_s"],
+                    "sample_time_s": load["sample_time_s"], "run_id": load["run_id"],
+                    "model_sample_seq": load["model_sample_seq"], "page_seq": load["page_seq"],
+                    "received_monotonic_s": load["received_monotonic_s"],
+                }
             if not self._ordinary_connected:
                 return None
             with self._rtde_c_lock:
                 if not self.rtde_c.isProgramRunning():
                     return None
-                torques = np.asarray(self.rtde_c.getJointTorques(), dtype=float)
-                return self.rtde_r.getTimestamp(), torques
+                started = time.monotonic()
+                torques = self.rtde_c.getJointTorques()
+                finished = time.monotonic()
+                return {
+                    "source": "rtde_control_getJointTorques", "values_nm": list(torques),
+                    "robot_timestamp_s": self.rtde_r.getTimestamp(),
+                    "read_started_monotonic_s": started, "read_finished_monotonic_s": finished,
+                }
 
     def stop_raw_torque_stream(self) -> None:
         """停止关节力矩订阅；下次读取时重新建立连接。"""
