@@ -14,6 +14,8 @@ import rtde_receive
 from UR_Utils.URRTDETorqueClient import URRTDETorqueClient
 from UR_Utils.URAdmittanceController import idle_admittance_status
 from UR_Utils.admittance_process import AdmittanceProcess
+from UR_Utils.impedance_process import ImpedanceProcess
+from UR_Utils.URImpedanceController import idle_impedance_status
 from UR_Utils import admittance_config
 from UR_Utils.ur_pose_math import (
     apply_pose_delta,
@@ -187,6 +189,8 @@ class URRTDEController:
         self._last_speed_command_kind: Optional[str] = None
         self._direct_motion_kind: Optional[str] = None
         self._admittance: Optional[AdmittanceProcess] = None
+        self._impedance = None
+        self._last_custom_backend = None
         self._last_admittance_start_accepted = False
         self._ordinary_connected = True
 
@@ -224,6 +228,8 @@ class URRTDEController:
                 with self._lock:
                     self._last_error = "导纳仍占有控制权，请先停止并等待确认"
                 return False
+            if self._impedance is not None and self._impedance.active:
+                raise RuntimeError("阻抗仍占有控制权，请先停止并等待确认")
             self._restore_ordinary_connection()
 
             self._cancel_speed_watchdog()
@@ -311,6 +317,54 @@ class URRTDEController:
 
             return True
 
+    @property
+    def control_owner(self):
+        if self._impedance is not None and self._impedance.active:
+            return 'impedance'
+        if self._admittance is not None and self._admittance.active:
+            return 'admittance'
+        return 'ordinary'
+
+    def start_impedance(self, reference_source='trajectory', *, config=None, trajectory=None,
+                        play_hz=None, initial_reference=None, stop_event=None, log_directory=None):
+        with self._lifecycle_lock:
+            if self._is_shutdown:
+                raise RuntimeError('控制器已经关闭')
+            self._require_ordinary_motion()
+            if self._impedance is not None:
+                self._impedance.close()
+            backend = ImpedanceProcess(self.robot_ip,reference_source,config=config,trajectory=trajectory,
+                play_hz=play_hz,initial_reference=initial_reference,stop_event=stop_event,log_directory=log_directory)
+            self._impedance = backend
+            self._last_custom_backend = "impedance"
+            try:
+                if stop_event is not None and stop_event.is_set():
+                    backend.cancel_before_start(); return False
+                self._stop_ordinary(stop_script=True)
+                with self._rtde_c_lock:
+                    if self._ordinary_connected:
+                        self.rtde_c.disconnect()
+                        self._ordinary_connected = False
+                if stop_event is not None and stop_event.is_set():
+                    backend.cancel_before_start(); return False
+                backend.start()
+                return True
+            except Exception as exc:
+                backend.cancel_before_start(str(exc))
+                raise
+
+    def submit_impedance_reference(self, frame):
+        if self._impedance is None or not self._impedance.active:
+            return False
+        return self._impedance.submit_reference(frame)
+
+    def request_impedance_stop(self):
+        if self._impedance is not None and self._impedance.active:
+            self._impedance.request_stop()
+
+    def get_impedance_status(self):
+        return idle_impedance_status() if self._impedance is None else self._impedance.get_status()
+
     def start_admittance(
         self, reference_source: str, space: str, *,
         q_master: Optional[Sequence[float]] = None, source_seq: Optional[int] = None,
@@ -338,6 +392,7 @@ class URRTDEController:
             )
             # 先发布本轮后端，使其他线程在等待生命周期锁时也能保留停止请求。
             self._admittance = backend
+            self._last_custom_backend = "admittance"
             self._last_admittance_start_accepted = True
             try:
                 if stop_event is not None and stop_event.is_set():
@@ -379,10 +434,13 @@ class URRTDEController:
 
     def stop(self, stop_script: bool = False) -> None:
         """停止当前执行后端；自定义程序只通过专用配方请求停止。"""
+        self.request_impedance_stop()
         backend = self._admittance
         if backend is not None and backend.active:
             backend.request_stop()
         with self._lifecycle_lock:
+            if self._impedance is not None and self._impedance.active:
+                self._impedance.stop()
             backend = self._admittance
             if backend is not None and backend.active:
                 try:
@@ -501,6 +559,8 @@ class URRTDEController:
 
     def is_running(self) -> bool:
         """启动、运行和未确认停止期间，当前后端仍占有控制权。"""
+        if self._impedance is not None and self._impedance.active:
+            return True
         if self._admittance is not None and self._admittance.active:
             return True
         return self._thread is not None and self._thread.is_alive()
@@ -511,6 +571,7 @@ class URRTDEController:
         程序退出时才调用。
         调用后，这个对象不建议再 start()。
         """
+        self.request_impedance_stop()
         backend = self._admittance
         if backend is not None and backend.active:
             backend.request_stop()
@@ -521,6 +582,8 @@ class URRTDEController:
             self.stop(stop_script=True)
             if self._admittance is not None:
                 self._admittance.close()
+            if self._impedance is not None:
+                self._impedance.close()
             self.stop_raw_torque_stream()
             self._speed_watchdog_stop.set()
             if self._speed_watchdog_thread is not None:
@@ -575,6 +638,8 @@ class URRTDEController:
         new_dq_max = self._parse_dq_max(dq_max) if dq_max is not None else None
 
         with self._lifecycle_lock:
+            if self._impedance is not None and (self._impedance.active or (not self._ordinary_connected and source_seq is not None)):
+                raise RuntimeError('阻抗目标必须使用独立接口；停止后不自动恢复 UDP 跟随')
             backend = self._admittance
             if backend is not None and backend.active:
                 backend.submit_reference(q, source_seq=source_seq)
@@ -990,7 +1055,10 @@ class URRTDEController:
         if speed < 0.0 or speed > 1.0:
             raise ValueError("speed must be within [0, 1]")
 
-        ok = bool(self.rtde_io.setSpeedSlider(speed))
+        with self._lifecycle_lock:
+            if self._impedance is not None and self._impedance.active:
+                raise RuntimeError('阻抗占用时禁止改变速度滑条')
+            ok = bool(self.rtde_io.setSpeedSlider(speed))
         if not ok:
             raise RuntimeError(f"setSpeedSlider({speed}) returned False")
         return ok
@@ -1040,6 +1108,8 @@ class URRTDEController:
     def get_compensated_torque_snapshot(self):
         """读取补偿力矩及来源身份；关联 RTDE 时间不冒充精确的力矩采样时刻。"""
         with self._lifecycle_lock:
+            if self._impedance is not None and self._impedance.active:
+                return None
             if self._admittance is not None and self._admittance.active:
                 state = self._admittance.get_load_status()
                 load = state["load"]
@@ -1153,6 +1223,8 @@ class URRTDEController:
                 "is_running": running,
                 "running": running,
                 "admittance": admittance,
+                "impedance": self.get_impedance_status(),
+                "control_owner": self.control_owner,
                 "joint_position_limit": self._joint_position_limit.tolist(),
                 "use_safety_check": self.use_safety_check,
                 "use_rtde_safety_check": self.use_rtde_safety_check,
@@ -1161,7 +1233,7 @@ class URRTDEController:
                 "speed_watchdog_deadline": self._speed_watchdog_deadline,
                 "last_speed_command_kind": self._last_speed_command_kind,
             }
-        if backend is not None and not self._ordinary_connected:
+        if backend is not None and not self._ordinary_connected and self._last_custom_backend == 'admittance':
             status["last_error"] = admittance["last_error"]
             status["target_reached"] = admittance["stopped_confirmed"]
             for name, source in (("last_actual_q", "actual_q"), ("last_commanded_q", "q_cmd"),
@@ -1171,6 +1243,15 @@ class URRTDEController:
             target = admittance["q_master"] if backend.reference_source == "teleop" else admittance["q_nom"]
             status["last_target_q"] = None if target is None else np.asarray(target, dtype=float)
             status["loop_count"] = admittance["cycle_count"]
+        impedance = status['impedance']
+        if self._last_custom_backend == 'impedance' and not self._ordinary_connected:
+            status['last_error'] = impedance['last_error']
+            status['target_reached'] = impedance['stopped_confirmed']
+            sample = impedance.get('sample')
+            if sample:
+                status['last_actual_q'] = np.array(sample['q_actual'])
+                status['last_commanded_q'] = np.array(sample['q_ref'])
+                status['last_target_q'] = np.array(impedance['q_source'])
         return status
 
 
@@ -1509,6 +1590,8 @@ class URRTDEController:
 
     def _require_ordinary_motion(self) -> None:
         """当前导纳确认停止之前，不接受普通运动或旧脚本查询。"""
+        if self._impedance is not None and self._impedance.active:
+            raise RuntimeError("阻抗仍占有控制权，请先停止并等待确认")
         if self._admittance is not None and self._admittance.active:
             raise RuntimeError("导纳仍占有控制权，请先停止并等待确认")
 

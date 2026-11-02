@@ -1,0 +1,112 @@
+"""六关节 K/D 阻抗的 SI 参数契约；默认值仅为 URSim 调试候选。"""
+
+from copy import deepcopy
+import math
+import re
+from pathlib import Path
+
+DEFAULTS = {
+    "JOINT_K": [120, 160, 100, 35, 25, 15],
+    "JOINT_D": [24, 32, 20, 7, 5, 3],
+    "TAU_MAX_NM": [35, 45, 30, 10, 10, 8],
+    "TAU_RATE_MAX_NM_S": [300, 400, 300, 100, 100, 80],
+    "REF_MAX_QD_RAD_S": [0.15] * 6,
+    "REF_MAX_QDD_RAD_S2": [0.4] * 6,
+    "JOINT_POSITION_LIMIT_RAD": [2 * math.pi] * 6,
+    "ENVELOPE_RAD": [0.35] * 6,
+    "ACTUAL_MAX_QD_RAD_S": [0.5] * 6,
+    "MAX_ERROR_RAD": [0.18] * 6,
+    "VISCOUS_SCALE": [0.0] * 6,
+    "COULOMB_SCALE": [0.0] * 6,
+    "SOURCE_TIMEOUT_S": 0.25,
+    "HEARTBEAT_TIMEOUT_S": 0.20,
+    "FEEDBACK_TIMEOUT_S": 0.25,
+    "SEND_TIMEOUT_S": 0.02,
+    "HARD_WATCHDOG_HZ": 1.0,
+    "STOP_ACCEL_RAD_S2": 2.0,
+    "STOP_TIMEOUT_S": 4.0,
+    "STATIONARY_QD_RAD_S": 0.01,
+    "STOP_CONFIRM_S": 0.10,
+    "START_TOLERANCE_RAD": 0.03,
+    "RAMP_S": 0.5,
+    "START_TIMEOUT_S": 8.0,
+    "SATURATION_TIMEOUT_S": 0.5,
+    "END_HOLD_S": 0.5,
+    "END_SETTLE_TIMEOUT_S": 5.0,
+    "PLAYBACK_MAX_LAG_S": 0.1,
+    "MAX_SOURCE_STEP_RAD": 0.10,
+    "CYCLE_MAX_S": 0.003,
+    "EXPECTED_PAYLOAD_KG": 0.0,
+    "EXPECTED_TCP_OFFSET": [0.0] * 6,
+}
+
+
+def snapshot():
+    return deepcopy(DEFAULTS)
+
+
+def validate(config=None):
+    cfg = snapshot() if config is None else deepcopy(config)
+    if set(cfg) != set(DEFAULTS):
+        raise ValueError(f"参数键不匹配：{set(cfg)^set(DEFAULTS)}")
+    for key, default in DEFAULTS.items():
+        value = cfg[key]
+        if isinstance(default, list):
+            if len(value) != 6 or any(not math.isfinite(float(x)) for x in value):
+                raise ValueError(f"{key} 必须是六个有限数")
+            cfg[key] = [float(x) for x in value]
+            if key in ("VISCOUS_SCALE", "COULOMB_SCALE"):
+                if any(value):
+                    raise ValueError("当前仿真版本要求全部摩擦补偿为 0")
+            elif key != "EXPECTED_TCP_OFFSET" and any(x <= 0 for x in value):
+                raise ValueError(f"{key} 必须为正")
+        else:
+            cfg[key] = float(value)
+            if not math.isfinite(cfg[key]) or (
+                cfg[key] < 0 if key == "EXPECTED_PAYLOAD_KG" else cfg[key] <= 0
+            ):
+                raise ValueError(f"{key} 不合法")
+    if cfg["CYCLE_MAX_S"] >= 0.004 or cfg["CYCLE_MAX_S"] <= 0.002:
+        raise ValueError("周期门槛必须在 2～4 ms 之间")
+    braking = max(cfg["ACTUAL_MAX_QD_RAD_S"]) / cfg["STOP_ACCEL_RAD_S2"]
+    if cfg["HEARTBEAT_TIMEOUT_S"] + braking + 0.1 >= 1 / cfg["HARD_WATCHDOG_HZ"]:
+        raise ValueError("软件失联、制动和余量超过硬看门狗预算")
+    return cfg
+
+
+def render_script(config, run_id):
+    cfg = validate(config)
+    script = (
+        Path(__file__)
+        .with_name("scripts")
+        .joinpath("impedance_control.script")
+        .read_text()
+    )
+    for key, value in cfg.items():
+        script = script.replace("{{" + key + "}}", str(value))
+    script = script.replace("{{RUN_ID}}", str(int(run_id)))
+    if "{{" in script:
+        raise ValueError("脚本包含未替换的参数")
+    # Six fixed axes: unroll index loops to keep URScript instruction work within 2 ms.
+    lines = script.splitlines()
+    while any("while j < 6:" in line for line in lines):
+        begin = next(i for i, line in enumerate(lines) if "while j < 6:" in line)
+        depth, end = 1, begin + 1
+        while depth:
+            stripped = lines[end].strip()
+            if stripped.startswith(("if ", "while ", "def ", "thread ")):
+                depth += 1
+            if stripped == "end":
+                depth -= 1
+            end += 1
+        body = [
+            line for line in lines[begin + 1 : end - 1] if line.strip() != "j = j+1"
+        ]
+        expanded = []
+        for axis in range(6):
+            expanded.extend(re.sub(r"\bj\b", str(axis), line) for line in body)
+        if lines[begin - 1].strip() == "local j = 0":
+            begin -= 1
+        lines[begin:end] = expanded
+    script = "\n".join(lines) + "\n"
+    return script

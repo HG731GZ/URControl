@@ -247,3 +247,33 @@ python analyze_admittance_log.py logs/admittance/20261030_175645_275707_standalo
 | `admittance_manual.py`、`admittance_contact_manual.py`、`preview_ui.py` | 单轮人工联调、接触提示及离线预览 |
 
 维护时使用静态语法检查、UI 生成、配置与脚本离线渲染、人工预览，以及明确安排的人工联调。代码注释和文档字符串使用中文。设备运动约束、停止确认和输入契约在各自负责的边界处理。
+
+## 六轴关节阻抗（direct_torque）
+
+主窗口新增“关节阻抗”，打开非模态窗口；关闭子窗口只隐藏，主窗口全局停止仍有效。六轴始终执行 `K*(q_ref-q)+D*(qd_ref-qd)`，机器人端固定 500 Hz，摩擦补偿两组数组均固定为 **0**，不额外叠加重力。初始 K 为 `[120,160,100,35,25,15]` N·m/rad，D 为 `[24,32,20,7,5,3]` N·m·s/rad。这是仿真候选参数，尚未做实机调参。
+
+**URSim 的 direct_torque 不驱动模拟关节运动**，这是 [UR 官方示例说明](https://docs.universal-robots.com/Universal_Robots_ROS_Documentation/rolling/doc/ur_client_library/doc/examples/direct_torque_control.html)中的已知限制。因此 URSim 日志用于检查脚本、时序、目标源和停止，不代表真实跟踪性能。本次仅保留 URSim 实际采样曲线。
+
+操作顺序：
+
+1. 连接并准备好机器人，停止普通运动。当前预设要求零负载、零 TCP、NORMAL、静止、速度滑条 100%；程序不会改写安装参数。
+2. 打开“关节阻抗”，选择“轨迹文件”，加载 `trajectories/impedance_j1.csv`，或用“生成轨迹”创建静止、单轴往返、六轴错峰、带包络正弦。内部和 CSV 使用 rad。
+3. 修改六轴 K/D、指令力矩/变化率、参考速度/加速度后点击“应用参数”。其他守卫与安装参数可通过完整 JSON 预设编辑；导入后也要应用。预设示例为 `presets/impedance_ursim_zero_friction.json`。
+4. 设置“轨迹播放采样率（行/秒）”，预览时长及曲线，再点击“开始阻抗”。修改参数、源、文件或频率必须先停止。相对轨迹只绑定一次机器人确认的锚点；绝对轨迹先显式“移动到轨迹起点”。
+5. 末点收敛、保持后自动停止，或点击停止。停止确认要求新鲜反馈、程序退出、连续静止；失败则保持控制权，禁止其他运动。
+6. 遥操作选择“遥操作”，先用现有“同步主从”，再开始；后台读取现有 `JOINT_TRACK` 接收身份。缓存重复读取不刷新年龄，断流或模式改变后停止，不自动恢复。文件模式不驱动夹爪。
+
+每轮自动记录到 `logs/impedance/<run>/`，包括完整参数、版本、安装配置、轨迹副本、渲染脚本、源/采纳身份、100 Hz 同周期冻结样本、500 Hz 实际收到的标准遥测、停止事件和摘要。界面只按 10 Hz 显示最新样本；界面源曲线是异步显示，离线分析才按 `adopted_reference_seq` 对齐源目标。`tau_cmd` 不含 UR 内部补偿，不等于电机总力矩。
+
+```bash
+conda activate urcontrol
+# 离线预览；不连接设备
+python preview_ui.py --impedance
+# 生成、执行和分析；执行入口默认只连接 127.0.0.1
+python generate_impedance_trajectory.py /tmp/j1.csv --axis 1 --amplitude .05 --segment 2
+python run_impedance_trajectory.py /tmp/j1.csv --play-hz 100
+python analyze_impedance_log.py logs/impedance/<run>
+# 标准文件采样率为 100；50/100/200 行每秒分别为 0.5/1/2 倍速
+```
+
+实现与结果见 [阻抗验证记录](results/impedance/验证记录.md)。普通运动、导纳、阻抗共用执行权检查；共享传输保持原导纳导入兼容，暂停叠加发送异常由独立 Dashboard/只读 RTDE 监督收尾。停止后不自动上传旧位置控制脚本。

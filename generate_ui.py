@@ -8,7 +8,7 @@ import sys
 def generate():
     """使用当前 Python 环境中的 PyQt5 生成器，不计算内容签名。"""
     directory = Path(__file__).resolve().parent
-    for name in ("classic_window", "admittance_window"):
+    for name in ("classic_window", "admittance_window", "impedance_window"):
         source = directory / (name + ".ui")
         destination = directory / ("ui_" + name + ".py")
         subprocess.run([sys.executable, "-m", "PyQt5.uic.pyuic", str(source),

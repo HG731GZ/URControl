@@ -22,40 +22,7 @@ BRIDGE_QUEUE_CAPACITY = 1024
 STATUS_CAPACITY_BYTES = 131072
 
 
-class _LatestSnapshot:
-    """单格冻结快照，双方锁内只复制 bytes；生产者不等待显示消费者。"""
-
-    def __init__(self, context, capacity: int):
-        self.data = context.RawArray("B", capacity)
-        self.size = context.RawValue("I", 0)
-        self.sequence = context.RawValue("Q", 0)
-        self.lock = context.Lock()
-
-    def publish(self, value: dict) -> bool:
-        """锁忙时保留上一快照，下一次发布直接覆盖为最新状态。"""
-        encoded = pickle.dumps(value, protocol=5)
-        if len(encoded) > len(self.data):
-            raise ValueError("导纳 IPC 快照超过固定槽位容量")
-        if not self.lock.acquire(False):
-            return False
-        try:
-            memoryview(self.data).cast("B")[:len(encoded)] = encoded
-            self.size.value = len(encoded)
-            self.sequence.value += 1
-        finally:
-            self.lock.release()
-        return True
-
-    def read(self, last_sequence: int):
-        """只返回最新完整快照，解码在共享锁之外进行。"""
-        if not self.lock.acquire(False):
-            return last_sequence, None
-        try:
-            sequence = self.sequence.value
-            encoded = bytes(memoryview(self.data).cast("B")[:self.size.value]) if sequence != last_sequence else None
-        finally:
-            self.lock.release()
-        return sequence, None if encoded is None else pickle.loads(encoded)
+from UR_Utils.control_process_ipc import LatestSnapshot as _LatestSnapshot
 
 
 class _ChildLogSink:
@@ -186,7 +153,18 @@ def _process_main(arguments, event_writer, status_slot, reference_slot, stop_eve
     if backend.needs_external_stop_confirmation():
         worker_failed.set()
         service(backend)
-        while parent.is_alive():
+        try:
+            from UR_Utils.control_stop import confirm_stopped
+            deadline = backend.get_status().get('stop_deadline_monotonic_s')
+            if deadline is None:
+                deadline = time.monotonic() + arguments['config']['ADMITTANCE_STOP_TIMEOUT_S']
+            sample = confirm_stopped(arguments['robot_ip'], deadline=deadline,
+                                     speed_limit=admittance_config.stop_speed_limit(arguments['config']),
+                                     record=sink.record)
+            backend.confirm_external_stop(sample)
+        except Exception as exc:
+            sink.record('independent_stop_failed', {'message': str(exc)})
+        while backend.active and parent.is_alive():
             try:
                 sample = confirmation_queue.get(timeout=0.05)
             except Empty:
@@ -237,6 +215,7 @@ class AdmittanceProcess:
         self._process = None
         self._bridge = None
         self._closed = False
+        self._parent_stop_deadline = None
         self._status_sequence = 0
         self._submitted_seq = source_seq
         self._submitted_q = None if q_master is None else list(q_master)
@@ -280,13 +259,15 @@ class AdmittanceProcess:
         """共享停止事件直接到控制拥有者，不经过可能积压的日志队列。"""
         self._stop_event.set()
         with self._lock:
+            if self._parent_stop_deadline is None:
+                self._parent_stop_deadline = time.monotonic() + self.parameters['ADMITTANCE_STOP_TIMEOUT_S']
             if self._status["active"]:
                 self._status = {**self._status, "stopping": True, "starting": False, "running": False}
 
     def stop(self) -> None:
         """等待本轮退出静止及日志桥接收尾，故障时交由父只读连接确认。"""
         self.request_stop()
-        deadline = time.monotonic() + self.parameters["ADMITTANCE_STOP_TIMEOUT_S"]
+        deadline = self._parent_stop_deadline
         while not self._finished.wait(0.01):
             if self.needs_external_stop_confirmation():
                 raise RuntimeError("导纳独立进程停止尚需原只读连接确认")

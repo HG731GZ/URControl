@@ -1,0 +1,129 @@
+{
+  "record_type": "joint_impedance_preset",
+  "schema_version": 1,
+  "parameters": {
+    "JOINT_K": [
+      120,
+      160,
+      100,
+      35,
+      25,
+      15
+    ],
+    "JOINT_D": [
+      24,
+      32,
+      20,
+      7,
+      5,
+      3
+    ],
+    "TAU_MAX_NM": [
+      35,
+      45,
+      30,
+      10,
+      10,
+      8
+    ],
+    "TAU_RATE_MAX_NM_S": [
+      300,
+      400,
+      300,
+      100,
+      100,
+      80
+    ],
+    "REF_MAX_QD_RAD_S": [
+      0.15,
+      0.15,
+      0.15,
+      0.15,
+      0.15,
+      0.15
+    ],
+    "REF_MAX_QDD_RAD_S2": [
+      0.4,
+      0.4,
+      0.4,
+      0.4,
+      0.4,
+      0.4
+    ],
+    "JOINT_POSITION_LIMIT_RAD": [
+      6.283185307179586,
+      6.283185307179586,
+      6.283185307179586,
+      6.283185307179586,
+      6.283185307179586,
+      6.283185307179586
+    ],
+    "ENVELOPE_RAD": [
+      0.35,
+      0.35,
+      0.35,
+      0.35,
+      0.35,
+      0.35
+    ],
+    "ACTUAL_MAX_QD_RAD_S": [
+      0.5,
+      0.5,
+      0.5,
+      0.5,
+      0.5,
+      0.5
+    ],
+    "MAX_ERROR_RAD": [
+      0.18,
+      0.18,
+      0.18,
+      0.18,
+      0.18,
+      0.18
+    ],
+    "VISCOUS_SCALE": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "COULOMB_SCALE": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "SOURCE_TIMEOUT_S": 0.25,
+    "HEARTBEAT_TIMEOUT_S": 0.2,
+    "FEEDBACK_TIMEOUT_S": 0.25,
+    "SEND_TIMEOUT_S": 0.02,
+    "HARD_WATCHDOG_HZ": 1.0,
+    "STOP_ACCEL_RAD_S2": 2.0,
+    "STOP_TIMEOUT_S": 4.0,
+    "STATIONARY_QD_RAD_S": 0.01,
+    "STOP_CONFIRM_S": 0.1,
+    "START_TOLERANCE_RAD": 0.03,
+    "RAMP_S": 0.5,
+    "START_TIMEOUT_S": 8.0,
+    "SATURATION_TIMEOUT_S": 0.5,
+    "END_HOLD_S": 0.5,
+    "END_SETTLE_TIMEOUT_S": 5.0,
+    "PLAYBACK_MAX_LAG_S": 0.1,
+    "MAX_SOURCE_STEP_RAD": 0.1,
+    "CYCLE_MAX_S": 0.003,
+    "EXPECTED_PAYLOAD_KG": 0.0,
+    "EXPECTED_TCP_OFFSET": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  }
+}

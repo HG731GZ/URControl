@@ -167,23 +167,34 @@
         </widget>
        </item>
        <item row="0" column="3">
-        <widget class="QPushButton" name="pushButton_Admittance">
-         <property name="enabled">
-          <bool>true</bool>
-         </property>
-         <property name="text">
-          <string>启动导纳</string>
-         </property>
-         <property name="minimumSize">
-          <size>
-           <width>130</width>
-           <height>40</height>
-          </size>
-         </property>
-         <property name="toolTip">
-          <string>打开导纳界面，默认六轴固定参考、无需主端；在导纳界面点击启动后才开始运动。关闭导纳界面仅隐藏，停止请使用停止导纳或主窗口停止。</string>
-         </property>
-        </widget>
+        <layout class="QHBoxLayout" name="impedanceEntryLayout">
+         <item>
+          <widget class="QPushButton" name="pushButton_Admittance">
+           <property name="enabled">
+            <bool>true</bool>
+           </property>
+           <property name="text">
+            <string>启动导纳</string>
+           </property>
+           <property name="minimumSize">
+            <size>
+             <width>130</width>
+             <height>40</height>
+            </size>
+           </property>
+           <property name="toolTip">
+            <string>打开导纳界面，默认六轴固定参考、无需主端；在导纳界面点击启动后才开始运动。关闭导纳界面仅隐藏，停止请使用停止导纳或主窗口停止。</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="pushButton_Impedance">
+           <property name="text">
+            <string>关节阻抗</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
        </item>
        <item row="1" column="0" colspan="2">
         <widget class="QCheckBox" name="checkBox_AdmittanceLogging">
@@ -214,7 +225,10 @@
           <string>开始遥测</string>
          </property>
          <property name="minimumSize">
-          <size><width>130</width><height>36</height></size>
+          <size>
+           <width>130</width>
+           <height>36</height>
+          </size>
          </property>
          <property name="toolTip">
           <string>连接机械臂后可随时以 500 Hz 记录机器人状态及六轴偏差、碰撞比例；无需启动导纳，不发送运动指令。文件保存在 logs/telemetry。导纳内部时序另勾选“导纳诊断日志”。</string>

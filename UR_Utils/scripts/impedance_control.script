@@ -1,0 +1,292 @@
+def joint_impedance():
+  def now_s():
+    local ts = time(0)
+    return ts.sec + ts.nanosec / 1000000000.0
+  end
+  def absolute(x):
+    return [norm(x[0]),norm(x[1]),norm(x[2]),norm(x[3]),norm(x[4]),norm(x[5])]
+  end
+  def bound(x, lim):
+    return (absolute(x+lim)-absolute(x-lim))*0.5
+  end
+  def root(x):
+    return [sqrt(x[0]),sqrt(x[1]),sqrt(x[2]),sqrt(x[3]),sqrt(x[4]),sqrt(x[5])]
+  end
+  local K = {{JOINT_K}}
+  local D = {{JOINT_D}}
+  local vmax = {{REF_MAX_QD_RAD_S}}
+  local amax = {{REF_MAX_QDD_RAD_S2}}
+  local taumax = {{TAU_MAX_NM}}
+  local trate = {{TAU_RATE_MAX_NM_S}}
+  local qlimit = {{JOINT_POSITION_LIMIT_RAD}}
+  local envelope = {{ENVELOPE_RAD}}
+  local speedguard = {{ACTUAL_MAX_QD_RAD_S}}
+  local errorguard = {{MAX_ERROR_RAD}}
+  local dt = get_steptime()
+  local anchor = get_actual_joint_positions()
+  local qr = anchor
+  local vr = [0,0,0,0,0,0]
+  local source = anchor
+  local tau = [0,0,0,0,0,0]
+  local peak = [0,0,0,0,0,0]
+  local sat_age = [0,0,0,0,0,0]
+  local phase = 1
+  local fault = 0
+  local adopted = 0
+  local source_seq = 0
+  local source_stamp = now_s()
+  local source_age = 0
+  local hb = -1
+  local hb_stamp = now_s()
+  local ramp_start = 0
+  local cycle = 0
+  local started = now_s()
+  local previous = 0
+  local max_interval = 0
+  local max_compute = 0
+  local mask = 0
+  local saturated = 0
+  local shaped = 0
+  global snap_qr = anchor
+  global snap_q = anchor
+  global snap_v = vr
+  global snap_tau = tau
+  global snap_cycle = 0
+  global snap_adopted = 0
+  global snap_phase = 1
+  global snap_fault = 0
+  global snap_mask = 0
+  global snap_peak = peak
+  global snap_interval = 0
+  global snap_compute = 0
+  global snap_saturated = 0
+  global snap_shaped = 0
+  global snap_time = 0
+  global snap_source = 0
+  thread publish():
+    local sent = -1
+    while True:
+      if snap_cycle != sent:
+        enter_critical
+        local sqr = snap_qr
+        local sq = snap_q
+        local sv = snap_v
+        local st = snap_tau
+        local sc = snap_cycle
+        local sa = snap_adopted
+        local sp = snap_phase
+        local sf = snap_fault
+        local sm = snap_mask
+        local se = snap_peak
+        local si = snap_interval
+        local sx = snap_compute
+        local ss = snap_saturated
+        local sh = snap_shaped
+        local stm = snap_time
+        local src = snap_source
+        exit_critical
+        write_output_integer_register(29, sc+1)
+        write_output_integer_register(24, {{RUN_ID}})
+        write_output_integer_register(25, sp)
+        write_output_integer_register(26, sf)
+        write_output_integer_register(27, sa)
+        write_output_integer_register(28, sc)
+        write_output_integer_register(31, sm)
+        write_output_integer_register(32, floor(si*1000000))
+        write_output_integer_register(33, floor(sx*1000000))
+        write_output_integer_register(34, 0)
+        if sf == 7:
+          write_output_integer_register(34, 1)
+        end
+        write_output_integer_register(46, 0)
+        if sp == 5 or sf != 0:
+          write_output_integer_register(46, 1)
+        end
+        write_output_integer_register(35, ss)
+        write_output_integer_register(36, sh)
+        write_output_integer_register(37, src)
+        write_output_integer_register(44, floor(stm*1000))
+        write_output_integer_register(45, {{RUN_ID}})
+        local j = 0
+        while j < 6:
+          write_output_float_register(24+j, sqr[j])
+          write_output_float_register(30+j, sq[j])
+          write_output_float_register(36+j, sv[j])
+          write_output_float_register(42+j, st[j])
+          write_output_integer_register(38+j, floor(se[j]*1000000))
+          j = j+1
+        end
+        write_output_integer_register(30, sc+1)
+        sent = sc
+      end
+      sync()
+    end
+  end
+  local publisher = run publish()
+  rtde_set_watchdog("input_int_register_27", {{HARD_WATCHDOG_HZ}}, "stop")
+  while phase < 5 and fault == 0:
+    local tick = now_s()
+    if read_input_integer_register(26) == 2:
+      phase = 5
+    end
+    if read_input_integer_register(24) != 1 or read_input_integer_register(25) != {{RUN_ID}}:
+      fault = 1
+    end
+    local new_hb = read_input_integer_register(27)
+    if new_hb != hb:
+      hb = new_hb
+      hb_stamp = tick
+    elif tick-hb_stamp > {{HEARTBEAT_TIMEOUT_S}}:
+      fault = 2
+    end
+    local submit = read_input_integer_register(30)
+    if submit != adopted and read_input_integer_register(33) == submit:
+      local incoming = [read_input_float_register(24),read_input_float_register(25),read_input_float_register(26),read_input_float_register(27),read_input_float_register(28),read_input_float_register(29)]
+      local seq = read_input_integer_register(29)
+      local age = read_input_float_register(30)
+      local valid = read_input_integer_register(31)
+      if submit == read_input_integer_register(30) and submit == read_input_integer_register(33):
+        if valid != 1:
+          fault = 3
+        end
+        local j = 0
+        while j < 6:
+          if norm(incoming[j]) > qlimit[j] or norm(incoming[j]-anchor[j]) > envelope[j]:
+            fault = 4
+          end
+          if adopted > 0 and norm(incoming[j]-source[j]) > {{MAX_SOURCE_STEP_RAD}}:
+            fault = 4
+          end
+          if phase == 1 and norm(incoming[j]-anchor[j]) > {{START_TOLERANCE_RAD}}:
+            fault = 4
+          end
+          j = j+1
+        end
+        source = incoming
+        adopted = submit
+        if seq != source_seq:
+          source_seq = seq
+          source_stamp = tick
+          source_age = age
+        end
+      end
+    end
+    if tick-source_stamp+source_age > {{SOURCE_TIMEOUT_S}}:
+      fault = 3
+    end
+    local q = get_actual_joint_positions()
+    local v = get_actual_joint_speeds()
+    local j = 0
+    while j < 6:
+      if norm(q[j]) > qlimit[j] or norm(q[j]-anchor[j]) > envelope[j] or norm(v[j]) > speedguard[j]:
+        fault = 5
+      end
+      j = j+1
+    end
+    if phase == 1 and read_input_integer_register(26) == 1 and adopted > 0:
+      phase = 2
+      ramp_start = tick
+    end
+    if phase == 1 and tick-started > {{START_TIMEOUT_S}}:
+      fault = 6
+    end
+    if phase >= 2 and phase < 5:
+      if previous > 0:
+        local interval = tick-previous
+        if interval > max_interval:
+          max_interval = interval
+        end
+        if interval > {{CYCLE_MAX_S}}:
+          fault = 7
+        end
+      end
+      previous = tick
+      local gain_scale = 1.0
+      if phase == 2:
+        gain_scale = (tick-ramp_start)/{{RAMP_S}}
+        if gain_scale >= 1:
+          gain_scale = 1
+          phase = 3
+        end
+      end
+      if phase == 3 and read_input_integer_register(32) == 1:
+        phase = 4
+      end
+      local mask = 0
+      local shaped_cycle = 0
+      if phase >= 3:
+        local delta = source-qr
+        local distance = absolute(delta)
+        local desired_v = delta/(distance+[0.000000000001,0.000000000001,0.000000000001,0.000000000001,0.000000000001,0.000000000001])*(root(amax*amax*dt*dt+2*amax*distance)-amax*dt)
+        desired_v = bound(desired_v, vmax)
+        local dv = bound(desired_v-vr, amax*dt)
+        if norm(dv-(desired_v-vr)) > 0.000000001:
+          shaped_cycle = 1
+        end
+        vr = vr+dv
+        qr = qr+vr*dt
+      end
+      local error = qr-q
+      local magnitude = absolute(error)
+      peak = (peak+magnitude+absolute(peak-magnitude))*0.5
+      local raw = gain_scale*(K*error+D*(vr-v))
+      local bounded = bound(raw,taumax)
+      tau = tau+bound(bounded-tau,trate*dt)
+      local j = 0
+      while j < 6:
+        if magnitude[j] > errorguard[j]:
+          fault = 8
+        end
+        if norm(raw[j]) > taumax[j]:
+          sat_age[j] = sat_age[j]+dt
+          mask = mask+pow(2,j)
+          if sat_age[j] > {{SATURATION_TIMEOUT_S}}:
+            fault = 9
+          end
+        else:
+          sat_age[j] = 0
+        end
+        j = j+1
+      end
+      if mask > 0:
+        saturated = saturated+1
+      end
+      shaped = shaped+shaped_cycle
+    end
+    cycle = cycle+1
+    local compute = now_s()-tick
+    if compute > max_compute:
+      max_compute = compute
+    end
+    if cycle % 5 == 0 or phase == 1 or phase == 5 or fault != 0:
+      enter_critical
+      snap_qr = qr
+      snap_q = q
+      snap_v = v
+      snap_tau = tau
+      snap_cycle = cycle
+      snap_adopted = adopted
+      snap_phase = phase
+      snap_fault = fault
+      snap_mask = mask
+      snap_peak = peak
+      snap_interval = max_interval
+      snap_compute = max_compute
+      snap_saturated = saturated
+      snap_shaped = shaped
+      snap_time = tick-started
+      snap_source = source_seq
+      exit_critical
+    end
+    if fault != 0 or phase == 5:
+      break
+    elif phase == 1:
+      sync()
+    else:
+      direct_torque(tau, viscous_scale=[0,0,0,0,0,0], coulomb_scale=[0,0,0,0,0,0])
+    end
+  end
+  stopj({{STOP_ACCEL_RAD_S2}})
+  sleep(0.02)
+  kill publisher
+end

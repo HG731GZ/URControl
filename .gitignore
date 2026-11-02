@@ -21,3 +21,5 @@ data/
 /logs/admittance/
 /logs/telemetry/
 /.agents/
+/results/
+/logs/impedance/

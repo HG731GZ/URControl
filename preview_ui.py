@@ -303,12 +303,21 @@ def create_admittance_preview(scenario='fixed-joint', settings=None):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='URControl 离线界面预览，不连接设备')
+    parser.add_argument('--impedance', action='store_true', help='预览关节阻抗窗口')
     parser.add_argument('--admittance', action='store_true', help='预览独立导纳窗口')
     parser.add_argument('--scenario', choices=('teleop-joint', 'teleop-cartesian', 'fixed-joint', 'fixed-cartesian', 'diagnostic-joint', 'preset-joint'),
                         default='fixed-joint', help='固定演示场景；未开放场景仅可离线显示')
     args = parser.parse_args()
     configure_high_dpi()
     app = QtWidgets.QApplication(sys.argv)
-    window = create_admittance_preview(args.scenario) if args.admittance else PreviewWindow()
+    if args.impedance:
+        from impedance_window import ImpedanceWindow
+        from UR_Utils.impedance_trajectory import generate
+        from UR_Utils.URImpedanceController import idle_impedance_status
+        window = ImpedanceWindow()
+        window.trajectory = generate()
+        window.update_status(idle_impedance_status(), ready=True)
+    else:
+        window = create_admittance_preview(args.scenario) if args.admittance else PreviewWindow()
     window.show()
     sys.exit(app.exec_())

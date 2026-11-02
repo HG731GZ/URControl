@@ -18,6 +18,7 @@ from RealSenseCamera import Camera, CameraError
 from window_display import WindowDisplayController, configure_high_dpi
 from ui_classic_window import Ui_MainWindow
 from admittance_window import AdmittanceWindow, OPERATOR_EVENTS
+from impedance_lifecycle import ImpedanceIntegration
 from admittance_lifecycle import AdmittanceLifecycleWorker, AdmittanceLogFinishWorker
 from admittance_logger import AdmittanceLogger
 from robot_telemetry import RobotTelemetryRecorder
@@ -73,7 +74,7 @@ ADMITTANCE_HOST_TIMING_FIELDS = (
 ADMITTANCE_ROBOT_HEARTBEAT_FIELDS = ('heartbeat_echo', 'heartbeat_age_us', 'heartbeat_max_interval_us')
 
 
-class MainWindow(QMainWindow):
+class MainWindow(ImpedanceIntegration, QMainWindow):
     def __init__(self):
         super().__init__()
         self._display_settings = QtCore.QSettings('URControl', 'Display')
@@ -126,6 +127,7 @@ class MainWindow(QMainWindow):
         self._last_collected_udp_time = None
         self._last_collected_robot_time = None
         self._ui_timing = {}
+        self.init_impedance()
         self.initialize_devices()
         self.initialize_collector()
         self.create_timers()
@@ -262,7 +264,7 @@ class MainWindow(QMainWindow):
             ('URScriptMoveJ', self.on_move_joint), ('RTDEUDP', self.on_start_udp),
             ('StopRTDE', self.on_stop_control), ('HOME', self.on_home),
             ('UDPSync', self.on_sync_udp), ('Collect', self.on_collect),
-            ('Admittance', self.on_admittance), ('Telemetry', self.on_telemetry),
+            ('Admittance', self.on_admittance), ('Impedance', self.on_impedance), ('Telemetry', self.on_telemetry),
         ):
             getattr(self, f'pushButton_{name}').clicked.connect(callback)
         self.horizontalSlider_SpeedSlider.valueChanged.connect(self.on_speed_changed)
@@ -360,6 +362,9 @@ class MainWindow(QMainWindow):
         return True
 
     def on_stop_control(self):
+        if self.impedance_busy():
+            self.request_impedance_stop()
+            return False
         if self.admittance_mode != 'off':
             self.request_admittance_stop()
             return False
@@ -372,6 +377,9 @@ class MainWindow(QMainWindow):
 
     def stop_control(self, *, stop_script=False):
         """先关闭指令来源，确认执行后端停止后才解除运动互斥。"""
+        if self.impedance_busy():
+            self.request_impedance_stop()
+            return False
         if self.admittance_mode != 'off':
             self.request_admittance_stop()
             return False
@@ -454,7 +462,7 @@ class MainWindow(QMainWindow):
         self.robot_ready = (state is not None and state.robot_mode == ROBOT_MODE_RUNNING
                             and state.safety_mode in (1, 2))
         if was_ready and not self.robot_ready:
-            if self.admittance_mode != 'off':
+            if self.admittance_mode != 'off' or self.impedance_busy():
                 self.defer_until_admittance_stopped(self.release_unready_controller, automatic=True)
             else:
                 self.on_stop_control()
@@ -488,7 +496,7 @@ class MainWindow(QMainWindow):
         connected = self.connected_ip is not None
         ready = connected and self.robot_ready
         rtde_ready = ready and self.rtde_controller is not None
-        idle = self.control_source == 'idle' and self.admittance_mode == 'off'
+        idle = self.control_source == 'idle' and self.admittance_mode == 'off' and not self.impedance_busy()
         for name in ('Shutdown', 'URPowerOn', 'URBrakeRelease', 'Stop', 'StopRTDE'):
             getattr(self, f'pushButton_{name}').setEnabled(connected)
         for name in ('HOME', 'URScriptMoveJ'):
@@ -505,7 +513,7 @@ class MainWindow(QMainWindow):
                   (self.admittance_window is None or not self.admittance_window.isVisible()))
         self.label_AdmittanceStatus.setText(
             self._admittance_message + ('；监视窗口已隐藏，控制继续' if hidden else ''))
-        self.horizontalSlider_SpeedSlider.setEnabled(rtde_ready and self._admittance_worker is None)
+        self.horizontalSlider_SpeedSlider.setEnabled(rtde_ready and self._admittance_worker is None and not self.impedance_busy())
         for button in self.jog_buttons:
             button.setEnabled(rtde_ready and (idle or self.control_source == 'jog'))
         self.update_admittance_window_context()
@@ -977,7 +985,9 @@ class MainWindow(QMainWindow):
         self.update_buttons()
 
     def defer_until_admittance_stopped(self, action, *, automatic=False):
-        """断开、下电和退出均在同一停止确认之后执行。"""
+        """断开、下电和退出等待当前自定义后端的停止确认。"""
+        if self.defer_until_impedance_stopped(action):
+            return True
         if self.admittance_mode == 'off':
             return False
         if not automatic or self._admittance_after_stop is None:
@@ -1222,7 +1232,7 @@ class MainWindow(QMainWindow):
     def on_speed_changed(self):
         speed_percent = self.horizontalSlider_SpeedSlider.value()
         self.label_SpeedSlider.setText(f'限速: {speed_percent}%')
-        if self.rtde_controller is not None and self._admittance_worker is None:
+        if self.rtde_controller is not None and self._admittance_worker is None and not self.impedance_busy():
             self.rtde_controller.set_speed_slider(speed_percent / 100)
 
     def update_torque_subscription(self):
@@ -1261,7 +1271,18 @@ class MainWindow(QMainWindow):
 
     def update_robot_view(self):
         command = self.get_udp_snapshot()
-        if command is None:
+        impedance = self.rtde_controller.get_impedance_status() if self.rtde_controller else {}
+        if impedance.get('active'):
+            sample = impedance.get('sample')
+            target = sample['q_ref'] if sample else impedance.get('q_source')
+            self.lineEdit_UDP1.setText('阻抗生效参考')
+            if target is not None:
+                for index, angle_rad in enumerate(target, 2):
+                    getattr(self, f'lineEdit_UDP{index}').setText(f'{np.rad2deg(angle_rad):.4f}')
+                if self.checkBox_UDPVisual.isChecked():
+                    self.robot_visualizer.update_virtual(np.append(target, 0.0))
+            self.lineEdit_UDP8.clear()
+        elif command is None:
             for index in range(1, 9):
                 getattr(self, f'lineEdit_UDP{index}').clear()
         else:
@@ -1568,6 +1589,10 @@ class MainWindow(QMainWindow):
                 self.admittance_monitor_timer.start(50)
             event.ignore()
             return
+        self._impedance_timer.stop()
+        if self.impedance_window is not None:
+            self.impedance_window.hide()
+            self.impedance_window.deleteLater()
         self.udp_client.stop()
         for camera in (self.camera_1, self.camera_2):
             if camera is not None:
