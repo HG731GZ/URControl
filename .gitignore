@@ -20,3 +20,5 @@ Thumbs.db
 data/
 /URControl_代码修改方案.md
 /URControl_Architecture_Analysis.md
+/.agents/
+/logs/
