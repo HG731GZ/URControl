@@ -17,7 +17,7 @@ def check_environment():
     print(f'Python：{sys.executable}', flush=True)
     print(f'版本：{sys.version.split()[0]}', flush=True)
     for module in (
-        'numpy', 'PyQt5.QtCore', 'PyQt5.QtWidgets', 'cv2',
+        'numpy', 'matplotlib', 'PyQt5.QtCore', 'PyQt5.QtWidgets', 'cv2',
         'serial', 'minimalmodbus', 'pyrealsense2',
         'pinocchio', 'OpenGL.GL', 'trimesh',
         'rtde.rtde', 'rtde_control', 'rtde_receive', 'rtde_io',
