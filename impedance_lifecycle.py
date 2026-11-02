@@ -85,7 +85,10 @@ class ImpedanceIntegration:
             or self.admittance_mode != "off"
             or self.rtde_controller is None
         ):
-            self.append_message("控制权尚未空闲，不能开始阻抗")
+            message = "控制权尚未空闲，不能开始阻抗"
+            self.append_message(message)
+            if self.impedance_window:
+                self.impedance_window.tuning_start_failed(message)
             return
         self._impedance_event = threading.Event()
         kwargs["stop_event"] = self._impedance_event
@@ -143,6 +146,10 @@ class ImpedanceIntegration:
                 self._impedance_adapter.start()
         worker.deleteLater()
         self.refresh_impedance()
+        if worker.error and self.impedance_window:
+            tuning = self.impedance_window.tuning_window
+            if tuning and tuning.run_id is None:
+                tuning.start_failed(worker.error)
 
     def request_impedance_stop(self):
         if self._impedance_event:
@@ -216,6 +223,7 @@ class ImpedanceIntegration:
         elif self._impedance_owned and self.gripper is not None:
             self.gripper.pause()
         if self.impedance_window:
+            robot_state = self.get_robot_snapshot()
             self.impedance_window.update_status(
                 status,
                 ready=self.robot_ready
@@ -223,6 +231,8 @@ class ImpedanceIntegration:
                 and self.control_source in ("idle", "impedance")
                 and self.admittance_mode == "off",
                 busy=self._impedance_worker is not None,
+                actual_q=robot_state.q_actual if robot_state else None,
+                actual_qd=robot_state.qd_actual if robot_state else None,
             )
         if hasattr(self, "pushButton_Impedance"):
             hidden = self.impedance_busy() and (

@@ -1,6 +1,5 @@
 """唯一通信进程内的阻抗控制后端；闭环只在 URScript 内执行。"""
 
-import hashlib
 import sys
 from importlib.metadata import version as package_version
 import time
@@ -94,7 +93,7 @@ class URImpedanceController:
         except Exception as exc:
             self.request_stop(str(exc))
         finally:
-            # Always supervise independently of the failed data path. No old RTDE timestamps count.
+            # 停止监督独立于故障数据通道，旧的 RTDE 时间戳不参与静止确认。
             if self.uploaded:
                 self.request_stop()
                 try:
@@ -160,7 +159,7 @@ class URImpedanceController:
         if baseline.target_speed_fraction != 1:
             raise RuntimeError("要求速度滑条及速度缩放 100%")
         anchor = list(baseline.actual_q)
-        # Input is seeded before upload, but run permission waits for the robot ARMED anchor.
+        # 上传前初始化输入，收到机器人就绪锚点后才允许进入运行。
         self.logger.update_context(
             {
                 "controller_version": version,
@@ -179,13 +178,10 @@ class URImpedanceController:
             return
         script = config.render_script(cfg, self.run_id)
         (self.logger.directory / "control.script").write_text(script)
-        self.logger.update_context(
-            {"script_sha256": hashlib.sha256(script.encode()).hexdigest()}
-        )
         self.script_client = ScriptClient(
             self.ip, port=30001, timeout=1, auto_connect=True
         )
-        self.uploaded = True  # Partial upload is still a potentially running program.
+        self.uploaded = True  # 部分上传也可能已经启动程序，需要停止监督。
         self.script_client.send_script(script)
         start = time.monotonic()
         last_feedback = start
@@ -210,7 +206,7 @@ class URImpedanceController:
                 return
             if self.logger.error:
                 raise RuntimeError("日志写盘失败：" + self.logger.error)
-            # Bounded drain avoids letting queued historical feedback masquerade as fresh state.
+            # 有界排空接收队列，避免把历史积压反馈当作新鲜状态。
             for _ in range(32):
                 state = conn.receive_once()
                 if state is None:
@@ -263,7 +259,6 @@ class URImpedanceController:
                             )
                             self.logger.update_context(
                                 {
-                                    "trajectory_sha256": self.trajectory.sha256,
                                     "file_hz": self.trajectory.sample_hz,
                                 }
                             )
@@ -371,7 +366,7 @@ class URImpedanceController:
                         settled_since = None
                     if now - end_since > cfg["END_SETTLE_TIMEOUT_S"]:
                         raise RuntimeError("末点收敛超时")
-            # 100 Hz target + independent 50 Hz heartbeat; only complete recipes are transmitted.
+            # 目标以 100 Hz 发布，心跳独立为 50 Hz；只发送完整配方。
             if now >= getattr(self, "_next_send", 0):
                 self._send(packet)
                 self._next_send = now + 0.01

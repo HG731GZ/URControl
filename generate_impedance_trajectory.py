@@ -20,9 +20,7 @@ def main():
         a.kind, a.axis - 1, a.amplitude, a.segment, a.hold, a.sample_hz
     )
     trajectory.save(a.output)
-    print(
-        f"{len(trajectory.rows)} rows, {trajectory.duration():.3f} s, {trajectory.sha256}"
-    )
+    print(f"{len(trajectory.rows)} 行，时长 {trajectory.duration():.3f} 秒")
 
 
 if __name__ == "__main__":

@@ -83,6 +83,10 @@ class AdmittanceTrendWidget(QWidget):
         self._plot_rect = rect
         now = self._data["now"]
         earliest = now - self._window
+        explicit_range = self._data.get("time_range")
+        if explicit_range is not None:
+            earliest, now = explicit_range
+        span = max(now - earliest, 0.001)
         visible_series = []
         y_values = []
         for series in self._data["series"]:
@@ -94,7 +98,7 @@ class AdmittanceTrendWidget(QWidget):
         low, high = low - margin, high + margin
 
         def point_xy(point):
-            return QPointF(rect.left() + (point["time"] - earliest) / self._window * rect.width(),
+            return QPointF(rect.left() + (point["time"] - earliest) / span * rect.width(),
                            rect.bottom() - (point["value"] - low) / (high - low) * rect.height())
 
         painter.setPen(QColor("#607084"))
@@ -111,8 +115,10 @@ class AdmittanceTrendWidget(QWidget):
             painter.setPen(QColor("#e6eaf0"))
             painter.drawLine(QPointF(x, rect.top()), QPointF(x, rect.bottom()))
             painter.setPen(QColor("#607084"))
-            painter.drawText(QRectF(x - 28, rect.bottom() + 8, 56, 20), Qt.AlignCenter,
-                             f"{(fraction - 1) * self._window:.0f} s")
+            label_x = min(max(0, x - 28), self.width() - 56) if explicit_range is not None else x - 28
+            painter.drawText(QRectF(label_x, rect.bottom() + 8, 56, 20), Qt.AlignCenter,
+                             (f"{earliest + fraction * span:.1f} s" if explicit_range is not None
+                              else f"{(fraction - 1) * self._window:.0f} s"))
         painter.setPen(QPen(QColor("#a5b0c0"), 1))
         painter.drawRect(rect)
         painter.save()
@@ -139,9 +145,10 @@ class AdmittanceTrendWidget(QWidget):
         if self._cursor_x is not None:
             painter.setPen(QPen(QColor("#64748b"), 1, Qt.DashLine))
             painter.drawLine(QPointF(self._cursor_x, rect.top()), QPointF(self._cursor_x, rect.bottom()))
-            cursor_time = earliest + (self._cursor_x - rect.left()) / rect.width() * self._window
-            readings = [f"光标相对当前 {cursor_time - now:.3f} s"]
-            tolerance = self._window * 8.0 / rect.width()
+            cursor_time = earliest + (self._cursor_x - rect.left()) / rect.width() * span
+            readings = [f"时间 {cursor_time:.3f} s" if explicit_range is not None
+                        else f"光标相对当前 {cursor_time - now:.3f} s"]
+            tolerance = span * 8.0 / rect.width()
             for series, points in visible_series:
                 candidates = [p for p in points if p["valid"] and math.isfinite(p["value"])]
                 if candidates:

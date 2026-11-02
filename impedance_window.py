@@ -7,8 +7,9 @@ from PyQt5 import QtCore, QtWidgets
 from ui_impedance_window import Ui_ImpedanceWindow
 from impedance_parameters import ImpedanceParameters
 from impedance_monitor import ImpedanceMonitor
-from UR_Utils.impedance_trajectory import JointTrajectory, generate
-from UR_Utils.impedance_config import snapshot
+from UR_Utils.impedance_trajectory import JointTrajectory
+from UR_Utils.impedance_config import snapshot, validate
+from impedance_tuning_window import ImpedanceTuningWindow
 
 
 class ImpedanceWindow(QtWidgets.QWidget):
@@ -35,6 +36,8 @@ class ImpedanceWindow(QtWidgets.QWidget):
         self._active = False
         self._ready = False
         self._status = {}
+        self.tuning_window = None
+        self._current_q = self._current_qd = None
         self.monitor = ImpedanceMonitor(self)
         self.ui.plotLayout.addWidget(self.monitor)
         table = self.ui.parameterTable
@@ -107,45 +110,50 @@ class ImpedanceWindow(QtWidgets.QWidget):
             self._error(exc)
 
     def generate(self):
-        kind, ok = QtWidgets.QInputDialog.getItem(
-            self,
-            "生成轨迹",
-            "轨迹类型",
-            ["single", "hold", "staggered", "sine"],
-            editable=False,
-        )
-        if not ok:
-            return
-        amplitude, ok = QtWidgets.QInputDialog.getDouble(
-            self, "生成轨迹", "幅值 rad", 0.05, 0, 0.3, 4
-        )
-        if not ok:
-            return
-        segment, ok = QtWidgets.QInputDialog.getDouble(
-            self, "生成轨迹", "运动段时长 s", 2, 0.2, 60, 2
-        )
-        if not ok:
-            return
-        hold, ok = QtWidgets.QInputDialog.getDouble(
-            self, "生成轨迹", "保持时长 s", 0.5, 0, 60, 2
-        )
-        if not ok:
-            return
-        hz, ok = QtWidgets.QInputDialog.getDouble(
-            self, "生成轨迹", "名义采样率 Hz", 100, 1, 1000, 1
-        )
-        if not ok:
-            return
-        self.trajectory = generate(
-            kind, self.ui.axisCombo.currentIndex(), amplitude, segment, hold, hz
-        )
-        self.ui.playHz.setValue(hz)
+        try:
+            if self.tuning_window and (
+                self.tuning_window.executing or self.tuning_window.report_worker
+            ):
+                self.tuning_window.show()
+                self.tuning_window.raise_()
+                return
+            if not self._draft_valid:
+                raise ValueError("请先修正阻抗参数表中的无效数字")
+            cfg = validate(self.parameters.draft)
+            if self.tuning_window is None:
+                self.tuning_window = ImpedanceTuningWindow(
+                    cfg, self.ui.axisCombo.currentIndex(), self
+                )
+                self.tuning_window.start_requested.connect(self._start_tuning)
+                self.tuning_window.stop_requested.connect(self.stop_requested.emit)
+            elif cfg != self.tuning_window.config and not self.tuning_window.executing:
+                self.tuning_window.config = cfg
+                self.tuning_window._fill_axis()
+                self.tuning_window._invalidate()
+            self.tuning_window.update_context(
+                self._status,
+                self._ready,
+                self._active,
+                self._current_q,
+                self._current_qd,
+            )
+            self.tuning_window.show()
+            self.tuning_window.raise_()
+        except Exception as exc:
+            self._error(exc)
+
+    def _start_tuning(self, kwargs):
+        self.parameters.draft = deepcopy(kwargs["config"])
+        self.parameters.apply()
+        self.parameters.effective = deepcopy(self.parameters.prepared)
+        self.tuning_window.config = deepcopy(kwargs["config"])
+        self._fill()
         self.describe()
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self, "保存生成轨迹", "impedance.csv", "CSV (*.csv)"
-        )
-        if path:
-            self.trajectory.save(path)
+        self.start_requested.emit(kwargs)
+
+    def tuning_start_failed(self, message):
+        if self.tuning_window:
+            self.tuning_window.start_failed(message)
 
     def preview(self):
         if self.trajectory is None:
@@ -274,8 +282,11 @@ class ImpedanceWindow(QtWidgets.QWidget):
         )
         self.ui.stopButton.setEnabled(self._active)
 
-    def update_status(self, status, ready=False, busy=False):
+    def update_status(
+        self, status, ready=False, busy=False, actual_q=None, actual_qd=None
+    ):
         self._status = status
+        self._current_q, self._current_qd = actual_q, actual_qd
         self._active = status.get("active", False) or busy
         self._ready = ready
         phase = status.get("phase", "IDLE")
@@ -300,8 +311,12 @@ class ImpedanceWindow(QtWidgets.QWidget):
             "sync",
         ):
             getattr(self.ui, name + "Button").setEnabled(not self._active)
+        if self.tuning_window and self.tuning_window.executing:
+            self.ui.generateButton.setEnabled(True)
         for widget in (self.ui.parameterTable, self.ui.sourceCombo, self.ui.playHz):
             widget.setEnabled(not self._active)
+        if self.tuning_window:
+            self.tuning_window.update_context(status, ready, busy, actual_q, actual_qd)
         self.monitor.update_status(status)
         self.describe()
 

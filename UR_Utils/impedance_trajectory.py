@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass
 import csv
-import hashlib
 import io
 import math
 import numpy as np
@@ -87,10 +86,6 @@ class JointTrajectory:
         writer.writerows(self.rows)
         return output.getvalue()
 
-    @property
-    def sha256(self):
-        return hashlib.sha256(self.csv_text().encode()).hexdigest()
-
     def save(self, path):
         from pathlib import Path
 
@@ -163,3 +158,38 @@ def generate(
                 rows.extend([goal.copy() for _ in range(round(hold_s * sample_hz))])
     rows.extend([np.zeros(6) for _ in range(max(1, round(hold_s * sample_hz)))])
     return JointTrajectory(tuple(map(tuple, rows)), sample_hz)
+
+
+def generate_axis_tuning(anchor, axis, offset_rad, max_speed_rad_s, config):
+    """从当前角度依次到正偏置、负偏置和起点，三段均为五次平滑曲线。"""
+    if axis not in range(6) or len(anchor) != 6:
+        raise ValueError("目标轴或当前位置无效")
+    if not all(math.isfinite(v) for v in (*anchor, offset_rad, max_speed_rad_s)):
+        raise ValueError("轨迹参数必须为有限数")
+    if offset_rad == 0 or max_speed_rad_s <= 0:
+        raise ValueError("角度偏置不能为零，最大速度必须为正")
+    hz = 100.0
+    speed = min(max_speed_rad_s, config["REF_MAX_QD_RAD_S"][axis] * 0.85)
+    acceleration = config["REF_MAX_QDD_RAD_S2"][axis] * 0.85
+    start = np.asarray(anchor, dtype=float)
+    rows = [start.copy()]
+    for offset in (offset_rad, -offset_rad, 0.0):
+        goal = np.asarray(anchor, dtype=float).copy()
+        goal[axis] += offset
+        distance = abs(goal[axis] - start[axis])
+        # 五次插值的峰值速度系数为 1.875，峰值加速度系数为 10/√3。
+        duration = max(
+            1.875 * distance / speed,
+            math.sqrt((10 / math.sqrt(3)) * distance / acceleration),
+            0.1,
+        )
+        count = math.ceil(duration * hz)
+        if len(rows) + count > 60001:
+            raise ValueError("轨迹超过 600 秒，请提高最大速度或减小角度偏置")
+        for index in range(1, count + 1):
+            u = index / count
+            blend = 10 * u**3 - 15 * u**4 + 6 * u**5
+            rows.append(start + (goal - start) * blend)
+        start = goal
+    trajectory = JointTrajectory(tuple(map(tuple, rows)), hz, "absolute")
+    return trajectory.bind(anchor, config, hz)
