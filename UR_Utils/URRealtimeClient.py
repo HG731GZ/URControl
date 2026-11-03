@@ -80,6 +80,7 @@ class URRealtimeClient(URTcpClient):
         self._last_error: Optional[BaseException] = None
         self._frame_count: int = 0
         self._last_update_time: Optional[float] = None
+        self._last_update_monotonic: Optional[float] = None
 
         if auto_connect:
             self.connect()
@@ -118,6 +119,7 @@ class URRealtimeClient(URTcpClient):
             self._last_error = None
             self._frame_count = 0
             self._last_update_time = None
+            self._last_update_monotonic = None
 
         self._stop_reader_event.clear()
         self.connect()
@@ -181,14 +183,15 @@ class URRealtimeClient(URTcpClient):
                     self._last_error = None
                     self._frame_count += 1
                     self._last_update_time = time.time()
+                    self._last_update_monotonic = time.monotonic()
                     self._state_cond.notify_all()
 
             except socket.timeout as e:
-                # timeout 不一定代表连接断开，可能只是短时间没收到数据。
+                # 半帧超时后不能丢弃已读前缀继续解包，交由调用方显式重连。
                 with self._state_cond:
                     self._last_error = e
                     self._state_cond.notify_all()
-                continue
+                break
 
             except OSError as e:
                 # close() 时也会触发 OSError，此时不作为异常报错。
@@ -262,6 +265,17 @@ class URRealtimeClient(URTcpClient):
     # ============================================================
     # 对外数据接口
     # ============================================================
+
+    def get_snapshot(self) -> dict:
+        """一次读取同一帧的状态、接收时刻、帧计数和错误。"""
+        with self._state_cond:
+            return {
+                "state": self._latest_state,
+                "received_time": self._last_update_time,
+                "received_monotonic": self._last_update_monotonic,
+                "frame_count": self._frame_count,
+                "error": self._last_error,
+            }
 
     def get_latest_state(self) -> Optional[URRealtimeState]:
         """

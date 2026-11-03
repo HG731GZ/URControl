@@ -656,6 +656,7 @@ class Ui_MainWindow(object):
         self.label_IPset.setText(_translate("MainWindow", "实际连接："))
         self.label_IP_now.setText(_translate("MainWindow", "TextLabel"))
         self.pushButton_ConnectUR.setText(_translate("MainWindow", "连接UR"))
+        self.pushButton_ConnectUR.setToolTip(_translate("MainWindow", "连接目标 UR，收到实时状态后确认连接成功"))
         self.pushButton_URPowerOn.setText(_translate("MainWindow", "UR上电"))
         self.pushButton_URBrakeRelease.setText(_translate("MainWindow", "UR松抱闸"))
         self.pushButton_Shutdown.setText(_translate("MainWindow", "UR下电"))

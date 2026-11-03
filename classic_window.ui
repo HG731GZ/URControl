@@ -305,6 +305,9 @@
         <property name="text">
          <string>连接UR</string>
         </property>
+        <property name="toolTip">
+         <string>连接目标 UR，收到实时状态后确认连接成功</string>
+        </property>
        </widget>
        <widget class="QPushButton" name="pushButton_URPowerOn">
         <property name="enabled">

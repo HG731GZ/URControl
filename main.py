@@ -23,7 +23,7 @@ from admittance_lifecycle import AdmittanceLifecycleWorker, AdmittanceLogFinishW
 from admittance_logger import AdmittanceLogger
 from robot_telemetry import RobotTelemetryRecorder
 from UR_Utils.URDashboardClient import URDashboardClient
-from UR_Utils.URRealtimeClient import URRealtimeClient
+from UR_Utils.URRealtimeMonitor import URRealtimeMonitor
 from UR_Utils.URRTDEController import URRTDEController
 from UR_Utils import admittance_config
 from UR_Utils.URAdmittanceController import PHASE_NAMES, EXIT_REASONS, idle_admittance_status
@@ -83,6 +83,8 @@ class MainWindow(ImpedanceIntegration, QMainWindow):
         vars(self).update(vars(self._ui))
         self.robot_ip = UR_REAL_IP
         self.connected_ip = None
+        self._connecting_robot = False
+        self._robot_connection_error = None
         self.dashboard_client = None
         self.realtime_client = None
         self.rtde_controller = None
@@ -276,9 +278,21 @@ class MainWindow(ImpedanceIntegration, QMainWindow):
 
     def update_connection_label(self):
         state = f'已连接 {self.connected_ip}' if self.connected_ip else '未连接'
+        if self._robot_connection_error is not None:
+            state = f'连接异常：{self._robot_connection_error}'
         self.label_IP_now.setText(self.connected_ip or '未连接')
         self.label_IP_now.setToolTip(f'目标 {self.robot_ip} | {state}')
         self.lineEdit_IP.setToolTip(f'待连接目标：{self.robot_ip}，修改后点击“修改IP”应用')
+        if self._connecting_robot:
+            text, tooltip = '连接中…', f'正在连接 {self.robot_ip}，等待实时状态'
+        elif self._robot_connection_error is not None:
+            text, tooltip = '重连UR', f'{state}；点击后先停止控制，再重新连接'
+        elif self.connected_ip is not None:
+            text, tooltip = '断开UR', f'已连接 {self.connected_ip}，点击后先停止控制，再断开 UR'
+        else:
+            text, tooltip = '连接UR', '连接目标 UR，收到实时状态后确认连接成功'
+        self.pushButton_ConnectUR.setText(text)
+        self.pushButton_ConnectUR.setToolTip(tooltip)
 
     def on_set_ip(self):
         robot_ip = self.lineEdit_IP.text().strip()
@@ -308,8 +322,15 @@ class MainWindow(ImpedanceIntegration, QMainWindow):
         self.on_set_ip()
 
     def on_connect_robot(self):
+        if self.connected_ip is not None and self._robot_connection_error is None:
+            self.on_disconnect_robot()
+            return
         if self.defer_until_admittance_stopped(self.on_connect_robot):
             return
+        self._connecting_robot = True
+        self.update_connection_label()
+        self.update_buttons()
+        self.pushButton_ConnectUR.repaint()
         try:
             self.connect_robot()
         except (URTcpError, OSError, RuntimeError, RTDEException) as exc:
@@ -319,13 +340,27 @@ class MainWindow(ImpedanceIntegration, QMainWindow):
                     self.disconnect_robot()
                 except (RuntimeError, OSError, RTDEException, URTcpError) as stop_exc:
                     self.append_message(f'连接清理中停止未确认：{stop_exc}')
+        finally:
+            self._connecting_robot = False
+            self.update_connection_label()
+            self.update_buttons()
+
+    def on_disconnect_robot(self):
+        """用户主动断开时先走现有运动停止确认，不把停止失败显示为连接失败。"""
+        if self.defer_until_admittance_stopped(self.on_disconnect_robot):
+            return
+        try:
+            if self.disconnect_robot():
+                self.append_message('UR 已断开')
+        except (RuntimeError, OSError, RTDEException, URTcpError) as exc:
+            self.append_message(f'未断开 UR，需先确认机器人停止：{exc}')
 
     def connect_robot(self):
         if not self.disconnect_robot():
             return
         self.dashboard_client = URDashboardClient(self.robot_ip)
         self.append_message(self.dashboard_client.connect())
-        self.realtime_client = URRealtimeClient(self.robot_ip)
+        self.realtime_client = URRealtimeMonitor(self.robot_ip)
         self.realtime_client.connect()
         self.connected_ip = self.robot_ip
         # 模拟器没有夹爪串口转发服务。
@@ -355,6 +390,7 @@ class MainWindow(ImpedanceIntegration, QMainWindow):
                 client.close()
                 setattr(self, name, None)
         self.connected_ip = None
+        self._robot_connection_error = None
         self.robot_state = None
         self.robot_ready = False
         self.update_connection_label()
@@ -434,14 +470,20 @@ class MainWindow(ImpedanceIntegration, QMainWindow):
         return None if self.gripper is None else self.gripper.get_feedback()
 
     def get_robot_snapshot(self):
+        return self.get_robot_snapshot_and_error()[0]
+
+    def get_robot_snapshot_and_error(self):
+        """以接收进程的单调时钟判定新鲜度，保留断流原因供界面提示。"""
         if self.realtime_client is None:
-            return None
-        updated_at = self.realtime_client.get_last_update_time()
-        if updated_at is None or time.time() - updated_at > ROBOT_STATE_TIMEOUT_S:
-            return None
-        if self.realtime_client.get_last_error() is not None:
-            return None
-        return self.realtime_client.get_latest_state()
+            return None, None
+        snapshot = self.realtime_client.get_snapshot()
+        if snapshot['error'] is not None:
+            return None, snapshot['error']
+        if snapshot['state'] is None:
+            return None, None
+        if time.monotonic() - snapshot['received_monotonic'] > ROBOT_STATE_TIMEOUT_S:
+            return None, f'实时状态超过 {ROBOT_STATE_TIMEOUT_S:g} 秒未更新'
+        return snapshot['state'], None
 
     def get_udp_snapshot(self):
         return self.get_udp_snapshot_and_count()[0]
@@ -457,7 +499,12 @@ class MainWindow(ImpedanceIntegration, QMainWindow):
         return command, source_seq
 
     def update_robot_status(self):
-        state = self.get_robot_snapshot()
+        state, connection_error = self.get_robot_snapshot_and_error()
+        if connection_error != self._robot_connection_error:
+            self._robot_connection_error = connection_error
+            if connection_error is not None:
+                self.append_message(f'UR 实时状态异常：{connection_error}')
+            self.update_connection_label()
         was_ready = self.robot_ready
         self.robot_ready = (state is not None and state.robot_mode == ROBOT_MODE_RUNNING
                             and state.safety_mode in (1, 2))
@@ -474,7 +521,7 @@ class MainWindow(ImpedanceIntegration, QMainWindow):
                     self.connected_ip, frequency=UR_RTDE_FREQ_HZ,
                     use_safety_check=False, auto_start_on_command=False)
                 self.on_speed_changed()
-            except (RuntimeError, OSError) as exc:
+            except (RuntimeError, OSError, RTDEException) as exc:
                 self.append_message(f'RTDE 初始化失败：{exc}')
         self.update_motion_status(state)
         self.update_admittance_status()
@@ -493,6 +540,9 @@ class MainWindow(ImpedanceIntegration, QMainWindow):
             f'{mode} | {ready} | {gripper_status} | 控制来源 {self.control_source}{feedback_status}')
 
     def update_buttons(self):
+        self.pushButton_ConnectUR.setEnabled(not self._connecting_robot)
+        self.pushButton_IP.setEnabled(not self._connecting_robot)
+        self.checkBox_URSim.setEnabled(not self._connecting_robot)
         connected = self.connected_ip is not None
         ready = connected and self.robot_ready
         rtde_ready = ready and self.rtde_controller is not None
@@ -788,18 +838,17 @@ class MainWindow(ImpedanceIntegration, QMainWindow):
         now = time.monotonic()
         realtime = None
         if self.realtime_client is not None:
-            state = self.realtime_client.get_latest_state()
-            received_time = self.realtime_client.get_last_update_time()
-            realtime_error = self.realtime_client.get_last_error()
-            if state is not None and received_time is not None:
+            snapshot = self.realtime_client.get_snapshot()
+            state = snapshot['state']
+            if state is not None:
                 realtime = {
                     'timestamp': state.time, 'actual_q': state.q_actual,
                     'actual_qd': state.qd_actual, 'actual_TCP_pose': state.tcp_pose,
-                    'received_monotonic': now - (time.time() - received_time),
+                    'received_monotonic': snapshot['received_monotonic'],
                     'tcp_force': state.tcp_force,
                     'speed_scaling': state.fields['speed_scaling'],
                     'requested_speed_percent': self.horizontalSlider_SpeedSlider.value(),
-                    'last_error': None if realtime_error is None else str(realtime_error),
+                    'last_error': snapshot['error'],
                 }
         ft_sensor = None
         torque_reader = self.get_display_torque_reader()
