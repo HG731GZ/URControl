@@ -29,6 +29,10 @@ STANDARD = {
     "payload": "DOUBLE",
     "tcp_offset": "VECTOR6D",
     "actual_TCP_pose": "VECTOR6D",
+    "joint_position_deviation_ratios": "VECTOR6D",
+    "collision_detection_ratios": "VECTOR6D",
+    "actual_current_as_torque": "VECTOR6D",
+    "actual_execution_time": "DOUBLE",
 }
 OUTPUT_NAMES = (
     list(STANDARD)

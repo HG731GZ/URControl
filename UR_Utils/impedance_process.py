@@ -41,12 +41,12 @@ def _main(args, status_slot, reference_slot, stop_event, lease):
     try:
         backend = URImpedanceController(**args, stop_event=stop_event, service=service)
         backend.run()
-        # Terminal publication cannot be dropped because a display reader briefly holds the slot.
+        # 显示读取短暂占用槽位时，仍需发布最终状态。
         deadline = time.monotonic() + 0.5
         while not status_slot.publish(backend.status) and time.monotonic() < deadline:
             time.sleep(0.001)
     except Exception as exc:
-        # A process-level failure is conservatively occupied until independently confirmed.
+        # 进程级故障必须独立确认停止后才能释放控制权。
         status_slot.publish(
             dict(
                 active=True,
@@ -74,17 +74,17 @@ class ImpedanceProcess:
     ):
         self.robot_ip, self.reference_source = robot_ip, reference_source
         self.parameters = validate(config)
-        if reference_source not in ("trajectory", "teleop"):
+        if reference_source not in ("trajectory", "step", "teleop"):
             raise ValueError("未知目标源")
-        if reference_source == "trajectory" and trajectory is None:
-            raise ValueError("请先加载轨迹")
+        if reference_source in ("trajectory", "step") and trajectory is None:
+            raise ValueError("请先生成目标或加载轨迹")
         self.play_hz = (
             trajectory.sample_hz
             if play_hz is None and trajectory is not None
             else play_hz
         )
         if trajectory is not None:
-            trajectory.validate_speed(self.parameters, self.play_hz)
+            trajectory.validate_playback(self.parameters, self.play_hz)
         self.run_id = secrets.randbelow(2**30 - 1) + 1
         ctx = mp.get_context("spawn")
         self._status_slot = LatestSnapshot(ctx, 131072)
@@ -210,7 +210,7 @@ class ImpedanceProcess:
                 break
             time.sleep(0.01)
         if self.active:
-            # A crashed child cannot release ownership. Independent stop is still possible.
+            # 子进程崩溃不能释放控制权，必须执行独立停止确认。
             from UR_Utils.control_stop import confirm_stopped
 
             confirm_stopped(

@@ -6,8 +6,9 @@ from UR_Utils.impedance_reference import JointTargetFrame
 
 
 class TrajectorySource:
-    def __init__(self, trajectory, play_hz, run_id, max_lag):
+    def __init__(self, trajectory, play_hz, run_id, max_lag, source="trajectory"):
         self.trajectory, self.play_hz, self.run_id = trajectory, play_hz, run_id
+        self.source = source
         self.start_time = None
         self.previous = None
         self.sequence = 0
@@ -24,7 +25,7 @@ class TrajectorySource:
         self.sequence += 1
         return JointTargetFrame(
             self.run_id,
-            "trajectory",
+            self.source,
             self.sequence,
             q,
             now,

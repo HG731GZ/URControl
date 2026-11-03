@@ -47,7 +47,7 @@ class JointTrajectory:
         return tuple(q), pos, pos >= len(self.rows) - 1
 
     def bind(self, anchor, config, play_hz):
-        self.validate_speed(config, play_hz)
+        self.validate_playback(config, play_hz)
         rows = np.array(self.rows) + (
             np.array(anchor) if self.coordinate == "offset" else 0
         )
@@ -59,7 +59,7 @@ class JointTrajectory:
             raise ValueError("轨迹起点未同步，请先显式移动到起点")
         return JointTrajectory(tuple(map(tuple, rows)), self.sample_hz, "absolute")
 
-    def validate_speed(self, config, play_hz):
+    def validate_playback(self, config, play_hz):
         self.duration(play_hz)
         rows = np.asarray(self.rows)
         velocity = np.diff(rows, axis=0) * play_hz

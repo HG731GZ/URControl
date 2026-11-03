@@ -214,7 +214,10 @@ def joint_impedance():
       end
       local mask = 0
       local shaped_cycle = 0
-      if phase >= 3:
+      if phase >= 3 and {{DIRECT_STEP}}:
+        qr = source
+        vr = [0,0,0,0,0,0]
+      elif phase >= 3:
         local delta = source-qr
         local distance = absolute(delta)
         local desired_v = delta/(distance+[0.000000000001,0.000000000001,0.000000000001,0.000000000001,0.000000000001,0.000000000001])*(root(amax*amax*dt*dt+2*amax*distance)-amax*dt)

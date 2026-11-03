@@ -11,6 +11,7 @@ from impedance_tuning_report import TuningReportWorker
 from ui_impedance_tuning_window import Ui_ImpedanceTuningWindow
 from UR_Utils.impedance_config import validate
 from UR_Utils.impedance_trajectory import generate_axis_tuning
+from UR_Utils.impedance_step import JointStep
 
 
 class ImpedanceTuningWindow(QtWidgets.QDialog):
@@ -50,11 +51,32 @@ class ImpedanceTuningWindow(QtWidgets.QDialog):
             getattr(self.ui, name).valueChanged.connect(self._invalidate)
         self.ui.speedSpin.valueChanged.connect(self._invalidate)
         self.ui.offsetSpin.valueChanged.connect(self._invalidate)
+        self.ui.holdSpin.valueChanged.connect(self._invalidate)
+        self.ui.modeCombo.currentIndexChanged.connect(self._mode_changed)
+        self.ui.tunedPresetButton.clicked.connect(self._load_tuned_defaults)
         self.ui.generateButton.clicked.connect(self.generate)
         self.ui.executeButton.clicked.connect(self.execute)
         self.ui.stopButton.clicked.connect(self._stop)
         QtWidgets.QApplication.instance().aboutToQuit.connect(self._wait_report)
-        self._buttons()
+        self._mode_changed()
+
+    def _is_step(self):
+        return self.ui.modeCombo.currentIndex() == 0
+
+    def _mode_changed(self):
+        step = self._is_step()
+        self.ui.speedSpin.setEnabled(not step)
+        self.ui.accelerationSpin.setEnabled(not step)
+        self.ui.holdSpin.setEnabled(step)
+        self._invalidate()
+
+    def _load_tuned_defaults(self):
+        self.config = validate()
+        self._fill_axis()
+        self.ui.speedSpin.setValue(math.degrees(self.config["REF_MAX_QD_RAD_S"][self.axis] * 0.85))
+        self._invalidate()
+        self._current_label()
+        self.ui.statusLabel.setText("已载入主入口默认参数；当前轴保持不变，生成并执行后生效。")
 
     def _fill_axis(self):
         for name, key, scale in self.FIELDS:
@@ -105,6 +127,7 @@ class ImpedanceTuningWindow(QtWidgets.QDialog):
             not locked and self._fresh() and self.trajectory is not None
         )
         self.ui.stopButton.setEnabled(self.executing or self.busy)
+        self.ui.tunedPresetButton.setEnabled(not locked)
 
     def _current_label(self):
         if self.actual_q is None:
@@ -173,25 +196,30 @@ class ImpedanceTuningWindow(QtWidgets.QDialog):
             cfg = deepcopy(self.config)
             offset = math.radians(self.ui.offsetSpin.value())
             speed = math.radians(self.ui.speedSpin.value())
-            # 为参考整形保留速度余量，轨迹本身严格使用用户设定的最大速度。
-            cfg["REF_MAX_QD_RAD_S"][self.axis] = speed / 0.85
-            # 本轮只扩展目标轴到用户指定行程，并保留起点容差，其他守卫不变。
-            cfg["ENVELOPE_RAD"][self.axis] = max(
-                cfg["ENVELOPE_RAD"][self.axis], abs(offset) + cfg["START_TOLERANCE_RAD"]
-            )
+            if offset == 0:
+                raise ValueError("角度偏置不能为零")
+            if not self._is_step():
+                # 为参考整形保留速度余量，轨迹本身严格使用用户设定的最大速度。
+                cfg["REF_MAX_QD_RAD_S"][self.axis] = speed / 0.85
             cfg = validate(cfg)
-            trajectory = generate_axis_tuning(
-                self.actual_q, self.axis, offset, speed, cfg
-            )
+            if self._is_step():
+                trajectory = JointStep(self.actual_q, self.axis, offset, hold_s=self.ui.holdSpin.value())
+                trajectory.bind(self.actual_q, cfg, trajectory.sample_hz)
+            else:
+                trajectory = generate_axis_tuning(self.actual_q, self.axis, offset, speed, cfg)
             self.trajectory, self.generated_config = trajectory, cfg
             self.samples = []
             start = math.degrees(trajectory.rows[0][self.axis])
             delta = self.ui.offsetSpin.value()
-            self.ui.trajectoryLabel.setText(
-                f"J{self.axis+1}：{start:.3f}° → {start+delta:.3f}° → "
-                f"{start-delta:.3f}° → {start:.3f}°；时长 {trajectory.duration():.2f} s；"
-                f"最大速度 ≤ {self.ui.speedSpin.value():g}°/s；五次平滑起停。"
-            )
+            if self._is_step():
+                description = (f"J{self.axis+1}：{start:.3f}° → {start+delta:.3f}°；"
+                               f"先保持 1 秒，再直接切换位置参考，观察 {trajectory.hold_s:g} 秒。"
+                               "目标速度为零，实际速度与力矩守卫有效，不自动回位。")
+            else:
+                description = (f"J{self.axis+1}：{start:.3f}° → {start+delta:.3f}° → "
+                               f"{start-delta:.3f}° → {start:.3f}°；时长 {trajectory.duration():.2f} s；"
+                               f"最大速度 ≤ {self.ui.speedSpin.value():g}°/s；五次平滑起停。")
+            self.ui.trajectoryLabel.setText(description)
             self.ui.statusLabel.setText(
                 "轨迹已生成；执行时使用此起点，位置变化后需重新生成。"
             )
@@ -229,7 +257,7 @@ class ImpedanceTuningWindow(QtWidgets.QDialog):
             self._buttons()
             self.start_requested.emit(
                 dict(
-                    reference_source="trajectory",
+                    reference_source="step" if self._is_step() else "trajectory",
                     config=deepcopy(self.generated_config),
                     trajectory=self.trajectory,
                     play_hz=self.trajectory.sample_hz,
@@ -254,7 +282,7 @@ class ImpedanceTuningWindow(QtWidgets.QDialog):
     def _finish(self, status):
         complete = status.get("completed_trajectory") and not status.get("last_error")
         self.ui.statusLabel.setText(
-            ("执行完成，已确认停止。" if complete else "本轮提前结束。")
+            ("计划执行结束，已确认停止；到位效果见误差报告。" if complete else "本轮提前结束。")
             + (status.get("last_error") or status.get("stop_error") or "")
         )
         directory = status.get("log_directory")
@@ -293,8 +321,19 @@ class ImpedanceTuningWindow(QtWidgets.QDialog):
                 )
             if report["completed"]:
                 lines.append(
-                    f"回到起点的末点误差：{report['return_to_start_error_deg']:.4f}°。"
+                    f"最终目标误差：{report['final_target_error_deg']:.4f}°。"
                 )
+            if report.get("step_response"):
+                response = report["step_response"]
+                step = response["step"]
+                rise = "未达到 90%" if step["rise_10_90_s"] is None else f"{step['rise_10_90_s']:.3f} s"
+                settling = "未稳定进入" if step["settling_time_s"] is None else f"{step['settling_time_s']:.3f} s"
+                lines[1:1] = [
+                    f"阶跃：10%→90% {rise}；超调 {step['overshoot_percent']:.2f}%；"
+                    f"±{step['settling_tolerance_rad']:.4f} rad 稳定时间：{settling}。",
+                    f"末 1 秒平均误差：{math.degrees(response['tail_mean_error_rad']):.4f}°；"
+                    "阶跃时间指标分辨率约 10 ms。",
+                ]
             if (
                 not report["log_complete"]
                 or report["snapshot_gaps"]

@@ -176,7 +176,7 @@ class URImpedanceController:
         self.service(self)
         if self.stop_event.is_set():
             return
-        script = config.render_script(cfg, self.run_id)
+        script = config.render_script(cfg, self.run_id, self.source)
         (self.logger.directory / "control.script").write_text(script)
         self.script_client = ScriptClient(
             self.ip, port=30001, timeout=1, auto_connect=True
@@ -252,10 +252,12 @@ class URImpedanceController:
                     if not ready and sample["phase"] == "ARMED":
                         anchor = sample["q_actual"]
                         self.logger.update_context({"anchor": anchor})
-                        if self.source == "trajectory":
+                        if self.source in ("trajectory", "step"):
                             bound = self.trajectory.bind(anchor, cfg, self.play_hz)
                             self.trajectory.save(
-                                self.logger.directory / "trajectory.csv"
+                                self.logger.directory / (
+                                    "step.json" if self.source == "step" else "trajectory.csv"
+                                )
                             )
                             self.logger.update_context(
                                 {
@@ -267,6 +269,7 @@ class URImpedanceController:
                                 self.play_hz,
                                 self.run_id,
                                 cfg["PLAYBACK_MAX_LAG_S"],
+                                self.source,
                             )
                         ready = True
                     if sample["phase"] in ("RUNNING", "ENDING"):
@@ -311,7 +314,7 @@ class URImpedanceController:
                     self.run_id,
                     1,
                     heartbeat,
-                    1 if self.source == "teleop" else 2,
+                    {"teleop": 1, "trajectory": 2, "step": 3}[self.source],
                     frame.source_seq,
                     reference_seq,
                     1,

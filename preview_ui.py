@@ -304,13 +304,31 @@ def create_admittance_preview(scenario='fixed-joint', settings=None):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='URControl 离线界面预览，不连接设备')
     parser.add_argument('--impedance', action='store_true', help='预览关节阻抗窗口')
+    parser.add_argument('--impedance-tuning', action='store_true', help='预览 J1～J6 阶跃及往返调参窗口')
     parser.add_argument('--admittance', action='store_true', help='预览独立导纳窗口')
     parser.add_argument('--scenario', choices=('teleop-joint', 'teleop-cartesian', 'fixed-joint', 'fixed-cartesian', 'diagnostic-joint', 'preset-joint'),
                         default='fixed-joint', help='固定演示场景；未开放场景仅可离线显示')
     args = parser.parse_args()
     configure_high_dpi()
     app = QtWidgets.QApplication(sys.argv)
-    if args.impedance:
+    if args.impedance_tuning:
+        from impedance_tuning_window import ImpedanceTuningWindow
+        from UR_Utils.impedance_config import snapshot
+        from UR_Utils.URImpedanceController import idle_impedance_status
+
+        window = ImpedanceTuningWindow(snapshot())
+        window._load_tuned_defaults()
+        window.setWindowTitle('J1 阻抗调参 · 离线预览，不连接设备')
+        window.update_context(idle_impedance_status(), True, False,
+                              [-1.71, -0.81, -2.06, -1.05, 1.57, 0.02], [0.0] * 6)
+        window.generate()
+        window._preview_timer = QtCore.QTimer(window)
+        window._preview_timer.timeout.connect(lambda: window.update_context(
+            idle_impedance_status(), True, False,
+            [-1.71, -0.81, -2.06, -1.05, 1.57, 0.02], [0.0] * 6))
+        window._preview_timer.start(100)
+        window.start_requested.connect(lambda _: window.start_failed('离线预览不启动设备'))
+    elif args.impedance:
         from impedance_window import ImpedanceWindow
         from UR_Utils.impedance_trajectory import generate
         from UR_Utils.URImpedanceController import idle_impedance_status

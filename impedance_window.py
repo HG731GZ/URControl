@@ -250,7 +250,7 @@ class ImpedanceWindow(QtWidgets.QWidget):
                 "trajectory" if self.ui.sourceCombo.currentIndex() == 0 else "teleop"
             )
             if source == "trajectory":
-                self.trajectory.validate_speed(
+                self.trajectory.validate_playback(
                     self.parameters.prepared, self.ui.playHz.value()
                 )
             self.parameters.effective = deepcopy(self.parameters.prepared)

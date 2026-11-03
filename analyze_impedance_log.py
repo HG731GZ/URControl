@@ -140,7 +140,7 @@ def analyze(directory, output=None):
             np.rad2deg(q[:, j] - anchor[j]),
             color="#df7c25",
             ls="--",
-            label="URSim actual",
+            label="Measured",
         )
         ax.set_title(
             f'J{j+1} | RMSE {np.rad2deg(sampled["sampled_rmse_rad"][j]):.3f} deg'
@@ -167,7 +167,7 @@ def analyze(directory, output=None):
     )
     axs[0].plot(t, np.rad2deg(r[:, j] - anchor[j]), color="#2474b5", label="Reference")
     axs[0].plot(
-        t, np.rad2deg(q[:, j] - anchor[j]), "--", color="#df7c25", label="URSim actual"
+        t, np.rad2deg(q[:, j] - anchor[j]), "--", color="#df7c25", label="Measured"
     )
     axs[0].set_ylabel("Offset (deg)")
     axs[0].legend(ncol=3)

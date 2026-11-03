@@ -18,7 +18,7 @@ class JointTargetFrame:
     def __post_init__(self):
         object.__setattr__(self, "q_rad", tuple(float(v) for v in self.q_rad))
         if (
-            self.source not in ("trajectory", "teleop")
+            self.source not in ("trajectory", "step", "teleop")
             or not isinstance(self.source_seq, int)
             or not 1 <= self.source_seq < 2**31
             or not 1 <= self.run_id < 2**31

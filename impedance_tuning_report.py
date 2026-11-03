@@ -90,7 +90,7 @@ class TuningReportWorker(QtCore.QThread):
             completed=complete,
             reference_error=error_metrics(errors),
             generated_target_error=error_metrics(source_errors),
-            return_to_start_error_deg=math.degrees(self.final_angle) - rows[-1][2],
+            final_target_error_deg=math.degrees(self.final_angle) - rows[-1][2],
             snapshot_gaps=gaps,
             log_complete=summary.get("log_complete", False),
             log_dropped=summary.get("log_dropped", 0),
@@ -99,6 +99,10 @@ class TuningReportWorker(QtCore.QThread):
             environment=metadata.get("environment"),
             source_alignment_missing=len(samples) - len(source_errors),
         )
+        if metadata["source"] == "step" and complete:
+            from analyze_impedance_tuning import analyze
+
+            report["step_response"] = analyze(self.directory, self.axis, plot=False)
         path = self.directory / "tuning_report.json"
         path.write_text(json.dumps(report, ensure_ascii=False, indent=2))
         return dict(report=report, rows=rows, path=str(path))
