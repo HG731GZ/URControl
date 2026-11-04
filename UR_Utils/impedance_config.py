@@ -36,7 +36,6 @@ DEFAULTS = {
     "PLAYBACK_MAX_LAG_S": 0.1,
     "MAX_SOURCE_STEP_RAD": 0.1,
     "CYCLE_MAX_S": 0.003,
-    "EXPECTED_PAYLOAD_KG": 0.0,
     "EXPECTED_TCP_OFFSET": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
 }
 
@@ -62,9 +61,7 @@ def validate(config=None):
                 raise ValueError(f"{key} 必须为正")
         else:
             cfg[key] = float(value)
-            if not math.isfinite(cfg[key]) or (
-                cfg[key] < 0 if key == "EXPECTED_PAYLOAD_KG" else cfg[key] <= 0
-            ):
+            if not math.isfinite(cfg[key]) or cfg[key] <= 0:
                 raise ValueError(f"{key} 不合法")
     if cfg["CYCLE_MAX_S"] >= 0.004 or cfg["CYCLE_MAX_S"] <= 0.002:
         raise ValueError("周期门槛必须在 2～4 ms 之间")

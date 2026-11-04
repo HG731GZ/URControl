@@ -117,7 +117,6 @@
     "PLAYBACK_MAX_LAG_S": 0.1,
     "MAX_SOURCE_STEP_RAD": 0.1,
     "CYCLE_MAX_S": 0.003,
-    "EXPECTED_PAYLOAD_KG": 0.0,
     "EXPECTED_TCP_OFFSET": [
       0.0,
       0.0,

@@ -151,11 +151,11 @@ class URImpedanceController:
             raise RuntimeError("要求程序已退出、机器人 RUNNING、NORMAL")
         if max(map(abs, baseline.actual_qd)) > cfg["STATIONARY_QD_RAD_S"]:
             raise RuntimeError("预检要求机器人静止")
-        if abs(baseline.payload - cfg["EXPECTED_PAYLOAD_KG"]) > 1e-6 or any(
+        if any(
             abs(a - b) > 1e-6
             for a, b in zip(baseline.tcp_offset, cfg["EXPECTED_TCP_OFFSET"])
         ):
-            raise RuntimeError("实际负载/TCP 与本轮安装配置不匹配")
+            raise RuntimeError("实际 TCP 与本轮配置不匹配")
         if baseline.target_speed_fraction != 1:
             raise RuntimeError("要求速度滑条及速度缩放 100%")
         anchor = list(baseline.actual_q)
