@@ -266,7 +266,7 @@ class MainWindow(ImpedanceIntegration, QMainWindow):
             ('URScriptMoveJ', self.on_move_joint), ('RTDEUDP', self.on_start_udp),
             ('StopRTDE', self.on_stop_control), ('HOME', self.on_home),
             ('UDPSync', self.on_sync_udp), ('Collect', self.on_collect),
-            ('Admittance', self.on_admittance), ('Impedance', self.on_impedance), ('Telemetry', self.on_telemetry),
+            ('Admittance', self.on_admittance), ('Impedance', self.on_impedance), ('TeleopImpedance', self.on_teleop_impedance), ('Telemetry', self.on_telemetry),
         ):
             getattr(self, f'pushButton_{name}').clicked.connect(callback)
         self.horizontalSlider_SpeedSlider.valueChanged.connect(self.on_speed_changed)
@@ -1639,6 +1639,14 @@ class MainWindow(ImpedanceIntegration, QMainWindow):
             event.ignore()
             return
         self._impedance_timer.stop()
+        if self.impedance_tuning_window is not None:
+            self.impedance_tuning_window._wait_report()
+            self.impedance_tuning_window.hide()
+            self.impedance_tuning_window.deleteLater()
+        if self.teleop_impedance_window is not None:
+            self.teleop_impedance_window.hide()
+            self.teleop_impedance_window.visualizer.close()
+            self.teleop_impedance_window.deleteLater()
         if self.impedance_window is not None:
             self.impedance_window.hide()
             self.impedance_window.deleteLater()

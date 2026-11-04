@@ -110,6 +110,10 @@ class UR5eDualVisualizer:
         """返回可直接加入 Qt 布局的 OpenGL 控件。"""
         return self._gl_widget
 
+    def set_visibility(self, *, actual, virtual):
+        """分别控制实际模型与目标模型的可见性。"""
+        self._gl_widget.set_visibility(actual=actual, virtual=virtual)
+
     def update_actual(self, q: np.ndarray) -> None:
         """
         更新实际机械臂关节角。

@@ -6,6 +6,9 @@ from pathlib import Path
 
 import numpy as np
 
+POSITION_TOLERANCE_RAD = float(np.deg2rad(0.2))
+TRACKING_RMS_TOLERANCE_DEG = (0.2, 0.2, 0.2, 0.5, 0.5, 0.5)
+
 
 def analyze(directory, axis=0, plot=True):
     directory = Path(directory)
@@ -16,7 +19,7 @@ def analyze(directory, axis=0, plot=True):
         row = json.loads(line)
         p = row["payload"]
         if row["kind"] == "reference":
-            references[p["reference_seq"]] = p["q_source"]
+            references[p["reference_seq"]] = p
         elif row["kind"] == "standard":
             standard.append(p)
         elif row["kind"] == "sample":
@@ -32,7 +35,8 @@ def analyze(directory, axis=0, plot=True):
     r = np.array([s["q_ref"][axis] for s in samples])
     v = np.array([s["qd_actual"][axis] for s in samples])
     tau = np.array([s["tau_cmd"][axis] for s in samples])
-    source = np.array([references[s["adopted_reference_seq"]][axis] for s in samples])
+    source = np.array([references[s["adopted_reference_seq"]]["q_source"][axis] for s in samples])
+    positions = np.array([references[s["adopted_reference_seq"]]["row_position"] for s in samples])
     error = r - q
     tail = t >= t[-1] - 1.0
     anchor = np.array(metadata["anchor"])
@@ -51,6 +55,7 @@ def analyze(directory, axis=0, plot=True):
         "source_peak_error_rad": float(np.max(np.abs(source - q))),
         "reference_peak_error_rad": float(np.max(np.abs(error))),
         "tail_mean_error_rad": float(np.mean(error[tail])),
+        "final_error_rad": float(error[-1]),
         "tail_peak_to_peak_rad": float(np.ptp(q[tail])),
         "tail_peak_speed_rad_s": float(np.max(np.abs(v[tail]))),
         "peak_speed_rad_s": np.max(np.abs(speeds), axis=0).tolist(),
@@ -64,7 +69,31 @@ def analyze(directory, axis=0, plot=True):
         "standard_max_interval_s": float(np.max(np.diff([s["timestamp"] for s in standard]))),
         "position_deviation_ratios": np.max([s["joint_position_deviation_ratios"] for s in standard], axis=0).tolist(),
         "collision_detection_ratios": np.max([s["collision_detection_ratios"] for s in standard], axis=0).tolist(),
+        "position_tolerance_deg": 0.2,
     }
+    evidence_complete = bool(
+        report["completed_schedule"] and report["stopped_confirmed"]
+        and not report["last_error"] and not report["stop_error"]
+        and report["log_complete"] and report["log_dropped"] == 0
+        and report["snapshot_gaps"] == 0
+    )
+    if metadata["source"] == "trajectory":
+        # 去掉起点和末点保持，避免用静止样本稀释运动阶段的跟踪误差。
+        moving = (positions > 0) & (positions < np.max(positions))
+        source_rms = float(np.sqrt(np.mean((source[moving] - q[moving]) ** 2)))
+        reference_rms = float(np.sqrt(np.mean(error[moving] ** 2)))
+        rms_tolerance = float(np.deg2rad(TRACKING_RMS_TOLERANCE_DEG[axis]))
+        report["tracking"] = {
+            "rms_tolerance_deg": TRACKING_RMS_TOLERANCE_DEG[axis],
+            "motion_sample_count": int(np.sum(moving)),
+            "motion_source_rmse_rad": source_rms,
+            "motion_reference_rmse_rad": reference_rms,
+            "motion_source_peak_error_rad": float(np.max(np.abs(source[moving] - q[moving]))),
+            "motion_reference_peak_error_rad": float(np.max(np.abs(error[moving]))),
+            "source_rms_within_tolerance": source_rms <= rms_tolerance if evidence_complete else None,
+            "reference_rms_within_tolerance": reference_rms <= rms_tolerance if evidence_complete else None,
+            "evaluation_basis": "以运动阶段的生成目标误差评价跟踪；生效参考误差单列。",
+        }
     if metadata["source"] == "step":
         changes = np.flatnonzero(np.abs(np.diff(r)) > 1e-5) + 1
         if len(changes) != 1:
@@ -75,7 +104,7 @@ def analyze(directory, axis=0, plot=True):
         progress = (q[start:] - pre) / amplitude
         relative = t[start:] - t[start]
         crossings = [np.flatnonzero(progress >= fraction) for fraction in (0.1, 0.9)]
-        tolerance = max(0.002, abs(amplitude) * 0.02)
+        tolerance = POSITION_TOLERANCE_RAD
         outside = np.flatnonzero(np.abs(error[start:]) > tolerance)
         settled_index = int(outside[-1] + 1) if len(outside) else 0
         settling = None
@@ -88,6 +117,8 @@ def analyze(directory, axis=0, plot=True):
             "achieved_fraction_tail": float(np.mean(progress[-min(100, len(progress)):])),
             "settling_tolerance_rad": tolerance, "settling_time_s": settling,
             "timing_resolution_s": 0.01,
+            "final_error_within_tolerance": bool(abs(error[-1]) <= tolerance) if evidence_complete else None,
+            "settled_within_tolerance": settling is not None if evidence_complete else None,
         }
     path = directory / "response_report.json"
     path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -101,8 +132,13 @@ def analyze(directory, axis=0, plot=True):
         axs[0].plot(t, q - anchor[axis], color="#e27c30", label="Measured")
         axs[0].set_ylabel("Position offset (rad)")
         axs[0].legend(ncol=3)
-        axs[1].plot(t, error, color="#2076b4")
-        axs[1].set_ylabel("Reference error (rad)")
+        axs[1].plot(t, source - q, color="#8c98a4", ls=":", label="Source error")
+        axs[1].plot(t, error, color="#2076b4", label="Reference error")
+        band = rms_tolerance if metadata["source"] == "trajectory" else POSITION_TOLERANCE_RAD
+        axs[1].axhline(band, color="#8c98a4", ls="--", lw=1)
+        axs[1].axhline(-band, color="#8c98a4", ls="--", lw=1)
+        axs[1].set_ylabel("Position error (rad)")
+        axs[1].legend(ncol=2)
         axs[2].plot(t, tau, color="#e27c30")
         axs[2].set_ylabel("Command torque (Nm)")
         axs[2].set_xlabel("Time since RUNNING (s)")

@@ -1,62 +1,479 @@
-<?xml version="1.0" encoding="UTF-8"?>
+<?xml version='1.0' encoding='utf-8'?>
 <ui version="4.0">
  <class>ImpedanceTuningWindow</class>
  <widget class="QDialog" name="ImpedanceTuningWindow">
-  <property name="geometry"><rect><x>0</x><y>0</y><width>1000</width><height>900</height></rect></property>
-  <property name="windowTitle"><string>单轴调参测试</string></property>
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1000</width>
+    <height>900</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>单关节阻抗调参</string>
+  </property>
   <layout class="QVBoxLayout" name="windowLayout">
-   <property name="leftMargin"><number>0</number></property><property name="topMargin"><number>0</number></property><property name="rightMargin"><number>0</number></property><property name="bottomMargin"><number>0</number></property>
-   <item><widget class="QScrollArea" name="contentScroll"><property name="frameShape"><enum>QFrame::NoFrame</enum></property><property name="widgetResizable"><bool>true</bool></property>
-    <widget class="QWidget" name="contentWidget">
-  <layout class="QVBoxLayout" name="rootLayout">
-   <item><widget class="QLabel" name="hintLabel"><property name="text"><string>单次阶跃：保持 1 秒后直接切换到“当前位置＋偏置”，观察后停止，不自动回位。平滑往返：当前位置 → ＋偏置 → －偏置 → 起点。其余五轴保持起点。</string></property><property name="wordWrap"><bool>true</bool></property></widget></item>
-   <item><widget class="QGroupBox" name="trajectoryGroup"><property name="title"><string>轨迹设置（角度使用 °，内部使用 rad）</string></property>
-    <layout class="QGridLayout" name="trajectoryLayout">
-     <item row="0" column="0"><widget class="QLabel" name="axisLabel"><property name="text"><string>目标轴</string></property></widget></item>
-     <item row="0" column="1"><widget class="QComboBox" name="axisCombo">
-      <item><property name="text"><string>J1</string></property></item><item><property name="text"><string>J2</string></property></item><item><property name="text"><string>J3</string></property></item><item><property name="text"><string>J4</string></property></item><item><property name="text"><string>J5</string></property></item><item><property name="text"><string>J6</string></property></item>
-     </widget></item>
-     <item row="0" column="2"><widget class="QLabel" name="speedLabel"><property name="text"><string>往返最大速度（°/s）</string></property></widget></item>
-     <item row="0" column="3"><widget class="QDoubleSpinBox" name="speedSpin"><property name="decimals"><number>3</number></property><property name="minimum"><double>0.010</double></property><property name="maximum"><double>360.0</double></property><property name="value"><double>5.0</double></property></widget></item>
-     <item row="0" column="4"><widget class="QLabel" name="offsetLabel"><property name="text"><string>角度偏置（°）</string></property></widget></item>
-     <item row="0" column="5"><widget class="QDoubleSpinBox" name="offsetSpin"><property name="decimals"><number>3</number></property><property name="minimum"><double>-180.0</double></property><property name="maximum"><double>180.0</double></property><property name="value"><double>2.0</double></property></widget></item>
-     <item row="1" column="0"><widget class="QLabel" name="modeLabel"><property name="text"><string>调参方式</string></property></widget></item>
-     <item row="1" column="1"><widget class="QComboBox" name="modeCombo"><item><property name="text"><string>单次阶跃（J1～J6）</string></property></item><item><property name="text"><string>平滑往返</string></property></item></widget></item>
-     <item row="1" column="2"><widget class="QLabel" name="holdLabel"><property name="text"><string>阶跃观察时长（s）</string></property></widget></item>
-     <item row="1" column="3"><widget class="QDoubleSpinBox" name="holdSpin"><property name="decimals"><number>1</number></property><property name="minimum"><double>1.0</double></property><property name="maximum"><double>30.0</double></property><property name="value"><double>5.0</double></property></widget></item>
-     <item row="2" column="0" colspan="6"><widget class="QLabel" name="currentLabel"><property name="text"><string>当前位置：等待新鲜机器人反馈</string></property></widget></item>
-    </layout>
-   </widget></item>
-   <item><widget class="QGroupBox" name="parameterGroup"><property name="title"><string>目标轴阻抗参数（执行时应用，运行中锁定）</string></property>
-    <layout class="QGridLayout" name="parameterLayout">
-     <item row="0" column="0"><widget class="QLabel" name="stiffnessLabel"><property name="text"><string>刚度 K（N·m/rad）</string></property></widget></item>
-     <item row="0" column="1"><widget class="QDoubleSpinBox" name="stiffnessSpin"><property name="decimals"><number>3</number></property><property name="minimum"><double>0.001</double></property><property name="maximum"><double>100000.0</double></property></widget></item>
-     <item row="0" column="2"><widget class="QLabel" name="dampingLabel"><property name="text"><string>阻尼 D（N·m·s/rad）</string></property></widget></item>
-     <item row="0" column="3"><widget class="QDoubleSpinBox" name="dampingSpin"><property name="decimals"><number>3</number></property><property name="minimum"><double>0.001</double></property><property name="maximum"><double>100000.0</double></property></widget></item>
-     <item row="1" column="0"><widget class="QLabel" name="torqueLabel"><property name="text"><string>最大指令力矩（N·m）</string></property></widget></item>
-     <item row="1" column="1"><widget class="QDoubleSpinBox" name="torqueSpin"><property name="decimals"><number>3</number></property><property name="minimum"><double>0.001</double></property><property name="maximum"><double>1000.0</double></property></widget></item>
-     <item row="1" column="2"><widget class="QLabel" name="slewLabel"><property name="text"><string>力矩变化率（N·m/s）</string></property></widget></item>
-     <item row="1" column="3"><widget class="QDoubleSpinBox" name="slewSpin"><property name="decimals"><number>3</number></property><property name="minimum"><double>0.001</double></property><property name="maximum"><double>100000.0</double></property></widget></item>
-     <item row="2" column="0"><widget class="QLabel" name="accelerationLabel"><property name="text"><string>往返参考加速度（°/s²）</string></property></widget></item>
-     <item row="2" column="1"><widget class="QDoubleSpinBox" name="accelerationSpin"><property name="decimals"><number>3</number></property><property name="minimum"><double>0.001</double></property><property name="maximum"><double>3600.0</double></property></widget></item>
-     <item row="2" column="2" colspan="2"><widget class="QLabel" name="guardLabel"><property name="text"><string>摩擦补偿固定为 0；跟踪误差、速度和力矩守卫保持有效。</string></property><property name="wordWrap"><bool>true</bool></property></widget></item>
-    </layout>
-   </widget></item>
-   <item><layout class="QHBoxLayout" name="buttonLayout">
-    <item><widget class="QPushButton" name="tunedPresetButton"><property name="text"><string>载入已调默认参数</string></property></widget></item>
-    <item><widget class="QPushButton" name="generateButton"><property name="text"><string>生成</string></property></widget></item>
-    <item><widget class="QPushButton" name="executeButton"><property name="text"><string>执行</string></property><property name="enabled"><bool>false</bool></property></widget></item>
-    <item><widget class="QPushButton" name="stopButton"><property name="text"><string>停止</string></property><property name="enabled"><bool>false</bool></property></widget></item>
-   </layout></item>
-   <item><widget class="QLabel" name="trajectoryLabel"><property name="text"><string>设置目标轴、速度和偏置后，点击“生成”。</string></property><property name="wordWrap"><bool>true</bool></property></widget></item>
-   <item><widget class="QLabel" name="statusLabel"><property name="text"><string>未执行</string></property><property name="wordWrap"><bool>true</bool></property></widget></item>
-   <item><layout class="QVBoxLayout" name="plotLayout"/></item>
-   <item><widget class="QTextBrowser" name="reportLabel"><property name="minimumSize"><size><width>0</width><height>120</height></size></property><property name="maximumSize"><size><width>16777215</width><height>160</height></size></property><property name="plainText"><string>执行结束后显示误差；阶跃另列上升时间、超调和稳定时间。详细报告可滚动查看。</string></property></widget></item>
-  </layout>
+   <property name="leftMargin">
+    <number>0</number>
+   </property>
+   <property name="topMargin">
+    <number>0</number>
+   </property>
+   <property name="rightMargin">
+    <number>0</number>
+   </property>
+   <property name="bottomMargin">
+    <number>0</number>
+   </property>
+   <item>
+    <widget class="QScrollArea" name="contentScroll">
+     <property name="frameShape">
+      <enum>QFrame::NoFrame</enum>
+     </property>
+     <property name="widgetResizable">
+      <bool>true</bool>
+     </property>
+     <widget class="QWidget" name="contentWidget">
+      <layout class="QVBoxLayout" name="rootLayout">
+       <item>
+        <widget class="QLabel" name="hintLabel">
+         <property name="text">
+          <string>单次阶跃：保持 1 秒后直接切换到“当前位置＋偏置”，观察后停止，不自动回位。平滑往返：当前位置 → ＋偏置 → －偏置 → 起点。其余五轴保持起点。</string>
+         </property>
+         <property name="wordWrap">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="trajectoryGroup">
+         <property name="title">
+          <string>轨迹设置（角度使用 °，内部使用 rad）</string>
+         </property>
+         <layout class="QGridLayout" name="trajectoryLayout">
+          <item row="0" column="0">
+           <widget class="QLabel" name="axisLabel">
+            <property name="text">
+             <string>目标轴</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QComboBox" name="axisCombo">
+            <item>
+             <property name="text">
+              <string>J1</string>
+             </property>
+            </item>
+            <item>
+             <property name="text">
+              <string>J2</string>
+             </property>
+            </item>
+            <item>
+             <property name="text">
+              <string>J3</string>
+             </property>
+            </item>
+            <item>
+             <property name="text">
+              <string>J4</string>
+             </property>
+            </item>
+            <item>
+             <property name="text">
+              <string>J5</string>
+             </property>
+            </item>
+            <item>
+             <property name="text">
+              <string>J6</string>
+             </property>
+            </item>
+           </widget>
+          </item>
+          <item row="0" column="2">
+           <widget class="QLabel" name="speedLabel">
+            <property name="text">
+             <string>往返最大速度（°/s）</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="3">
+           <widget class="QDoubleSpinBox" name="speedSpin">
+            <property name="decimals">
+             <number>3</number>
+            </property>
+            <property name="minimum">
+             <double>0.010</double>
+            </property>
+            <property name="maximum">
+             <double>360.0</double>
+            </property>
+            <property name="value">
+             <double>5.0</double>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="4">
+           <widget class="QLabel" name="offsetLabel">
+            <property name="text">
+             <string>角度偏置（°）</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="5">
+           <widget class="QDoubleSpinBox" name="offsetSpin">
+            <property name="decimals">
+             <number>3</number>
+            </property>
+            <property name="minimum">
+             <double>-180.0</double>
+            </property>
+            <property name="maximum">
+             <double>180.0</double>
+            </property>
+            <property name="value">
+             <double>2.0</double>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="modeLabel">
+            <property name="text">
+             <string>调参方式</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QComboBox" name="modeCombo">
+            <item>
+             <property name="text">
+              <string>单次阶跃（J1～J6）</string>
+             </property>
+            </item>
+            <item>
+             <property name="text">
+              <string>平滑往返</string>
+             </property>
+            </item>
+           </widget>
+          </item>
+          <item row="1" column="2">
+           <widget class="QLabel" name="holdLabel">
+            <property name="text">
+             <string>阶跃观察时长（s）</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="3">
+           <widget class="QDoubleSpinBox" name="holdSpin">
+            <property name="decimals">
+             <number>1</number>
+            </property>
+            <property name="minimum">
+             <double>1.0</double>
+            </property>
+            <property name="maximum">
+             <double>30.0</double>
+            </property>
+            <property name="value">
+             <double>5.0</double>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="0" colspan="6">
+           <widget class="QLabel" name="currentLabel">
+            <property name="text">
+             <string>当前位置：等待新鲜机器人反馈</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="parameterGroup">
+         <property name="title">
+          <string>六轴共享参数 · 切换目标轴编辑 · 应用后供轨迹与遥操作使用</string>
+         </property>
+         <layout class="QGridLayout" name="parameterLayout">
+          <item row="0" column="0">
+           <widget class="QLabel" name="stiffnessLabel">
+            <property name="text">
+             <string>刚度 K（N·m/rad）</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QDoubleSpinBox" name="stiffnessSpin">
+            <property name="decimals">
+             <number>3</number>
+            </property>
+            <property name="minimum">
+             <double>0.001</double>
+            </property>
+            <property name="maximum">
+             <double>100000.0</double>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="2">
+           <widget class="QLabel" name="dampingLabel">
+            <property name="text">
+             <string>阻尼 D（N·m·s/rad）</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="3">
+           <widget class="QDoubleSpinBox" name="dampingSpin">
+            <property name="decimals">
+             <number>3</number>
+            </property>
+            <property name="minimum">
+             <double>0.001</double>
+            </property>
+            <property name="maximum">
+             <double>100000.0</double>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="torqueLabel">
+            <property name="text">
+             <string>最大指令力矩（N·m）</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QDoubleSpinBox" name="torqueSpin">
+            <property name="decimals">
+             <number>3</number>
+            </property>
+            <property name="minimum">
+             <double>0.001</double>
+            </property>
+            <property name="maximum">
+             <double>1000.0</double>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="2">
+           <widget class="QLabel" name="slewLabel">
+            <property name="text">
+             <string>力矩变化率（N·m/s）</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="3">
+           <widget class="QDoubleSpinBox" name="slewSpin">
+            <property name="decimals">
+             <number>3</number>
+            </property>
+            <property name="minimum">
+             <double>0.001</double>
+            </property>
+            <property name="maximum">
+             <double>100000.0</double>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="0">
+           <widget class="QLabel" name="accelerationLabel">
+            <property name="text">
+             <string>参考加速度上限（°/s²）</string>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="1">
+           <widget class="QDoubleSpinBox" name="accelerationSpin">
+            <property name="decimals">
+             <number>6</number>
+            </property>
+            <property name="minimum">
+             <double>0.001</double>
+            </property>
+            <property name="maximum">
+             <double>3600.0</double>
+            </property>
+           </widget>
+          </item>
+          <item row="3" column="0" colspan="4">
+           <widget class="QLabel" name="guardLabel">
+            <property name="text">
+             <string>摩擦补偿固定为 0；跟踪误差、速度和力矩守卫保持有效。</string>
+            </property>
+            <property name="wordWrap">
+             <bool>true</bool>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="2">
+           <widget class="QLabel" name="referenceSpeedLabel">
+            <property name="text">
+             <string>参考速度上限（°/s）</string>
+            </property>
+            <property name="wordWrap">
+             <bool>true</bool>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="3">
+           <widget class="QDoubleSpinBox" name="referenceSpeedSpin">
+            <property name="decimals">
+             <number>6</number>
+            </property>
+            <property name="minimum">
+             <double>0.000001</double>
+            </property>
+            <property name="maximum">
+             <double>3600</double>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="presetLayout">
+         <item>
+          <widget class="QPushButton" name="applyButton">
+           <property name="text">
+            <string>应用参数</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="discardButton">
+           <property name="text">
+            <string>放弃未应用修改</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="importButton">
+           <property name="text">
+            <string>导入预设</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="exportButton">
+           <property name="text">
+            <string>导出草稿</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <widget class="QLabel" name="parameterStateLabel">
+         <property name="text">
+          <string>参数：已应用版本 1</string>
+         </property>
+         <property name="wordWrap">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="referenceHintLabel">
+         <property name="text">
+          <string>参考速度/加速度来自共享配置，供遥操作及平滑轨迹整形使用；不参与单次阶跃参考生成。往返最大速度为激励设置，不修改参考上限。
+性能目标：运动阶段的生成目标跟踪 RMS，J1～J3 为 0.2°，J4～J6 为 0.5°；阶跃最终误差及稳定带 ±0.2°。峰值误差单列，停止阈值独立保留。</string>
+         </property>
+         <property name="wordWrap">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="buttonLayout">
+         <item>
+          <widget class="QPushButton" name="tunedPresetButton">
+           <property name="text">
+            <string>恢复默认草稿</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="generateButton">
+           <property name="text">
+            <string>生成</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="executeButton">
+           <property name="text">
+            <string>执行</string>
+           </property>
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="stopButton">
+           <property name="text">
+            <string>停止</string>
+           </property>
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <widget class="QLabel" name="trajectoryLabel">
+         <property name="text">
+          <string>设置目标轴、速度和偏置后，点击“生成”。</string>
+         </property>
+         <property name="wordWrap">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="statusLabel">
+         <property name="text">
+          <string>未执行</string>
+         </property>
+         <property name="wordWrap">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <layout class="QVBoxLayout" name="plotLayout" />
+       </item>
+       <item>
+        <widget class="QTextBrowser" name="reportLabel">
+         <property name="minimumSize">
+          <size>
+           <width>0</width>
+           <height>120</height>
+          </size>
+         </property>
+         <property name="maximumSize">
+          <size>
+           <width>16777215</width>
+           <height>160</height>
+          </size>
+         </property>
+         <property name="plainText">
+          <string>执行结束后显示误差；阶跃另列上升时间、超调和稳定时间。详细报告可滚动查看。</string>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
     </widget>
-   </widget></item>
+   </item>
   </layout>
  </widget>
- <resources/>
- <connections/>
+ <resources />
+ <connections />
 </ui>

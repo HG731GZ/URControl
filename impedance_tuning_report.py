@@ -99,10 +99,12 @@ class TuningReportWorker(QtCore.QThread):
             environment=metadata.get("environment"),
             source_alignment_missing=len(samples) - len(source_errors),
         )
-        if metadata["source"] == "step" and complete:
+        if (complete and report["log_complete"] and report["log_dropped"] == 0
+                and report["source_alignment_missing"] == 0):
             from analyze_impedance_tuning import analyze
 
-            report["step_response"] = analyze(self.directory, self.axis, plot=False)
+            key = "step_response" if metadata["source"] == "step" else "tracking_response"
+            report[key] = analyze(self.directory, self.axis, plot=False)
         path = self.directory / "tuning_report.json"
         path.write_text(json.dumps(report, ensure_ascii=False, indent=2))
         return dict(report=report, rows=rows, path=str(path))

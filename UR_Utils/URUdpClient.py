@@ -20,8 +20,9 @@ from __future__ import annotations
 
 import binascii
 from copy import deepcopy
-import errno
 import logging
+import math
+import select
 import socket
 import struct
 import threading
@@ -139,6 +140,7 @@ class URUDPClient:
     CRC_OFFSET = DATA_OFFSET + DATA_SIZE      # 77
     FOOTER_OFFSET = CRC_OFFSET + CRC_SIZE     # 81
     PACKET_SIZE = FOOTER_OFFSET + FOOTER_SIZE # 85
+    RECEIVE_DEADLINE_S = 0.25
     SEND_RETRY_INTERVAL = 1.0
     ERROR_LOG_INTERVAL = 5.0
 
@@ -162,11 +164,14 @@ class URUDPClient:
         self._cond = threading.Condition()
         self._latest_command: Optional[UDPCommand] = None
         self._frame_count: int = 0
+        self._published_frame_count = 0
         self._last_update_time: Optional[float] = None
         self._last_received_monotonic: Optional[float] = None
         self._sender_address: Optional[Tuple[str, int]] = None
         self._last_error: Optional[BaseException] = None
 
+        self._control_event_seq = 0
+        self._control_event_reason = None
         self._send_lock = threading.Lock()
         self._last_send_time: float = 0.0
         self._send_cond = threading.Condition()
@@ -221,20 +226,16 @@ class URUDPClient:
             self._pending_send = None
             self._send_cond.notify_all()
 
-        sock = self._sock
-        if sock is not None:
-            try:
-                sock.close()
-            except OSError:
-                pass
-            self._sock = None
-
         for thread in (self._reader_thread, self._writer_thread):
             if (thread is not None and thread.is_alive()
                     and threading.current_thread() is not thread):
                 thread.join(timeout=1.0)
         self._reader_thread = None
         self._writer_thread = None
+        sock = self._sock
+        if sock is not None:
+            sock.close()
+            self._sock = None
 
     def restart(self) -> None:
         """重新启动：先 stop 再 start。"""
@@ -244,6 +245,7 @@ class URUDPClient:
             self._latest_command = None
             self._last_error = None
             self._frame_count = 0
+            self._published_frame_count = 0
             self._last_update_time = None
             self._last_received_monotonic = None
             self._sender_address = None
@@ -259,94 +261,117 @@ class URUDPClient:
     # 后台接收线程
     # ------------------------------------------------------------------
 
-    def _reader_loop(self) -> None:
-        """后台线程：循环接收 UDP 包，校验帧头/CRC/帧尾后解析。"""
-        buf = bytearray(self.PACKET_SIZE)
+    def _control_event(self, reason):
+        """单调事件身份保留终止原因，后续位置包不能撤销本轮停止。"""
+        with self._cond:
+            self._control_event_seq += 1
+            self._control_event_reason = reason
 
+    def _decode_packet(self, packet):
+        """验证协议边界和有限数，不修改报文字段或运动目标。"""
+        if len(packet) != self.PACKET_SIZE:
+            raise ValueError(f"UDP 长度错误：{len(packet)}，要求 {self.PACKET_SIZE}")
+        if packet[:self.HEADER_SIZE] != self.HEADER or packet[self.FOOTER_OFFSET:] != self.FOOTER:
+            raise ValueError("UDP 帧头或帧尾错误")
+        data = packet[self.DATA_OFFSET:self.CRC_OFFSET]
+        expected = struct.unpack("!I", packet[self.CRC_OFFSET:self.FOOTER_OFFSET])[0]
+        if expected != binascii.crc32(data) & 0xFFFFFFFF:
+            raise ValueError("UDP CRC 校验失败")
+        q_arm, mode, q_gripper = self._parse_data(data)
+        if mode not in UDPControlMode._NAMES or not all(math.isfinite(v) for v in (*q_arm, *q_gripper)):
+            raise ValueError("UDP 模式未知或目标包含非有限数")
+        return UDPCommand(q_arm, mode, q_gripper, raw_packet=packet)
+
+    def _reader_loop(self) -> None:
+        """有界排空后只发布最新位置；线程停顿后丢弃残留报文至排空。"""
+        previous_poll = time.monotonic()
+        backlog_since = None
+        discard = False
+        pending = None
         while not self._stop_event.is_set():
             try:
                 sock = self._sock
                 if sock is None:
                     break
-
-                nbytes, addr = sock.recvfrom_into(buf, self.PACKET_SIZE)
-                received_monotonic = time.monotonic()
-
-                if nbytes != self.PACKET_SIZE:
+                now = time.monotonic()
+                # 空闲等待最多 100 ms；超出通信期限的调度停顿不能刷新旧包年龄。
+                if now - previous_poll > self.RECEIVE_DEADLINE_S:
+                    discard = True
+                    pending = None
+                    self._control_event("UDP 接收线程停顿，丢弃残留报文")
                     with self._cond:
-                        self._last_error = ValueError(
-                            f"收到异常长度数据包: {nbytes} bytes, "
-                            f"期望 {self.PACKET_SIZE} bytes, 来自 {addr}"
-                        )
-                        self._cond.notify_all()
+                        self._last_error = RuntimeError("UDP 接收线程停顿")
+                previous_poll = now
+                if not select.select([sock], [], [], min(self.recv_timeout, 0.1))[0]:
+                    pending = None
+                    backlog_since = None
+                    discard = False
                     continue
-
-                if bytes(buf[:self.HEADER_SIZE]) != self.HEADER:
+                deadline = time.monotonic() + 0.005
+                drained = False
+                for _ in range(256):
+                    packet, addr = sock.recvfrom(self.PACKET_SIZE + 1)
+                    received = time.monotonic()
+                    try:
+                        cmd = self._decode_packet(packet)
+                    except ValueError as exc:
+                        pending = None
+                        self._control_event(str(exc))
+                        with self._cond:
+                            self._last_error = exc
+                            self._cond.notify_all()
+                    else:
+                        with self._cond:
+                            self._frame_count += 1
+                            seq = self._frame_count
+                        if cmd.mode != UDPControlMode.JOINT_TRACK:
+                            self._control_event("主端退出关节跟踪模式：" + UDPControlMode.cn_name(cmd.mode))
+                        if not discard:
+                            pending = (cmd, addr, received, seq)
+                    if not select.select([sock], [], [], 0)[0]:
+                        drained = True
+                        break
+                    if time.monotonic() >= deadline:
+                        break
+                if time.monotonic() - previous_poll > self.RECEIVE_DEADLINE_S and not discard:
+                    # 排空过程中发生调度停顿时，本批不能以恢复后的读取时刻冒充新鲜输入。
+                    discard = True
+                    pending = None
+                    self._control_event("UDP 排空过程超出通信期限")
                     with self._cond:
-                        self._last_error = ValueError(
-                            f"帧头不匹配，来自 {addr}"
-                        )
-                        self._cond.notify_all()
-                    continue
-
-                data = buf[self.DATA_OFFSET:self.CRC_OFFSET]
-
-                expected_crc = struct.unpack("!I", buf[self.CRC_OFFSET:self.FOOTER_OFFSET])[0]
-                actual_crc = binascii.crc32(data) & 0xFFFFFFFF
-                if expected_crc != actual_crc:
-                    with self._cond:
-                        self._last_error = ValueError(
-                            f"CRC 校验失败: expected=0x{expected_crc:08X}, "
-                            f"actual=0x{actual_crc:08X}, 来自 {addr}"
-                        )
-                        self._cond.notify_all()
-                    continue
-
-                if bytes(buf[self.FOOTER_OFFSET:]) != self.FOOTER:
-                    with self._cond:
-                        self._last_error = ValueError(
-                            f"帧尾不匹配，来自 {addr}"
-                        )
-                        self._cond.notify_all()
-                    continue
-
-                q_arm, mode, q_gripper = self._parse_data(data)
-
-                cmd = UDPCommand(
-                    q_arm=q_arm,
-                    mode=mode,
-                    q_gripper=q_gripper,
-                    raw_packet=bytes(buf),
-                )
-
-                with self._cond:
-                    self._latest_command = cmd
-                    self._last_error = None
-                    self._frame_count += 1
-                    self._last_update_time = cmd.recv_time
-                    self._last_received_monotonic = received_monotonic
-                    self._sender_address = addr
-                    self._cond.notify_all()
-
-            except socket.timeout:
-                # 仅在超时时检查 stop 事件，正常情况
-                continue
-
+                        self._last_error = RuntimeError("UDP 排空过程超出通信期限")
+                if drained:
+                    if pending is not None and not discard:
+                        cmd, addr, received, seq = pending
+                        with self._cond:
+                            self._latest_command = cmd
+                            self._published_frame_count = seq
+                            self._last_error = None
+                            self._last_update_time = cmd.recv_time
+                            self._last_received_monotonic = received
+                            self._sender_address = addr
+                            self._cond.notify_all()
+                    pending = None
+                    backlog_since = None
+                    discard = False
+                else:
+                    if backlog_since is None:
+                        backlog_since = time.monotonic()
+                    elif not discard and time.monotonic() - backlog_since > self.RECEIVE_DEADLINE_S:
+                        discard = True
+                        pending = None
+                        self._control_event("UDP 接收缓冲持续积压")
+                        with self._cond:
+                            self._last_error = RuntimeError("UDP 接收缓冲持续积压")
+                    self._stop_event.wait(0.001)
             except OSError as exc:
                 if self._stop_event.is_set():
                     break
+                self._control_event("UDP 接收失败：" + str(exc))
                 with self._cond:
                     self._last_error = exc
                     self._cond.notify_all()
-                if exc.errno in (errno.EBADF, errno.ENOTSOCK):
-                    break
-                # 网络不可达等错误不代表 socket 已关闭；保留接收线程等待恢复。
-                self._stop_event.wait(0.1)
-
-            except Exception as e:
-                with self._cond:
-                    self._last_error = e
-                    self._cond.notify_all()
+                break
 
     @staticmethod
     def _parse_data(data: bytes) -> Tuple[List[float], int, List[float]]:
@@ -372,14 +397,16 @@ class URUDPClient:
     def get_latest_and_count(self) -> Tuple[Optional[UDPCommand], int]:
         """获取最新指令及帧计数。"""
         with self._cond:
-            return self._latest_command, self._frame_count
+            return self._latest_command, self._published_frame_count
 
     def get_monitor_snapshot(self) -> dict:
         """在同一锁内读取最新有效指令、来源和时刻；显示层取得独立指令副本。"""
         with self._cond:
             return {
                 "command": deepcopy(self._latest_command),
-                "frame_count": self._frame_count,
+                "frame_count": self._published_frame_count,
+                "control_event_seq": self._control_event_seq,
+                "control_event_reason": self._control_event_reason,
                 "received_time": self._last_update_time,
                 "received_monotonic": self._last_received_monotonic,
                 "sender_address": self._sender_address,
@@ -407,10 +434,10 @@ class URUDPClient:
         UDPCommand | None — 超时则返回 None。
         """
         with self._cond:
-            target = self._frame_count
+            target = self._published_frame_count
 
             self._cond.wait_for(
-                lambda: self._frame_count > target
+                lambda: self._published_frame_count > target
                 or self._last_error is not None,
                 timeout=timeout,
             )
@@ -419,7 +446,7 @@ class URUDPClient:
     def get_frame_count(self) -> int:
         """获取已成功接收的帧数。"""
         with self._cond:
-            return self._frame_count
+            return self._published_frame_count
 
     def get_last_update_time(self) -> Optional[float]:
         """获取最近一次成功收包的时间戳（time.time()）。"""

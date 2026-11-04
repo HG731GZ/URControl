@@ -3,6 +3,8 @@
 import argparse
 from copy import deepcopy
 import math
+from pathlib import Path
+import time
 import sys
 from types import SimpleNamespace
 
@@ -23,13 +25,26 @@ class PreviewWindow(QtWidgets.QMainWindow):
         self.ui.setupUi(self)
         self.display = WindowDisplayController(self, self.ui, self.settings)
         self._admittance_window = None
+        self._teleop_window = None
+        from UR_Utils.ur5e_visualizer import UR5eDualVisualizer
+        self.robot_visualizer = UR5eDualVisualizer(
+            str(Path(__file__).parent / "UR_Utils/universal_robots_ur5e/ur5e.xml"),
+            camera_azimuth_deg=-120, camera_elevation_deg=21)
+        self.ui.verticalLayout_RobotViewport.addWidget(self.robot_visualizer.widget)
         self._configure_preview()
         self.ui.pushButton_Admittance.clicked.connect(self.open_admittance)
+        self.ui.pushButton_TeleopImpedance.clicked.connect(self.open_teleop_impedance)
 
     def _configure_preview(self):
         self.setWindowTitle('URControl · 离线界面预览')
         self.ui.label_ClassicTitle.setText('离线界面预览 · 不连接设备')
         self.ui.pushButton_Admittance.setEnabled(True)
+
+    def open_teleop_impedance(self):
+        if self._teleop_window is None:
+            self._teleop_window = create_teleop_impedance_preview('ready')
+        self._teleop_window.show()
+        self._teleop_window.raise_()
 
     def open_admittance(self):
         if self._admittance_window is None:
@@ -301,8 +316,45 @@ def create_admittance_preview(scenario='fixed-joint', settings=None):
     return window
 
 
+def create_teleop_impedance_preview(scenario='ready'):
+    """明确标记的固定演示快照，不创建 UDP、设备或运行日志。"""
+    from teleop_impedance_window import TeleopImpedanceWindow
+    from UR_Utils.impedance_config import snapshot
+
+    window = TeleopImpedanceWindow()
+    window.setWindowTitle('遥操作阻抗 · 离线演示，不连接设备')
+    actual = [-1.57, -1.16, -1.72, -1.20, 1.55, 0.02]
+    master = [q + 0.08 for q in actual]
+    phases = {'ready': '可以直接开启；同步可选', 'sync': 'SYNC_MOVING',
+              'preparing': 'PREPARING', 'running': 'RUNNING', 'stopping': 'STOPPING',
+              'unconfirmed': 'STOP_UNCONFIRMED', 'stopped': '已确认停止',
+              'offline': '机器人未连接', 'stale': '主端目标已过期', 'mode': '主端不是关节跟踪模式'}
+    active = scenario in ('sync', 'preparing', 'running', 'stopping', 'unconfirmed')
+    def refresh():
+        now = time.monotonic()
+        udp = dict(command=None if scenario == 'offline' else SimpleNamespace(mode=0 if scenario == 'mode' else 1, q_arm=master),
+                   frame_count=500, received_monotonic=now-(1.0 if scenario == 'stale' else .008), last_error=None)
+        window.update_context(snapshot=udp, actual_q=None if scenario == 'offline' else actual,
+                              config=snapshot(), revision=3, dirty=False,
+                              reason=phases[scenario], phase=phases[scenario],
+                              can_sync=scenario in ('ready', 'stopped'), can_start=scenario in ('ready', 'stopped'),
+                              can_stop=active, result='演示数据；主端与实际不同，生效参考不替代主端。关闭只隐藏。', now=now)
+    # 过期场景先展示曾经收到的姿态，再将数值标记为无效。
+    if scenario == 'stale':
+        window._master = tuple(master)
+        window.visualizer.update_virtual(master)
+    refresh()
+    window._preview_timer = QtCore.QTimer(window)
+    window._preview_timer.timeout.connect(refresh)
+    window._preview_timer.start(50)
+    return window
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='URControl 离线界面预览，不连接设备')
+    parser.add_argument('--teleop-impedance', action='store_true', help='预览遥操作阻抗独立窗口')
+    parser.add_argument('--teleop-state', choices=('offline', 'mode', 'ready', 'sync', 'preparing', 'running', 'stale', 'stopping', 'unconfirmed', 'stopped'), default='ready')
+    parser.add_argument('--capture', type=Path, help='保存离线窗口截图后退出')
     parser.add_argument('--impedance', action='store_true', help='预览关节阻抗窗口')
     parser.add_argument('--impedance-tuning', action='store_true', help='预览 J1～J6 阶跃及往返调参窗口')
     parser.add_argument('--admittance', action='store_true', help='预览独立导纳窗口')
@@ -311,12 +363,15 @@ if __name__ == '__main__':
     args = parser.parse_args()
     configure_high_dpi()
     app = QtWidgets.QApplication(sys.argv)
-    if args.impedance_tuning:
+    if args.teleop_impedance:
+        window = create_teleop_impedance_preview(args.teleop_state)
+    elif args.impedance_tuning:
         from impedance_tuning_window import ImpedanceTuningWindow
         from UR_Utils.impedance_config import snapshot
         from UR_Utils.URImpedanceController import idle_impedance_status
 
-        window = ImpedanceTuningWindow(snapshot())
+        from impedance_parameters import ImpedanceParameters
+        window = ImpedanceTuningWindow(ImpedanceParameters())
         window._load_tuned_defaults()
         window.setWindowTitle('J1 阻抗调参 · 离线预览，不连接设备')
         window.update_context(idle_impedance_status(), True, False,
@@ -332,10 +387,16 @@ if __name__ == '__main__':
         from impedance_window import ImpedanceWindow
         from UR_Utils.impedance_trajectory import generate
         from UR_Utils.URImpedanceController import idle_impedance_status
-        window = ImpedanceWindow()
+        from impedance_parameters import ImpedanceParameters
+        window = ImpedanceWindow(ImpedanceParameters())
         window.trajectory = generate()
         window.update_status(idle_impedance_status(), ready=True)
     else:
         window = create_admittance_preview(args.scenario) if args.admittance else PreviewWindow()
     window.show()
+    if args.capture:
+        def capture():
+            window.grab().save(str(args.capture))
+            app.quit()
+        QtCore.QTimer.singleShot(1200, capture)
     sys.exit(app.exec_())

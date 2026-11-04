@@ -1,4 +1,4 @@
-"""六关节 K/D 阻抗的 SI 参数契约；主 UI 默认使用已完成调参的实机关节参数。"""
+"""六关节 K/D 阻抗的 SI 参数契约；主 UI 默认使用分档完成实机验证的参数。"""
 
 from copy import deepcopy
 import math
@@ -8,13 +8,13 @@ from pathlib import Path
 DEFAULTS = {
     "JOINT_K": [2400.0, 3200, 2600, 1000, 800, 1000],
     "JOINT_D": [200.0, 320, 220, 60, 40, 40],
-    "TAU_MAX_NM": [12.0, 12, 10, 3, 3, 3],
+    "TAU_MAX_NM": [12.0, 12, 10, 6, 6, 6],
     "TAU_RATE_MAX_NM_S": [100.0, 300, 200, 200, 200, 200],
-    "REF_MAX_QD_RAD_S": [0.10266642658790173, 0.1026664265882353, 0.1026664265882353, 0.1026664265882353, 0.1026664265882353, 0.1026664265882353],
-    "REF_MAX_QDD_RAD_S2": [2.4, 2.4, 2.4, 2.4, 2.4, 2.4],
+    "REF_MAX_QD_RAD_S": [0.23529411764705885, 0.23529411764705885, 0.1026664265882353, 1.0, 1.0, 1.0],
+    "REF_MAX_QDD_RAD_S2": [2.4, 2.4, 2.4, 60.0, 60.0, 60.0],
     "JOINT_POSITION_LIMIT_RAD": [6.283185307179586, 6.283185307179586, 6.283185307179586, 6.283185307179586, 6.283185307179586, 6.283185307179586],
-    "ENVELOPE_RAD": [0.17, 0.12, 0.12, 0.12, 0.12, 0.12],
-    "ACTUAL_MAX_QD_RAD_S": [0.3, 0.3, 0.3, 0.3, 0.3, 0.3],
+    "ENVELOPE_RAD": [0.17, 0.12, 0.12, 0.22, 0.22, 0.22],
+    "ACTUAL_MAX_QD_RAD_S": [0.3, 0.3, 0.3, 1.0, 1.0, 1.0],
     "MAX_ERROR_RAD": [0.1, 0.1, 0.1, 0.1, 0.1, 0.1],
     "VISCOUS_SCALE": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     "COULOMB_SCALE": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
@@ -23,7 +23,7 @@ DEFAULTS = {
     "FEEDBACK_TIMEOUT_S": 0.25,
     "SEND_TIMEOUT_S": 0.02,
     "HARD_WATCHDOG_HZ": 1.0,
-    "STOP_ACCEL_RAD_S2": 2.0,
+    "STOP_ACCEL_RAD_S2": 8.0,
     "STOP_TIMEOUT_S": 4.0,
     "STATIONARY_QD_RAD_S": 0.01,
     "STOP_CONFIRM_S": 0.1,
@@ -72,6 +72,8 @@ def validate(config=None):
 
 
 def render_script(config, run_id, reference_source="trajectory"):
+    if reference_source not in ("teleop", "trajectory", "step"):
+        raise ValueError("未知阻抗目标源")
     cfg = validate(config)
     script = (
         Path(__file__)
@@ -83,6 +85,7 @@ def render_script(config, run_id, reference_source="trajectory"):
         script = script.replace("{{" + key + "}}", str(value))
     script = script.replace("{{RUN_ID}}", str(int(run_id)))
     script = script.replace("{{DIRECT_STEP}}", str(reference_source == "step"))
+    script = script.replace("{{TELEOP}}", str(reference_source == "teleop"))
     if "{{" in script:
         raise ValueError("脚本包含未替换的参数")
     # 展开固定六轴循环，使 URScript 指令计算保持在 2 ms 周期内。

@@ -1,4 +1,4 @@
-<?xml version='1.0' encoding='UTF-8'?>
+<?xml version='1.0' encoding='utf-8'?>
 <ui version="4.0">
  <class>MainWindow</class>
  <widget class="QMainWindow" name="MainWindow">
@@ -126,7 +126,7 @@
     <item>
      <widget class="QGroupBox" name="groupBox_Admittance">
       <property name="title">
-       <string>导纳调参与监视</string>
+       <string>导纳与阻抗控制</string>
       </property>
       <layout class="QGridLayout" name="gridLayout_Admittance">
        <property name="leftMargin">
@@ -191,6 +191,16 @@
           <widget class="QPushButton" name="pushButton_Impedance">
            <property name="text">
             <string>关节阻抗</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="pushButton_TeleopImpedance">
+           <property name="text">
+            <string>遥操作阻抗</string>
+           </property>
+           <property name="toolTip">
+            <string>打开独立非模态窗口；关闭仅隐藏，正在进行的同步或遥操作继续。</string>
            </property>
           </widget>
          </item>

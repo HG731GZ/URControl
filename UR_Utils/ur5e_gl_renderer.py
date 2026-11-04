@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import lru_cache
 import ctypes
 import math
 import time
@@ -68,7 +69,7 @@ from OpenGL.GL import (
     glVertexAttribPointer,
     glViewport,
 )
-from PyQt5 import QtCore
+from PyQt5 import QtCore, QtGui
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor, QFont, QPainter
 from PyQt5.QtWidgets import QOpenGLWidget, QSizePolicy
@@ -315,11 +316,11 @@ class ArcballCamera:
 class GLMesh:
     """单个 OBJ mesh 的 GPU 资源缓存。"""
 
-    _gpu_cache: Dict[Tuple[str, int, int], _MeshGpuResource] = {}
+    _gpu_cache: Dict[Tuple[QtGui.QOpenGLContext, str, int, int], _MeshGpuResource] = {}
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
-        self._cache_key = self._make_cache_key(self.path)
+        self._cache_key = (QtGui.QOpenGLContext.currentContext(), *self._make_cache_key(self.path))
         resource = self._gpu_cache.get(self._cache_key)
         if resource is None:
             resource = self._upload_mesh(self.path)
@@ -333,6 +334,7 @@ class GLMesh:
         return str(resolved), stat.st_mtime_ns, stat.st_size
 
     @staticmethod
+    @lru_cache(maxsize=64)
     def _load_trimesh(path: Path) -> trimesh.Trimesh:
         mesh = trimesh.load(str(path), force="mesh", process=False)
         if isinstance(mesh, trimesh.Scene):
@@ -404,11 +406,13 @@ class GLMesh:
 
     @classmethod
     def clear_gpu_cache(cls) -> None:
-        for resource in cls._gpu_cache.values():
+        context = QtGui.QOpenGLContext.currentContext()
+        keys = [key for key in cls._gpu_cache if key[0] is context]
+        for key in keys:
+            resource = cls._gpu_cache.pop(key)
             glDeleteBuffers(1, [resource.vbo])
             glDeleteBuffers(1, [resource.ebo])
             glDeleteVertexArrays(1, [resource.vao])
-        cls._gpu_cache.clear()
 
 
 @dataclass
@@ -463,6 +467,7 @@ class RobotGLWidget(QOpenGLWidget):
         self._base_frame: Optional[_LineResource] = None
         self._ee_frame: Optional[_LineResource] = None
         self._actual_transforms: Optional[List[np.ndarray]] = None
+        self._actual_visible = self._virtual_visible = True
         self._virtual_transforms: Optional[List[np.ndarray]] = None
         self._actual_ee_tf: Optional[np.ndarray] = None
         self._virtual_ee_tf: Optional[np.ndarray] = None
@@ -558,15 +563,25 @@ class RobotGLWidget(QOpenGLWidget):
         glEnable(GL_BLEND)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
         glDepthMask(GL_FALSE)
-        self._draw_robot(self._virtual_transforms, proj, view, alpha=0.4)
+        if self._virtual_visible:
+            self._draw_robot(self._virtual_transforms, proj, view, alpha=0.4)
         glDepthMask(GL_TRUE)
         glDisable(GL_BLEND)
 
-        self._draw_robot(self._actual_transforms, proj, view, alpha=1.0)
+        if self._actual_visible:
+            self._draw_robot(self._actual_transforms, proj, view, alpha=1.0)
 
-        self._draw_ee_frame(self._actual_ee_tf, proj, view)
-        self._draw_ee_frame(self._virtual_ee_tf, proj, view)
+        if self._actual_visible:
+            self._draw_ee_frame(self._actual_ee_tf, proj, view)
+        if self._virtual_visible:
+            self._draw_ee_frame(self._virtual_ee_tf, proj, view)
         self._draw_camera_info_overlay()
+
+    def set_visibility(self, *, actual, virtual):
+        """仅切换模型及末端坐标轴，不改变姿态或相机。"""
+        if (actual, virtual) != (self._actual_visible, self._virtual_visible):
+            self._actual_visible, self._virtual_visible = actual, virtual
+            self.update()
 
     def update_actual_transforms(
         self,

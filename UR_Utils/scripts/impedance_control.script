@@ -151,13 +151,13 @@ def joint_impedance():
         end
         local j = 0
         while j < 6:
-          if norm(incoming[j]) > qlimit[j] or norm(incoming[j]-anchor[j]) > envelope[j]:
+          if norm(incoming[j]) > qlimit[j] or (not {{TELEOP}} and norm(incoming[j]-anchor[j]) > envelope[j]):
             fault = 4
           end
-          if adopted > 0 and norm(incoming[j]-source[j]) > {{MAX_SOURCE_STEP_RAD}}:
+          if adopted > 0 and seq != source_seq and norm(incoming[j]-source[j]) > {{MAX_SOURCE_STEP_RAD}}:
             fault = 4
           end
-          if phase == 1 and norm(incoming[j]-anchor[j]) > {{START_TOLERANCE_RAD}}:
+          if not {{TELEOP}} and phase == 1 and norm(incoming[j]-anchor[j]) > {{START_TOLERANCE_RAD}}:
             fault = 4
           end
           j = j+1
@@ -178,7 +178,7 @@ def joint_impedance():
     local v = get_actual_joint_speeds()
     local j = 0
     while j < 6:
-      if norm(q[j]) > qlimit[j] or norm(q[j]-anchor[j]) > envelope[j] or norm(v[j]) > speedguard[j]:
+      if norm(q[j]) > qlimit[j] or (not {{TELEOP}} and norm(q[j]-anchor[j]) > envelope[j]) or norm(v[j]) > speedguard[j]:
         fault = 5
       end
       j = j+1

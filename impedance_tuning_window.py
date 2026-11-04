@@ -9,7 +9,7 @@ from PyQt5 import QtCore, QtWidgets
 from admittance_plot import AdmittanceTrendWidget
 from impedance_tuning_report import TuningReportWorker
 from ui_impedance_tuning_window import Ui_ImpedanceTuningWindow
-from UR_Utils.impedance_config import validate
+from UR_Utils.impedance_config import validate, snapshot
 from UR_Utils.impedance_trajectory import generate_axis_tuning
 from UR_Utils.impedance_step import JointStep
 
@@ -22,15 +22,16 @@ class ImpedanceTuningWindow(QtWidgets.QDialog):
         ("dampingSpin", "JOINT_D", 1.0),
         ("torqueSpin", "TAU_MAX_NM", 1.0),
         ("slewSpin", "TAU_RATE_MAX_NM_S", 1.0),
+        ("referenceSpeedSpin", "REF_MAX_QD_RAD_S", 180 / math.pi),
         ("accelerationSpin", "REF_MAX_QDD_RAD_S2", 180 / math.pi),
     )
 
-    def __init__(self, config, axis=0, parent=None):
+    def __init__(self, parameters, axis=0, parent=None):
         super().__init__(parent)
         self.ui = Ui_ImpedanceTuningWindow()
         self.ui.setupUi(self)
-        self.setWindowModality(QtCore.Qt.WindowModal)
-        self.config = validate(config)
+        self.setWindowModality(QtCore.Qt.NonModal)
+        self.parameters = parameters
         self.axis = axis
         self.trajectory = None
         self.generated_config = None
@@ -48,12 +49,18 @@ class ImpedanceTuningWindow(QtWidgets.QDialog):
         self._fill_axis()
         self.ui.axisCombo.currentIndexChanged.connect(self._change_axis)
         for name, _, _ in self.FIELDS:
-            getattr(self.ui, name).valueChanged.connect(self._invalidate)
+            getattr(self.ui, name).valueChanged.connect(self._parameter_edited)
         self.ui.speedSpin.valueChanged.connect(self._invalidate)
         self.ui.offsetSpin.valueChanged.connect(self._invalidate)
         self.ui.holdSpin.valueChanged.connect(self._invalidate)
         self.ui.modeCombo.currentIndexChanged.connect(self._mode_changed)
         self.ui.tunedPresetButton.clicked.connect(self._load_tuned_defaults)
+        self.ui.applyButton.clicked.connect(self.apply_parameters)
+        self.ui.discardButton.clicked.connect(self.discard_parameters)
+        self.ui.importButton.clicked.connect(self.import_preset)
+        self.ui.exportButton.clicked.connect(self.export_preset)
+        self.parameters.changed.connect(self._parameter_state)
+        self._parameter_state()
         self.ui.generateButton.clicked.connect(self.generate)
         self.ui.executeButton.clicked.connect(self.execute)
         self.ui.stopButton.clicked.connect(self._stop)
@@ -66,17 +73,83 @@ class ImpedanceTuningWindow(QtWidgets.QDialog):
     def _mode_changed(self):
         step = self._is_step()
         self.ui.speedSpin.setEnabled(not step)
-        self.ui.accelerationSpin.setEnabled(not step)
         self.ui.holdSpin.setEnabled(step)
         self._invalidate()
 
-    def _load_tuned_defaults(self):
-        self.config = validate()
-        self._fill_axis()
-        self.ui.speedSpin.setValue(math.degrees(self.config["REF_MAX_QD_RAD_S"][self.axis] * 0.85))
+    @property
+    def config(self):
+        return self.parameters.draft
+
+    def _parameter_state(self):
+        self.ui.parameterStateLabel.setText(
+            f"已应用版本 {self.parameters.revision} · "
+            + ("草稿有未应用修改" if self.parameters.dirty else "草稿与已应用参数一致")
+        )
+
+    def _parameter_edited(self):
+        try:
+            self.parameters.require_editable()
+        except ValueError as exc:
+            self._fill_axis()
+            self._error(exc)
+            return
+        for name, key, scale in self.FIELDS:
+            if self.sender() is getattr(self.ui, name):
+                self.config[key][self.axis] = getattr(self.ui, name).value() / scale
+        self._update_speed_limit()
+        self.parameters.changed.emit()
         self._invalidate()
-        self._current_label()
-        self.ui.statusLabel.setText("已载入主入口默认参数；当前轴保持不变，生成并执行后生效。")
+
+    def apply_parameters(self):
+        try:
+            self.parameters.apply()
+            self.ui.statusLabel.setText("完整六轴参数已应用；未启动运动。")
+        except ValueError as exc:
+            self._error(exc)
+
+    def discard_parameters(self):
+        try:
+            self.parameters.require_editable()
+            self.parameters.draft = deepcopy(self.parameters.prepared)
+            self._fill_axis()
+            self._invalidate()
+            self.parameters.changed.emit()
+        except ValueError as exc:
+            self._error(exc)
+
+    def _load_tuned_defaults(self):
+        try:
+            self.parameters.require_editable()
+            self.parameters.draft = snapshot()
+            self._fill_axis()
+            self._invalidate()
+            self.parameters.changed.emit()
+            self.ui.statusLabel.setText("默认值已载入草稿；仍需应用参数。")
+        except ValueError as exc:
+            self._error(exc)
+
+    def import_preset(self):
+        try:
+            self.parameters.require_editable()
+        except ValueError as exc:
+            self._error(exc)
+            return
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "导入阻抗预设", "", "JSON (*.json)")
+        if path:
+            try:
+                self.parameters.load(path)
+                self._fill_axis()
+                self._invalidate()
+            except (ValueError, OSError) as exc:
+                self._error(exc)
+
+    def export_preset(self):
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "导出阻抗草稿", "impedance_preset.json", "JSON (*.json)")
+        if path:
+            try:
+                self.parameters.save(path)
+            except (ValueError, OSError) as exc:
+                self._error(exc)
 
     def _fill_axis(self):
         for name, key, scale in self.FIELDS:
@@ -84,19 +157,19 @@ class ImpedanceTuningWindow(QtWidgets.QDialog):
             blocker = QtCore.QSignalBlocker(widget)
             widget.setValue(self.config[key][self.axis] * scale)
             del blocker
-        limit = math.degrees(self.config["ACTUAL_MAX_QD_RAD_S"][self.axis]) * 0.85
-        self.ui.speedSpin.setMaximum(limit)
+        self._update_speed_limit()
         self.ui.guardLabel.setText(
             f"摩擦补偿为 0；跟踪误差守卫 {math.degrees(self.config['MAX_ERROR_RAD'][self.axis]):.2f}°。\n"
             f"实际速度守卫 {math.degrees(self.config['ACTUAL_MAX_QD_RAD_S'][self.axis]):.2f}°/s。"
         )
 
-    def _store_axis(self):
-        for name, key, scale in self.FIELDS:
-            self.config[key][self.axis] = getattr(self.ui, name).value() / scale
+    def _update_speed_limit(self):
+        """激励速度同时满足参考上限和实际速度停止阈值的预算。"""
+        limit = min(self.config["REF_MAX_QD_RAD_S"][self.axis],
+                    self.config["ACTUAL_MAX_QD_RAD_S"][self.axis]) * 0.85
+        self.ui.speedSpin.setMaximum(math.degrees(limit))
 
     def _change_axis(self, axis):
-        self._store_axis()
         self.axis = axis
         self._fill_axis()
         self._invalidate()
@@ -119,15 +192,16 @@ class ImpedanceTuningWindow(QtWidgets.QDialog):
         )
 
     def _buttons(self):
-        locked = self.executing or self.busy or self.report_worker is not None
+        locked = self.executing or self.busy or self.report_worker is not None or self.parameters.locked
         self.ui.trajectoryGroup.setEnabled(not locked)
         self.ui.parameterGroup.setEnabled(not locked)
         self.ui.generateButton.setEnabled(not locked and self._fresh())
         self.ui.executeButton.setEnabled(
             not locked and self._fresh() and self.trajectory is not None
         )
-        self.ui.stopButton.setEnabled(self.executing or self.busy)
-        self.ui.tunedPresetButton.setEnabled(not locked)
+        self.ui.stopButton.setEnabled(self.executing)
+        for name in ("tunedPresetButton", "applyButton", "discardButton", "importButton"):
+            getattr(self.ui, name).setEnabled(not locked and not self.parameters.locked)
 
     def _current_label(self):
         if self.actual_q is None:
@@ -192,15 +266,11 @@ class ImpedanceTuningWindow(QtWidgets.QDialog):
             return
         try:
             self._stationary()
-            self._store_axis()
             cfg = deepcopy(self.config)
             offset = math.radians(self.ui.offsetSpin.value())
             speed = math.radians(self.ui.speedSpin.value())
             if offset == 0:
                 raise ValueError("角度偏置不能为零")
-            if not self._is_step():
-                # 为参考整形保留速度余量，轨迹本身严格使用用户设定的最大速度。
-                cfg["REF_MAX_QD_RAD_S"][self.axis] = speed / 0.85
             cfg = validate(cfg)
             if self._is_step():
                 trajectory = JointStep(self.actual_q, self.axis, offset, hold_s=self.ui.holdSpin.value())
@@ -323,6 +393,15 @@ class ImpedanceTuningWindow(QtWidgets.QDialog):
                 lines.append(
                     f"最终目标误差：{report['final_target_error_deg']:.4f}°。"
                 )
+            if report.get("tracking_response"):
+                tracking = report["tracking_response"]["tracking"]
+                passed = tracking["source_rms_within_tolerance"]
+                verdict = "证据不足" if passed is None else "满足" if passed else "未满足"
+                lines.append(
+                    f"运动阶段：生成目标 RMS {math.degrees(tracking['motion_source_rmse_rad']):.4f}°；"
+                    f"生效参考 RMS {math.degrees(tracking['motion_reference_rmse_rad']):.4f}°；"
+                    f"{verdict} {tracking['rms_tolerance_deg']:g}° 跟踪目标。"
+                )
             if report.get("step_response"):
                 response = report["step_response"]
                 step = response["step"]
@@ -330,7 +409,7 @@ class ImpedanceTuningWindow(QtWidgets.QDialog):
                 settling = "未稳定进入" if step["settling_time_s"] is None else f"{step['settling_time_s']:.3f} s"
                 lines[1:1] = [
                     f"阶跃：10%→90% {rise}；超调 {step['overshoot_percent']:.2f}%；"
-                    f"±{step['settling_tolerance_rad']:.4f} rad 稳定时间：{settling}。",
+                    f"±{math.degrees(step['settling_tolerance_rad']):.2f}° 稳定时间：{settling}。",
                     f"末 1 秒平均误差：{math.degrees(response['tail_mean_error_rad']):.4f}°；"
                     "阶跃时间指标分辨率约 10 ms。",
                 ]

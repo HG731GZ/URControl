@@ -13,6 +13,7 @@ def generate():
         "admittance_window",
         "impedance_window",
         "impedance_tuning_window",
+        "teleop_impedance_window",
     ):
         source = directory / (name + ".ui")
         destination = directory / ("ui_" + name + ".py")

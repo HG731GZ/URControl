@@ -35,8 +35,9 @@ class TrajectorySource:
 
 
 class UDPImpedanceSource:
-    def __init__(self, client, backend):
+    def __init__(self, client, backend, control_event_seq):
         self.client, self.backend = client, backend
+        self.control_event_seq = control_event_seq
         self.stop_event = threading.Event()
         self.thread = threading.Thread(
             target=self._run, daemon=True, name="ImpedanceUDPSource"
@@ -59,6 +60,9 @@ class UDPImpedanceSource:
         previous = -1
         while not self.stop_event.wait(0.005):
             snapshot = self.client.get_monitor_snapshot()
+            if snapshot["control_event_seq"] != self.control_event_seq:
+                self.backend.request_stop(snapshot["control_event_reason"])
+                return
             command = snapshot["command"]
             if snapshot["last_error"] or command is None or command.mode != 1:
                 self.backend.request_stop("UDP 模式变化或接收错误")
@@ -71,12 +75,12 @@ class UDPImpedanceSource:
                 self.backend.request_stop("UDP 目标断流")
                 return
             if snapshot["frame_count"] != previous:
-                previous = snapshot["frame_count"]
                 frame = JointTargetFrame(
                     self.backend.run_id,
                     "teleop",
-                    previous,
+                    snapshot["frame_count"],
                     tuple(command.q_arm),
                     snapshot["received_monotonic"],
                 )
-                self.backend.submit_reference(frame)
+                if self.backend.submit_reference(frame):
+                    previous = snapshot["frame_count"]

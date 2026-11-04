@@ -71,6 +71,7 @@ class ImpedanceProcess:
         stop_event=None,
         log_directory=None,
         initial_reference=None,
+        parameter_revision=None,
     ):
         self.robot_ip, self.reference_source = robot_ip, reference_source
         self.parameters = validate(config)
@@ -100,6 +101,8 @@ class ImpedanceProcess:
             "phase": "PREPARING",
             "stopped_confirmed": False,
             "run_id": self.run_id,
+            "source": reference_source,
+            "parameter_revision": parameter_revision,
         }
         directory = Path(
             log_directory
@@ -112,6 +115,7 @@ class ImpedanceProcess:
             parameters=self.parameters,
             run_id=self.run_id,
             source=reference_source,
+            parameter_revision=parameter_revision,
             trajectory=trajectory,
             play_hz=self.play_hz,
             directory=str(directory),
@@ -215,7 +219,7 @@ class ImpedanceProcess:
 
             confirm_stopped(
                 self.robot_ip,
-                deadline=self._stop_deadline,
+                deadline=time.monotonic() + self.parameters["STOP_TIMEOUT_S"],
                 speed_limit=self.parameters["STATIONARY_QD_RAD_S"],
                 window=self.parameters["STOP_CONFIRM_S"],
             )
@@ -224,6 +228,7 @@ class ImpedanceProcess:
                 phase="STOPPED_CONFIRMED",
                 stopped_confirmed=True,
                 running=False,
+                stop_error=None,
             )
         self.close()
 

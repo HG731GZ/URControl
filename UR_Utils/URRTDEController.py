@@ -326,7 +326,8 @@ class URRTDEController:
         return 'ordinary'
 
     def start_impedance(self, reference_source='trajectory', *, config=None, trajectory=None,
-                        play_hz=None, initial_reference=None, stop_event=None, log_directory=None):
+                        play_hz=None, initial_reference=None, stop_event=None, log_directory=None,
+                        parameter_revision=None, source_started=None):
         with self._lifecycle_lock:
             if self._is_shutdown:
                 raise RuntimeError('控制器已经关闭')
@@ -334,12 +335,15 @@ class URRTDEController:
             if self._impedance is not None:
                 self._impedance.close()
             backend = ImpedanceProcess(self.robot_ip,reference_source,config=config,trajectory=trajectory,
-                play_hz=play_hz,initial_reference=initial_reference,stop_event=stop_event,log_directory=log_directory)
+                play_hz=play_hz,initial_reference=initial_reference,stop_event=stop_event,log_directory=log_directory,
+                parameter_revision=parameter_revision)
             self._impedance = backend
             self._last_custom_backend = "impedance"
             try:
                 if stop_event is not None and stop_event.is_set():
                     backend.cancel_before_start(); return False
+                if source_started is not None:
+                    source_started(backend)
                 self._stop_ordinary(stop_script=True)
                 with self._rtde_c_lock:
                     if self._ordinary_connected:

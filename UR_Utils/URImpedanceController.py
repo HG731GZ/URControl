@@ -38,6 +38,7 @@ class URImpedanceController:
         directory,
         stop_event,
         service,
+        parameter_revision=None,
     ):
         self.ip, self.parameters, self.run_id = ip, config.validate(parameters), run_id
         self.source, self.trajectory, self.play_hz = source, trajectory, play_hz
@@ -61,6 +62,7 @@ class URImpedanceController:
                 record_type="joint_impedance_run",
                 schema_version=1,
                 parameters=self.parameters,
+                parameter_revision=parameter_revision,
                 run_id=run_id,
                 source=source,
                 robot_ip=ip,
@@ -303,7 +305,8 @@ class URImpedanceController:
                     raise RuntimeError("没有有效首目标")
                 age = frame.check(self.run_id, now, cfg)
                 if (
-                    not seen_running
+                    self.source != "teleop"
+                    and not seen_running
                     and max(abs(a - b) for a, b in zip(frame.q_rad, anchor))
                     > cfg["START_TOLERANCE_RAD"]
                 ):
