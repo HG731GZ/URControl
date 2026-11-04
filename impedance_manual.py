@@ -78,12 +78,13 @@ def main():
         raise ValueError("实际速度阈值和停止减速度必须为正")
     if args.stop_at_speed is not None and not 0 < args.stop_at_speed < args.actual_speed_limit:
         raise ValueError("主动停止速度必须在零与实际速度停止阈值之间")
-    # 按速度阈值扣除机器人端三周期守卫反应距离、理论制动距离及锚点余量。
-    braking = args.actual_speed_limit * 0.006 + args.actual_speed_limit ** 2 / (2 * args.stop_acceleration)
+    cfg = snapshot()
+    # 按当前循环间隔门槛预留三周期反应距离，再扣除理论制动距离及锚点余量。
+    braking = (args.actual_speed_limit * 3 * cfg["CYCLE_MAX_S"]
+               + args.actual_speed_limit ** 2 / (2 * args.stop_acceleration))
     remaining = args.workspace_radius - braking - abs(q[axis] - center[axis]) - 0.005
     if remaining <= 0:
         raise ValueError("当前位置没有足够的目标轴工作区余量")
-    cfg = snapshot()
     cfg["JOINT_K"][axis], cfg["JOINT_D"][axis] = args.k, args.d
     cfg["TAU_MAX_NM"][axis], cfg["TAU_RATE_MAX_NM_S"][axis] = args.torque, args.slew
     cfg["ENVELOPE_RAD"] = [0.02] * 6
@@ -91,8 +92,6 @@ def main():
     cfg["ACTUAL_MAX_QD_RAD_S"] = [0.08] * 6
     cfg["ACTUAL_MAX_QD_RAD_S"][axis] = args.actual_speed_limit
     cfg["STOP_ACCEL_RAD_S2"] = args.stop_acceleration
-    cfg["MAX_ERROR_RAD"] = [0.02] * 6
-    cfg["MAX_ERROR_RAD"][axis] = 0.10
     cfg["START_TOLERANCE_RAD"] = 0.003
     cfg["END_HOLD_S"] = 1.0
     cfg["REF_MAX_QD_RAD_S"][axis] = args.speed / 0.85

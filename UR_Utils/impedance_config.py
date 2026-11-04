@@ -1,4 +1,4 @@
-"""六关节 K/D 阻抗的 SI 参数契约；主 UI 默认使用分档完成实机验证的参数。"""
+"""六关节 K/D 阻抗的 SI 参数契约；实机调参基础上的当前默认值。"""
 
 from copy import deepcopy
 import math
@@ -7,15 +7,14 @@ from pathlib import Path
 
 DEFAULTS = {
     "JOINT_K": [2400.0, 3200, 2600, 1000, 800, 1000],
-    "JOINT_D": [200.0, 320, 220, 60, 40, 40],
-    "TAU_MAX_NM": [12.0, 12, 10, 6, 6, 6],
-    "TAU_RATE_MAX_NM_S": [100.0, 300, 200, 200, 200, 200],
-    "REF_MAX_QD_RAD_S": [0.23529411764705885, 0.23529411764705885, 0.1026664265882353, 1.0, 1.0, 1.0],
-    "REF_MAX_QDD_RAD_S2": [2.4, 2.4, 2.4, 60.0, 60.0, 60.0],
+    "JOINT_D": [150.0, 240, 180, 60, 40, 40],
+    "TAU_MAX_NM": [24.0, 24, 18, 6, 6, 6],
+    "TAU_RATE_MAX_NM_S": [300.0, 300, 200, 200, 200, 200],
+    "REF_MAX_QD_RAD_S": [0.8235294117647058, 0.7058823529411765, 0.7058823529411765, 1.0, 1.0, 1.0],
+    "REF_MAX_QDD_RAD_S2": [30.0, 30.0, 30.0, 60.0, 60.0, 60.0],
     "JOINT_POSITION_LIMIT_RAD": [6.283185307179586, 6.283185307179586, 6.283185307179586, 6.283185307179586, 6.283185307179586, 6.283185307179586],
-    "ENVELOPE_RAD": [0.17, 0.12, 0.12, 0.22, 0.22, 0.22],
-    "ACTUAL_MAX_QD_RAD_S": [0.3, 0.3, 0.3, 1.0, 1.0, 1.0],
-    "MAX_ERROR_RAD": [0.1, 0.1, 0.1, 0.1, 0.1, 0.1],
+    "ENVELOPE_RAD": [0.22, 0.22, 0.22, 0.22, 0.22, 0.22],
+    "ACTUAL_MAX_QD_RAD_S": [1.2, 1.2, 1.2, 1.2, 1.2, 1.2],
     "VISCOUS_SCALE": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     "COULOMB_SCALE": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     "SOURCE_TIMEOUT_S": 0.25,
@@ -30,12 +29,11 @@ DEFAULTS = {
     "START_TOLERANCE_RAD": 0.003,
     "RAMP_S": 0.5,
     "START_TIMEOUT_S": 8.0,
-    "SATURATION_TIMEOUT_S": 0.5,
     "END_HOLD_S": 1.0,
     "END_SETTLE_TIMEOUT_S": 5.0,
     "PLAYBACK_MAX_LAG_S": 0.1,
     "MAX_SOURCE_STEP_RAD": 0.1,
-    "CYCLE_MAX_S": 0.003,
+    "CYCLE_MAX_S": 0.010,
     "EXPECTED_TCP_OFFSET": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
 }
 
@@ -63,8 +61,8 @@ def validate(config=None):
             cfg[key] = float(value)
             if not math.isfinite(cfg[key]) or cfg[key] <= 0:
                 raise ValueError(f"{key} 不合法")
-    if cfg["CYCLE_MAX_S"] >= 0.004 or cfg["CYCLE_MAX_S"] <= 0.002:
-        raise ValueError("周期门槛必须在 2～4 ms 之间")
+    if not 0.002 < cfg["CYCLE_MAX_S"] <= 0.010:
+        raise ValueError("循环间隔门槛须大于 2 ms 且不超过 10 ms")
     braking = max(cfg["ACTUAL_MAX_QD_RAD_S"]) / cfg["STOP_ACCEL_RAD_S2"]
     if cfg["HEARTBEAT_TIMEOUT_S"] + braking + 0.1 >= 1 / cfg["HARD_WATCHDOG_HZ"]:
         raise ValueError("软件失联、制动和余量超过硬看门狗预算")

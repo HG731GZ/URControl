@@ -56,9 +56,9 @@ class JointStep:
     def validate_playback(self, config, play_hz):
         if play_hz != self.sample_hz:
             raise ValueError("阶跃不允许通过播放倍率改变保持时长")
-        step_limit = 0.035 if self.axis in (3, 4, 5) else 0.05
-        if abs(self.offset_rad) > min(step_limit, config["MAX_SOURCE_STEP_RAD"], config["MAX_ERROR_RAD"][self.axis]):
-            raise ValueError(f"J{self.axis+1} 阶跃幅度须不超过 {step_limit:g} rad，并满足源跳变与误差约束")
+        step_limit = 0.1
+        if abs(self.offset_rad) > min(step_limit, config["MAX_SOURCE_STEP_RAD"]):
+            raise ValueError(f"J{self.axis+1} 阶跃幅度须不超过 {step_limit:g} rad，并满足源跳变约束")
 
     def bind(self, anchor, config, play_hz):
         self.validate_playback(config, play_hz)

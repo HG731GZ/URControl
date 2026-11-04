@@ -21,7 +21,6 @@ def joint_impedance():
   local qlimit = {{JOINT_POSITION_LIMIT_RAD}}
   local envelope = {{ENVELOPE_RAD}}
   local speedguard = {{ACTUAL_MAX_QD_RAD_S}}
-  local errorguard = {{MAX_ERROR_RAD}}
   local dt = get_steptime()
   local anchor = get_actual_joint_positions()
   local qr = anchor
@@ -29,7 +28,6 @@ def joint_impedance():
   local source = anchor
   local tau = [0,0,0,0,0,0]
   local peak = [0,0,0,0,0,0]
-  local sat_age = [0,0,0,0,0,0]
   local phase = 1
   local fault = 0
   local adopted = 0
@@ -154,7 +152,8 @@ def joint_impedance():
           if norm(incoming[j]) > qlimit[j] or (not {{TELEOP}} and norm(incoming[j]-anchor[j]) > envelope[j]):
             fault = 4
           end
-          if adopted > 0 and seq != source_seq and norm(incoming[j]-source[j]) > {{MAX_SOURCE_STEP_RAD}}:
+          # 用目标闭区间判断跳变，避免恰好位于阈值的阶跃因浮点相减而越界。
+          if adopted > 0 and seq != source_seq and (incoming[j] < source[j]-{{MAX_SOURCE_STEP_RAD}} or incoming[j] > source[j]+{{MAX_SOURCE_STEP_RAD}}):
             fault = 4
           end
           if not {{TELEOP}} and phase == 1 and norm(incoming[j]-anchor[j]) > {{START_TOLERANCE_RAD}}:
@@ -237,17 +236,8 @@ def joint_impedance():
       tau = tau+bound(bounded-tau,trate*dt)
       local j = 0
       while j < 6:
-        if magnitude[j] > errorguard[j]:
-          fault = 8
-        end
         if norm(raw[j]) > taumax[j]:
-          sat_age[j] = sat_age[j]+dt
           mask = mask+pow(2,j)
-          if sat_age[j] > {{SATURATION_TIMEOUT_S}}:
-            fault = 9
-          end
-        else:
-          sat_age[j] = 0
         end
         j = j+1
       end

@@ -74,6 +74,7 @@ class UDPImpedanceSource:
             ):
                 self.backend.request_stop("UDP 目标断流")
                 return
+            # 每次有效收包都推进身份；角度相同也算新目标，反复读取旧缓存不算。
             if snapshot["frame_count"] != previous:
                 frame = JointTargetFrame(
                     self.backend.run_id,

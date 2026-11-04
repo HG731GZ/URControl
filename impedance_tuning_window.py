@@ -159,8 +159,9 @@ class ImpedanceTuningWindow(QtWidgets.QDialog):
             del blocker
         self._update_speed_limit()
         self.ui.guardLabel.setText(
-            f"摩擦补偿为 0；跟踪误差守卫 {math.degrees(self.config['MAX_ERROR_RAD'][self.axis]):.2f}°。\n"
-            f"实际速度守卫 {math.degrees(self.config['ACTUAL_MAX_QD_RAD_S'][self.axis]):.2f}°/s。"
+            "摩擦补偿为 0；跟踪误差不触发停止。\n"
+            f"实际速度守卫 {math.degrees(self.config['ACTUAL_MAX_QD_RAD_S'][self.axis]):.2f}°/s；"
+            "力矩幅值与变化率限制有效。"
         )
 
     def _update_speed_limit(self):

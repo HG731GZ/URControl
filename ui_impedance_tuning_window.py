@@ -235,7 +235,7 @@ class Ui_ImpedanceTuningWindow(object):
         self.torqueLabel.setText(_translate("ImpedanceTuningWindow", "最大指令力矩（N·m）"))
         self.slewLabel.setText(_translate("ImpedanceTuningWindow", "力矩变化率（N·m/s）"))
         self.accelerationLabel.setText(_translate("ImpedanceTuningWindow", "参考加速度上限（°/s²）"))
-        self.guardLabel.setText(_translate("ImpedanceTuningWindow", "摩擦补偿固定为 0；跟踪误差、速度和力矩守卫保持有效。"))
+        self.guardLabel.setText(_translate("ImpedanceTuningWindow", "摩擦补偿固定为 0；跟踪误差用于阻抗计算和记录，速度守卫及力矩限幅保持有效。"))
         self.referenceSpeedLabel.setText(_translate("ImpedanceTuningWindow", "参考速度上限（°/s）"))
         self.applyButton.setText(_translate("ImpedanceTuningWindow", "应用参数"))
         self.discardButton.setText(_translate("ImpedanceTuningWindow", "放弃未应用修改"))

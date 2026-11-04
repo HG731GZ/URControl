@@ -9,9 +9,7 @@ FAULTS = {
     4: "目标越界/跳变/起点错误",
     5: "实际位置或速度守卫",
     6: "启动超时",
-    7: "机器人漏周期",
-    8: "跟踪误差守卫",
-    9: "持续力矩饱和",
+    7: "机器人循环间隔超限",
 }
 INPUT_NAMES = [f"input_int_register_{i}" for i in range(24, 34)] + [
     f"input_double_register_{i}" for i in range(24, 32)
