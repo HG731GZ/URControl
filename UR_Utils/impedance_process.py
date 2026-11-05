@@ -14,21 +14,29 @@ from UR_Utils.impedance_config import validate
 from UR_Utils.URImpedanceController import URImpedanceController, idle_impedance_status
 
 
-def _main(args, status_slot, reference_slot, stop_event, lease):
+def _main(args, status_slot, reference_slot, input_wakeup, stop_reason_slot, stop_event, lease):
     parent = mp.parent_process()
     sequence = 0
+    stop_sequence = 0
     last_publish = 0
 
+    def wait_for_input(timeout):
+        # 下一次读取总在清除通知之后，期间到达的新帧仍在单格槽中。
+        input_wakeup.wait(timeout)
+        input_wakeup.clear()
+
     def service(backend):
-        nonlocal sequence, last_publish
+        nonlocal sequence, stop_sequence, last_publish
         now = time.monotonic()
         if not parent.is_alive() or now - lease.value > 1:
             backend.request_stop("父进程租约失效")
-        sequence, data = reference_slot.read(sequence)
-        if data is not None:
-            if data.get("stop_reason"):
+        if stop_event.is_set():
+            stop_sequence, data = stop_reason_slot.read(stop_sequence)
+            if data is not None:
                 backend.request_stop(data["stop_reason"])
-            else:
+        else:
+            sequence, data = reference_slot.read(sequence)
+            if data is not None:
                 read_at = time.monotonic()
                 backend.frame = JointTargetFrame(**data)
                 backend.logger.record("ipc_read", dict(
@@ -43,7 +51,7 @@ def _main(args, status_slot, reference_slot, stop_event, lease):
             last_publish = now
 
     try:
-        backend = URImpedanceController(**args, stop_event=stop_event, service=service)
+        backend = URImpedanceController(**args, stop_event=stop_event, service=service, wait_for_input=wait_for_input)
         backend.run()
         # 显示读取短暂占用槽位时，仍需发布最终状态。
         deadline = time.monotonic() + 0.5
@@ -94,6 +102,9 @@ class ImpedanceProcess:
         ctx = mp.get_context("spawn")
         self._status_slot = LatestSnapshot(ctx, 131072)
         self._reference_slot = LatestSnapshot(ctx, 8192)
+        self._input_wakeup = ctx.Event()
+        self._stop_reason_slot = LatestSnapshot(ctx, 8192)
+        self._submit_lock = threading.Lock()
         self._event = ctx.Event()
         self._lease = ctx.RawValue("d", time.monotonic())
         self._external_event = stop_event
@@ -132,6 +143,8 @@ class ImpedanceProcess:
                 self._args,
                 self._status_slot,
                 self._reference_slot,
+                self._input_wakeup,
+                self._stop_reason_slot,
                 self._event,
                 self._lease,
             ),
@@ -186,26 +199,36 @@ class ImpedanceProcess:
 
     def submit_reference(self, frame):
         try:
-            frame.check(self.run_id, time.monotonic(), self.parameters)
-            if frame.source != self.reference_source:
-                raise ValueError("运行中不能切换目标源")
-        except (ValueError, TypeError) as exc:
+            with self._submit_lock:
+                if self._event.is_set():
+                    return False
+                age = frame.check(self.run_id, time.monotonic(), self.parameters)
+                if frame.source != self.reference_source:
+                    raise ValueError("运行中不能切换目标源")
+                if frame.source_seq <= self._submitted_seq:
+                    return False
+                remaining = self.parameters["SOURCE_TIMEOUT_S"] - age
+                if not self._reference_slot.publish(asdict(frame), blocking=True, timeout=remaining):
+                    raise TimeoutError("目标在等待 IPC 提交时已过期")
+                self._submitted_seq = frame.source_seq
+                self._input_wakeup.set()
+                return True
+        except (ValueError, TypeError, TimeoutError) as exc:
             self.request_stop(str(exc))
             raise
-        if frame.source_seq <= self._submitted_seq:
-            return False
-        accepted = self._reference_slot.publish(asdict(frame))
-        if accepted:
-            self._submitted_seq = frame.source_seq
-        return accepted
 
     def request_stop(self, reason=None):
-        if self._stop_deadline is None:
-            self._stop_deadline = time.monotonic() + self.parameters["STOP_TIMEOUT_S"]
-        if reason:
-            self._stop_reason = reason
-            self._reference_slot.publish({"stop_reason": reason})
-        self._event.set()
+        with self._status_lock:
+            if self._stop_deadline is None:
+                self._stop_deadline = time.monotonic() + self.parameters["STOP_TIMEOUT_S"]
+            try:
+                if reason and not self._stop_reason:
+                    self._stop_reason = reason
+                    # 首次停止先写独立原因槽，再置位停止事件；子进程只在置位后读取。
+                    self._stop_reason_slot.publish({"stop_reason": reason})
+            finally:
+                self._event.set()
+                self._input_wakeup.set()
 
     def stop(self):
         self.request_stop()

@@ -310,13 +310,13 @@ class ImpedanceIntegration:
             return
         if self._impedance_event:
             self._impedance_event.set()
+        if self.rtde_controller:
+            self.rtde_controller.request_impedance_stop()
         if self._impedance_adapter:
             self._impedance_adapter.close()
             self._impedance_adapter = None
         if self.gripper is not None:
             self.gripper.pause()
-        if self.rtde_controller:
-            self.rtde_controller.request_impedance_stop()
         if (self._impedance_worker is None and self.rtde_controller
                 and self.rtde_controller.get_impedance_status()['active']):
             self._launch_impedance_worker('stop')

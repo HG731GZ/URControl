@@ -227,6 +227,8 @@ class URUDPClient:
     def stop(self) -> None:
         """停止后台线程并关闭 socket。"""
         self._stop_event.set()
+        if self._reader_thread is not None:
+            self._control_event("UDP 接收已停止")
         with self._send_cond:
             self._pending_send = None
             self._send_cond.notify_all()
@@ -271,6 +273,7 @@ class URUDPClient:
         with self._cond:
             self._control_event_seq += 1
             self._control_event_reason = reason
+            self._cond.notify_all()
 
     def _decode_packet(self, packet):
         """验证协议边界和有限数，不修改报文字段或运动目标。"""
@@ -411,6 +414,21 @@ class URUDPClient:
         """仅在遥操作记录期间采集所有有效包，包括尚未发布就被覆盖的包。"""
         with self._cond:
             self._receive_trace = writer
+
+    def wait_control_update(self, frame_count, control_event_seq, stop_event, deadline):
+        """等到发布新帧、发生控制事件、适配器关闭或本帧到期。"""
+        with self._cond:
+            return self._cond.wait_for(
+                lambda: self._published_frame_count != frame_count
+                or self._control_event_seq != control_event_seq
+                or stop_event.is_set(),
+                timeout=max(0.0, deadline - time.monotonic()),
+            )
+
+    def wake_control_waiters(self):
+        """让等待新帧的适配器立即检查关闭信号。"""
+        with self._cond:
+            self._cond.notify_all()
 
     def get_monitor_snapshot(self) -> dict:
         """在同一锁内读取最新有效指令、来源和时刻；显示层取得独立指令副本。"""

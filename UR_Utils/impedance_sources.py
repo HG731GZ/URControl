@@ -52,6 +52,7 @@ class UDPImpedanceSource:
 
     def close(self):
         self.stop_event.set()
+        self.client.wake_control_waiters()
         self.thread.join(1)
 
     def _run(self):
@@ -66,8 +67,9 @@ class UDPImpedanceSource:
                 json.dumps(result, ensure_ascii=False, indent=2))
 
     def _receive(self):
-        previous = -1
-        while not self.stop_event.wait(0.005):
+        timeout = self.backend.parameters["SOURCE_TIMEOUT_S"]
+        deadline = None
+        while not self.stop_event.is_set():
             if self.trace.error:
                 raise RuntimeError(self.trace.error)
             snapshot = self.client.get_monitor_snapshot()
@@ -78,27 +80,27 @@ class UDPImpedanceSource:
             if snapshot["last_error"] or command is None or command.mode != 1:
                 self.backend.request_stop("UDP 模式变化或接收错误")
                 return
+            received = snapshot["received_monotonic"]
             if (
-                snapshot["received_monotonic"] is None
-                or time.monotonic() - snapshot["received_monotonic"]
-                > self.backend.parameters["SOURCE_TIMEOUT_S"]
+                received is None
+                or time.monotonic() >= received + timeout
+                or (deadline is not None and received > deadline)
             ):
                 self.backend.request_stop("UDP 目标断流")
                 return
-            # 每次有效收包都推进身份；角度相同也算新目标，反复读取旧缓存不算。
-            if snapshot["frame_count"] != previous:
-                frame = JointTargetFrame(
-                    self.backend.run_id,
-                    "teleop",
-                    snapshot["frame_count"],
-                    tuple(command.q_arm),
-                    snapshot["received_monotonic"],
-                    qd_rad_s=command.qd_arm,
-                )
-                started = time.monotonic()
-                if self.backend.submit_reference(frame):
-                    self.trace.record("adapter_submit", dict(
-                        source_seq=frame.source_seq, submit_start_monotonic_s=started,
-                        submit_done_monotonic_s=time.monotonic(), q_source=frame.q_rad,
-                        source_monotonic_s=frame.source_monotonic_s))
-                    previous = snapshot["frame_count"]
+            deadline = received + timeout
+            frame = JointTargetFrame(
+                self.backend.run_id, "teleop", snapshot["frame_count"], tuple(command.q_arm),
+                received, qd_rad_s=command.qd_arm,
+            )
+            started = time.monotonic()
+            if self.backend.submit_reference(frame):
+                self.trace.record("adapter_submit", dict(
+                    source_seq=frame.source_seq, submit_start_monotonic_s=started,
+                    submit_done_monotonic_s=time.monotonic(), q_source=frame.q_rad,
+                    source_monotonic_s=received))
+            if not self.client.wait_control_update(
+                frame.source_seq, self.control_event_seq, self.stop_event, deadline
+            ):
+                self.backend.request_stop("UDP 目标断流")
+                return

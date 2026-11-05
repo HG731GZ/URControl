@@ -39,12 +39,14 @@ class URImpedanceController:
         stop_event,
         service,
         parameter_revision=None,
+        wait_for_input=time.sleep,
     ):
         self.ip = ip
         self.parameters = config.validate(parameters, reference_source=source)
         self.run_id = run_id
         self.source, self.trajectory, self.play_hz = source, trajectory, play_hz
         self.stop_event, self.service = stop_event, service
+        self.wait_for_input = wait_for_input
         self.status = {
             **idle_impedance_status(),
             "active": True,
@@ -72,6 +74,7 @@ class URImpedanceController:
                 ),
                 teleop_velocity_input={
                     "source": "UDP J1-J6",
+                    "target_submission": "on_new_source_frame",
                     "unit": "rad/s",
                     "master_filter": "none",
                     "receiver_filter": "none",
@@ -115,6 +118,8 @@ class URImpedanceController:
         cfg = self.parameters
         try:
             self._execute()
+            # 停止标志可能在本轮读取输入后置位，写终态前取出对应的停止原因。
+            self.service(self)
         except Exception as exc:
             self.request_stop(str(exc))
         finally:
@@ -147,10 +152,10 @@ class URImpedanceController:
                 self.script_client.close()
             self.logger.record("terminal", self.status.copy())
             self.logger.finish(self.status)
-            self.service(self)
 
     def _execute(self):
         cfg = self.parameters
+        teleop = self.source == "teleop"
         self.service(self)
         if self.stop_event.is_set():
             return
@@ -210,7 +215,7 @@ class URImpedanceController:
         self.script_client.send_script(script)
         start = time.monotonic()
         last_feedback = start
-        next_target = next_heartbeat = start
+        next_playback_send = next_heartbeat = start
         last_timestamp = baseline.timestamp
         last_cycle = -1
         last_phase = None
@@ -323,11 +328,22 @@ class URImpedanceController:
             )
             if error:
                 raise RuntimeError(error)
-            if now >= next_heartbeat:
+            heartbeat_due = now >= next_heartbeat
+            if heartbeat_due:
                 heartbeat += 1
                 setattr(packet, "input_int_register_27", heartbeat)
+                self.status["heartbeat_seq"] = heartbeat
                 next_heartbeat = now + 0.02
-            if ready and now >= next_target:
+            if teleop:
+                # 输入寄存器 29 保存上次提交的源帧号。同角度的新包也有自己的身份。
+                new_target = ready and (reference_seq == 0 or self.frame.source_seq > packet.input_int_register_29)
+                send_due = new_target or heartbeat_due
+            else:
+                send_due = now >= next_playback_send
+                new_target = ready and send_due
+                if send_due:
+                    next_playback_send = now + 0.01
+            if new_target:
                 if player is not None:
                     self.frame = player.sample(now, seen_running)
                 frame = self.frame
@@ -372,7 +388,6 @@ class URImpedanceController:
                     q_source=list(frame.q_rad),
                     source_age_s=age,
                     reference_seq=reference_seq,
-                    heartbeat_seq=heartbeat,
                     trajectory_row_position=frame.trajectory_row_position,
                 )
                 self.logger.record(
@@ -388,7 +403,6 @@ class URImpedanceController:
                         row_position=frame.trajectory_row_position,
                     ),
                 )
-                next_target = now + 0.01
                 if frame.end_of_source:
                     if end_since is None:
                         end_since = now
@@ -412,19 +426,22 @@ class URImpedanceController:
                         settled_since = None
                     if now - end_since > cfg["END_SETTLE_TIMEOUT_S"]:
                         raise RuntimeError("末点收敛超时")
-            # 目标以 100 Hz 发布，心跳独立为 50 Hz；只发送完整配方。
-            if now >= getattr(self, "_next_send", 0):
+            if send_due:
+                if self.stop_event.is_set():
+                    continue
                 send_started = time.monotonic()
-                if self.source == "teleop" and reference_seq:
-                    # 实际交给套接字前按包内源身份重算年龄，重复提交沿用原始收包时刻。
-                    packet.input_double_register_30 = frame.check(self.run_id, send_started, cfg)
+                if teleop and reference_seq:
+                    # 纯心跳包复用已提交的目标身份，源年龄始终从原始收包时刻计算。
+                    age = self.frame.check(self.run_id, send_started, cfg)
+                    packet.input_double_register_30 = age
+                    self.status["source_age_s"] = age
                 self._send(packet)
-                if self.source == "teleop" and reference_seq:
+                if teleop and new_target:
                     self.logger.record("rtde_send", dict(
                         reference_seq=reference_seq, source_seq=frame.source_seq,
                         send_start_monotonic_s=send_started, send_done_monotonic_s=time.monotonic()))
-                self._next_send = now + 0.01
-            time.sleep(0.0005)
+            # 无目标时仍按反馈服务周期检查 RTDE，新帧或停止通知可提前唤醒。
+            self.wait_for_input(0.0005)
 
     def _drain_terminal(self):
         deadline = min(self.stop_deadline, time.monotonic() + 0.15)

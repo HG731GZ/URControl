@@ -10,12 +10,12 @@ class LatestSnapshot:
         self.sequence = context.RawValue("Q", 0)
         self.lock = context.Lock()
 
-    def publish(self, value: dict, *, blocking: bool = False) -> bool:
-        """运行期锁忙时跳过本帧；终止消息可等待短暂复制锁，确保原因送达。"""
+    def publish(self, value: dict, *, blocking: bool = False, timeout=None) -> bool:
+        """默认锁忙即返回；需要交付的帧可在指定时限内等待复制锁。"""
         encoded = pickle.dumps(value, protocol=5)
         if len(encoded) > len(self.data):
             raise ValueError("控制 IPC 快照超过固定槽位容量")
-        if not self.lock.acquire(blocking):
+        if not self.lock.acquire(blocking, timeout):
             return False
         try:
             memoryview(self.data).cast("B")[:len(encoded)] = encoded
