@@ -166,6 +166,7 @@ class URUDPClient:
         self._stop_event = threading.Event()
 
         self._cond = threading.Condition()
+        self._receive_trace = None
         self._latest_command: Optional[UDPCommand] = None
         self._frame_count: int = 0
         self._published_frame_count = 0
@@ -328,6 +329,9 @@ class URUDPClient:
                         with self._cond:
                             self._frame_count += 1
                             seq = self._frame_count
+                            if self._receive_trace is not None:
+                                self._receive_trace.record("udp_receive", dict(
+                                    source_seq=seq, source_monotonic_s=received, q_source=cmd.q_arm))
                         if cmd.mode != UDPControlMode.JOINT_TRACK:
                             self._control_event("主端退出关节跟踪模式：" + UDPControlMode.cn_name(cmd.mode))
                         if not discard:
@@ -402,6 +406,11 @@ class URUDPClient:
         """获取最新指令及帧计数。"""
         with self._cond:
             return self._latest_command, self._published_frame_count
+
+    def set_receive_trace(self, writer):
+        """仅在遥操作记录期间采集所有有效包，包括尚未发布就被覆盖的包。"""
+        with self._cond:
+            self._receive_trace = writer
 
     def get_monitor_snapshot(self) -> dict:
         """在同一锁内读取最新有效指令、来源和时刻；显示层取得独立指令副本。"""

@@ -9,7 +9,7 @@ from PyQt5 import QtCore, QtWidgets
 from admittance_plot import AdmittanceTrendWidget
 from impedance_tuning_report import TuningReportWorker
 from ui_impedance_tuning_window import Ui_ImpedanceTuningWindow
-from UR_Utils.impedance_config import validate, snapshot
+from UR_Utils.impedance_config import POSITION_FOLLOW, POSITION_VELOCITY, validate, snapshot
 from UR_Utils.impedance_trajectory import generate_axis_tuning
 from UR_Utils.impedance_step import JointStep
 
@@ -24,6 +24,9 @@ class ImpedanceTuningWindow(QtWidgets.QDialog):
         ("slewSpin", "TAU_RATE_MAX_NM_S", 1.0),
         ("referenceSpeedSpin", "REF_MAX_QD_RAD_S", 180 / math.pi),
         ("teleopOmegaSpin", "TELEOP_REF_OMEGA_RAD_S", 1.0),
+        ("followSpeedSpin", "TELEOP_FOLLOW_V_RAD_S", 180 / math.pi),
+        ("followAccelSpin", "TELEOP_FOLLOW_A_RAD_S2", 180 / math.pi),
+        ("followTimeSpin", "TELEOP_FOLLOW_T_S", 1.0),
         ("accelerationSpin", "REF_MAX_QDD_RAD_S2", 180 / math.pi),
     )
 
@@ -49,6 +52,7 @@ class ImpedanceTuningWindow(QtWidgets.QDialog):
         self.ui.axisCombo.setCurrentIndex(axis)
         self._fill_axis()
         self.ui.axisCombo.currentIndexChanged.connect(self._change_axis)
+        self.ui.teleopModeCombo.currentIndexChanged.connect(self._parameter_edited)
         for name, _, _ in self.FIELDS:
             getattr(self.ui, name).valueChanged.connect(self._parameter_edited)
         self.ui.speedSpin.valueChanged.connect(self._invalidate)
@@ -97,6 +101,9 @@ class ImpedanceTuningWindow(QtWidgets.QDialog):
         for name, key, scale in self.FIELDS:
             if self.sender() is getattr(self.ui, name):
                 self.config[key][self.axis] = getattr(self.ui, name).value() / scale
+        if self.sender() is self.ui.teleopModeCombo:
+            self.config["TELEOP_REF_MODE"] = (POSITION_FOLLOW, POSITION_VELOCITY)[self.ui.teleopModeCombo.currentIndex()]
+            self._fill_axis()
         self._update_speed_limit()
         self.parameters.changed.emit()
         self._invalidate()
@@ -153,6 +160,12 @@ class ImpedanceTuningWindow(QtWidgets.QDialog):
                 self._error(exc)
 
     def _fill_axis(self):
+        follow = self.config["TELEOP_REF_MODE"] == POSITION_FOLLOW
+        with QtCore.QSignalBlocker(self.ui.teleopModeCombo):
+            self.ui.teleopModeCombo.setCurrentIndex(0 if follow else 1)
+        self.ui.teleopOmegaSpin.setEnabled(not follow)
+        for widget in (self.ui.followSpeedSpin, self.ui.followAccelSpin, self.ui.followTimeSpin):
+            widget.setEnabled(follow)
         for name, key, scale in self.FIELDS:
             widget = getattr(self.ui, name)
             blocker = QtCore.QSignalBlocker(widget)

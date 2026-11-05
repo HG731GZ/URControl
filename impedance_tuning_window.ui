@@ -299,7 +299,7 @@
             </property>
            </widget>
           </item>
-          <item row="4" column="0" colspan="4">
+          <item row="6" column="0" colspan="4">
            <widget class="QLabel" name="guardLabel">
             <property name="text">
              <string>摩擦补偿固定为 0；跟踪误差用于阻抗计算和记录，速度守卫及力矩限幅保持有效。</string>
@@ -332,15 +332,54 @@
             </property>
            </widget>
           </item>
-          <item row="3" column="0" colspan="2">
+          <item row="3" column="2">
            <widget class="QLabel" name="teleopOmegaLabel">
             <property name="text"><string>遥操作参考带宽 ω（rad/s）</string></property>
            </widget>
           </item>
-          <item row="3" column="2" colspan="2">
+          <item row="3" column="3">
            <widget class="QDoubleSpinBox" name="teleopOmegaSpin">
             <property name="decimals"><number>2</number></property>
             <property name="minimum"><double>0.01</double></property>
+            <property name="maximum"><double>60.0</double></property>
+           </widget>
+          </item>
+          <item row="3" column="0">
+           <widget class="QLabel" name="teleopModeLabel"><property name="text"><string>遥操作参考模式（六轴）</string></property></widget>
+          </item>
+          <item row="3" column="1">
+           <widget class="QComboBox" name="teleopModeCombo">
+            <item><property name="text"><string>限速位置跟随</string></property></item>
+            <item><property name="text"><string>同帧位置＋速度</string></property></item>
+           </widget>
+          </item>
+          <item row="4" column="0">
+           <widget class="QLabel" name="followSpeedLabel"><property name="text"><string>限速跟随 V（°/s）</string></property></widget>
+          </item>
+          <item row="4" column="1">
+           <widget class="QDoubleSpinBox" name="followSpeedSpin">
+            <property name="decimals"><number>6</number></property>
+            <property name="minimum"><double>0.000001</double></property>
+            <property name="maximum"><double>3600.0</double></property>
+           </widget>
+          </item>
+          <item row="4" column="2">
+           <widget class="QLabel" name="followAccelLabel"><property name="text"><string>加速度预算 A（°/s²）</string></property></widget>
+          </item>
+          <item row="4" column="3">
+           <widget class="QDoubleSpinBox" name="followAccelSpin">
+            <property name="decimals"><number>6</number></property>
+            <property name="minimum"><double>0.000001</double></property>
+            <property name="maximum"><double>3600.0</double></property>
+           </widget>
+          </item>
+          <item row="5" column="0">
+           <widget class="QLabel" name="followTimeLabel"><property name="text"><string>跟随时间常数 T（s）</string></property></widget>
+          </item>
+          <item row="5" column="1">
+           <widget class="QDoubleSpinBox" name="followTimeSpin">
+            <property name="decimals"><number>6</number></property>
+            <property name="minimum"><double>0.000001</double></property>
             <property name="maximum"><double>60.0</double></property>
            </widget>
           </item>

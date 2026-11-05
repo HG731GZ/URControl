@@ -7,26 +7,24 @@ import threading
 import time
 
 
-class ImpedanceLogger:
-    def __init__(self, directory, metadata):
-        self.directory = Path(directory)
-        self.directory.mkdir(parents=True, exist_ok=False)
+class RecordWriter:
+    """控制进程和 UDP 接收进程各用独立的有界队列和文件。"""
+
+    def __init__(self, path):
+        self.path = Path(path)
         self.queue = Queue(16384)
+        self.record_lock = threading.Lock()
         self.dropped = 0
         self.error = None
         self.pending_gap = 0
-        self.metadata = metadata
-        self.update_context({})
         self.thread = threading.Thread(target=self._write, daemon=True)
         self.thread.start()
 
-    def update_context(self, context):
-        self.metadata.update(context)
-        (self.directory / "metadata.json").write_text(
-            json.dumps(self.metadata, ensure_ascii=False, indent=2)
-        )
-
     def record(self, kind, payload):
+        with self.record_lock:
+            self._enqueue(kind, payload)
+
+    def _enqueue(self, kind, payload):
         try:
             if self.pending_gap:
                 self.queue.put_nowait(
@@ -46,7 +44,7 @@ class ImpedanceLogger:
 
     def _write(self):
         try:
-            with (self.directory / "records.jsonl").open("w") as f:
+            with self.path.open("x") as f:
                 while True:
                     row = self.queue.get()
                     if row is None:
@@ -55,20 +53,36 @@ class ImpedanceLogger:
         except Exception as exc:
             self.error = str(exc)
 
-    def finish(self, status):
+    def finish(self):
         try:
             self.queue.put(None, timeout=2)
         except Full:
             self.error = "日志队列无法完成收尾"
         self.thread.join(3)
-        result = {
-            **status,
+        return {
             "log_dropped": self.dropped,
             "log_error": self.error,
             "log_complete": not self.thread.is_alive()
             and not self.error
             and self.dropped == 0,
         }
+
+
+class ImpedanceLogger(RecordWriter):
+    def __init__(self, directory, metadata):
+        self.directory = Path(directory)
+        self.metadata = metadata
+        self.update_context({})
+        super().__init__(self.directory / "records.jsonl")
+
+    def update_context(self, context):
+        self.metadata.update(context)
+        (self.directory / "metadata.json").write_text(
+            json.dumps(self.metadata, ensure_ascii=False, indent=2)
+        )
+
+    def finish(self, status):
+        result = {**status, **super().finish()}
         (self.directory / "summary.json").write_text(
             json.dumps(result, ensure_ascii=False, indent=2)
         )

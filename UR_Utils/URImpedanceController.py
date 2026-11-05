@@ -60,14 +60,15 @@ class URImpedanceController:
             directory,
             dict(
                 record_type="joint_impedance_run",
-                schema_version=2,
+                schema_version=3,
                 teleop_velocity_input={
                     "source": "UDP J1-J6",
                     "unit": "rad/s",
                     "master_filter": "none",
                     "receiver_filter": "none",
-                    "input_limit": "REF_MAX_QD_RAD_S",
-                    "reference_model": "critically_damped_position_velocity",
+                    "input_limit": ("REF_MAX_QD_RAD_S" if self.parameters["TELEOP_REF_MODE"] == config.POSITION_VELOCITY
+                                    else "zero"),
+                    "reference_model": self.parameters["TELEOP_REF_MODE"],
                 } if source == "teleop" else None,
                 parameters=self.parameters,
                 parameter_revision=parameter_revision,
@@ -201,6 +202,7 @@ class URImpedanceController:
         last_phase = None
         backlog_since = None
         reference_seq = heartbeat = 0
+        last_adopted = 0
         player = None
         ready = False
         seen_running = False
@@ -229,6 +231,12 @@ class URImpedanceController:
                     "standard",
                     {name: getattr(state, name) for name in protocol.STANDARD},
                 )
+                if self.source == "teleop" and state.output_int_register_24 == self.run_id:
+                    adopted = state.output_int_register_47
+                    if adopted > last_adopted:
+                        self.logger.record("adoption", dict(reference_seq=adopted,
+                                                           robot_timestamp_s=state.timestamp))
+                        last_adopted = adopted
                 sample = protocol.decode(state, self.run_id)
                 if ready and (
                     state.safety_mode != 1
@@ -340,10 +348,10 @@ class URImpedanceController:
                     setattr(packet, f"input_double_register_{n}", v)
                 qd_used = None
                 if self.source == "teleop":
-                    qd_used = [
-                        max(-limit, min(limit, speed))
-                        for speed, limit in zip(frame.qd_rad_s, cfg["REF_MAX_QD_RAD_S"])
-                    ]
+                    qd_used = [0.0] * 6
+                    if cfg["TELEOP_REF_MODE"] == config.POSITION_VELOCITY:
+                        qd_used = [max(-limit, min(limit, speed))
+                                   for speed, limit in zip(frame.qd_rad_s, cfg["REF_MAX_QD_RAD_S"])]
                     for n, speed in enumerate(qd_used, 32):
                         setattr(packet, f"input_double_register_{n}", speed)
                 self.status.update(
@@ -392,7 +400,15 @@ class URImpedanceController:
                         raise RuntimeError("末点收敛超时")
             # 目标以 100 Hz 发布，心跳独立为 50 Hz；只发送完整配方。
             if now >= getattr(self, "_next_send", 0):
+                send_started = time.monotonic()
+                if self.source == "teleop" and reference_seq:
+                    # 实际交给套接字前按包内源身份重算年龄，重复提交沿用原始收包时刻。
+                    packet.input_double_register_30 = frame.check(self.run_id, send_started, cfg)
                 self._send(packet)
+                if self.source == "teleop" and reference_seq:
+                    self.logger.record("rtde_send", dict(
+                        reference_seq=reference_seq, source_seq=frame.source_seq,
+                        send_start_monotonic_s=send_started, send_done_monotonic_s=time.monotonic()))
                 self._next_send = now + 0.01
             time.sleep(0.0005)
 

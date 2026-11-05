@@ -14,9 +14,9 @@ def joint_impedance():
   end
   local K = {{JOINT_K}}
   local D = {{JOINT_D}}
-  local vmax = {{REF_MAX_QD_RAD_S}}
+  local vmax = {{VMAX}}
   local omega = {{TELEOP_REF_OMEGA_RAD_S}}
-  local amax = {{REF_MAX_QDD_RAD_S2}}
+  local amax = {{AMAX}}
   local taumax = {{TAU_MAX_NM}}
   local trate = {{TAU_RATE_MAX_NM_S}}
   local qlimit = {{JOINT_POSITION_LIMIT_RAD}}
@@ -25,6 +25,9 @@ def joint_impedance():
   local dt = get_steptime()
   local anchor = get_actual_joint_positions()
   local qr = anchor
+  local u = anchor
+  local follow_t = {{FOLLOW_T_EFF}}
+  local follow_period = follow_t+[dt,dt,dt,dt,dt,dt]
   local vr = [0,0,0,0,0,0]
   local source_v = vr
   local source = anchor
@@ -122,6 +125,7 @@ def joint_impedance():
       sync()
     end
   end
+  write_output_integer_register(47, 0)
   local publisher = run publish()
   rtde_set_watchdog("input_int_register_27", {{HARD_WATCHDOG_HZ}}, "stop")
   while phase < 5 and fault == 0:
@@ -167,6 +171,9 @@ def joint_impedance():
         source_v = incoming_v
         source = incoming
         adopted = submit
+        if {{TELEOP}}:
+          write_output_integer_register(47, adopted)
+        end
         if seq != source_seq:
           source_seq = seq
           source_stamp = tick
@@ -221,8 +228,19 @@ def joint_impedance():
         qr = source
         vr = [0,0,0,0,0,0]
       elif phase >= 3 and {{TELEOP}}:
-        local wanted_a = omega*omega*(source-qr)+2*omega*(source_v-vr)
-        local next_v = bound(vr+bound(wanted_a,amax)*dt,vmax)
+        if {{POSITION_FOLLOW}}:
+          local step_u = bound(source-u,vmax*dt)
+          if norm(source-u-step_u) > 0.000000001:
+            shaped_cycle = 1
+          end
+          u = u+step_u
+          local wanted_v = (u-qr)/follow_period
+          local next_v = wanted_v
+        else:
+          local wanted_a = omega*omega*(source-qr)+2*omega*(source_v-vr)
+          local wanted_v = vr+wanted_a*dt
+          local next_v = bound(vr+bound(wanted_a,amax)*dt,vmax)
+        end
         # 朝关节边界运动时，为本步积分和后续制动同时留出距离。
         local j = 0
         while j < 6:
@@ -238,7 +256,7 @@ def joint_impedance():
           end
           j = j+1
         end
-        if norm(next_v-vr-wanted_a*dt) > 0.000000001:
+        if norm(next_v-wanted_v) > 0.000000001:
           shaped_cycle = 1
         end
         vr = next_v

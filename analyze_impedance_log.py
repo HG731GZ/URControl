@@ -7,28 +7,100 @@ from pathlib import Path
 import numpy as np
 
 
+def timing_statistics(rows):
+    """按相邻新源的位置有无变化区分运动和保持，同源重发沿用最近分类。"""
+    result = {}
+    for state in ("position_changed", "position_held", "initial"):
+        result[state] = {"new_intervals": [], "ages": [], "repeat_count": 0, "max_step_rad": 0.0,
+                         "longest_interval": None}
+    previous = None
+    state = "initial"
+    for seq, q, stamp, age in rows:
+        if previous is not None:
+            old_seq, old_q, old_stamp = previous
+            if seq == old_seq:
+                result[state]["repeat_count"] += 1
+            else:
+                step = max(abs(x-y) for x, y in zip(q, old_q))
+                state = "position_changed" if step > 0 else "position_held"
+                interval_ms = 1000*(stamp-old_stamp)
+                result[state]["new_intervals"].append(interval_ms)
+                longest = result[state]["longest_interval"]
+                if longest is None or interval_ms > longest["interval_ms"]:
+                    result[state]["longest_interval"] = dict(
+                        previous_source_seq=old_seq, source_seq=seq, interval_ms=interval_ms)
+                result[state]["max_step_rad"] = max(step, result[state]["max_step_rad"])
+        if previous is None or seq != previous[0]:
+            previous = (seq, q, stamp)
+        if age is not None:
+            result[state]["ages"].append(1000*age)
+    for group in result.values():
+        for key, label in (("new_intervals", "new_source_interval_ms"), ("ages", "source_age_ms")):
+            values = group.pop(key)
+            group[label] = (dict(count=len(values), p95=float(np.percentile(values, 95)),
+                                 p99=float(np.percentile(values, 99)), maximum=max(values))
+                            if values else None)
+    return result
+
+
+def analyze_timing(directory, refs, timing):
+    """各阶段分别用本时钟统计间隔，控制器采纳身份可关联主机发送记录。"""
+    stages = {key: [] for key in ("udp_receive", "adapter_submit", "ipc_read", "rtde_send", "adoption")}
+    trace = directory / "source_timing.jsonl"
+    if trace.exists():
+        with trace.open() as stream:
+            for line in stream:
+                row = json.loads(line)
+                kind, p = row["kind"], row["payload"]
+                if kind in ("udp_receive", "adapter_submit"):
+                    received = p["source_monotonic_s"]
+                    stamp = received if kind == "udp_receive" else p["submit_done_monotonic_s"]
+                    stages[kind].append((p["source_seq"], p["q_source"], stamp, stamp-received))
+    for p in timing["ipc_read"]:
+        stamp = p["ipc_read_monotonic_s"]
+        stages["ipc_read"].append((p["source_seq"], p["q_source"], stamp, stamp-p["source_monotonic_s"]))
+    unmatched = {}
+    for kind in ("rtde_send", "adoption"):
+        unmatched[kind] = 0
+        for p in timing[kind]:
+            ref = refs.get(p["reference_seq"])
+            if ref is None:
+                unmatched[kind] += 1
+                continue
+            if kind == "rtde_send":
+                stamp = p["send_done_monotonic_s"]
+                age = stamp-ref["source_monotonic_s"]
+            else:
+                stamp, age = p["robot_timestamp_s"], None
+            stages[kind].append((ref["source_seq"], ref["q_source"], stamp, age))
+    trace_summary = directory / "source_timing_summary.json"
+    return {"stages": {k: {"observations": len(rows), **timing_statistics(rows)} for k, rows in stages.items()},
+            "unmatched_reference": unmatched,
+            "source_trace": json.loads(trace_summary.read_text()) if trace_summary.exists() else None}
+
+
 def analyze(directory, output=None):
     directory = Path(directory)
     output = Path(output or directory)
     output.mkdir(parents=True, exist_ok=True)
     metadata = json.loads((directory / "metadata.json").read_text())
     version = metadata["schema_version"]
-    if version not in (1, 2):
+    if version not in (1, 2, 3):
         raise ValueError(f"未知阻抗日志版本 {version}")
     final_peak = None
     refs = {}
     samples = []
     seen = set()
-    standard = []
+    timing = {"ipc_read": [], "rtde_send": [], "adoption": []}
     for line in (directory / "records.jsonl").open():
         row = json.loads(line)
         p = row["payload"]
         if row["kind"] == "reference":
             refs[p["reference_seq"]] = p
-        elif row["kind"] == "standard":
-            standard.append(p)
+        elif row["kind"] in timing:
+            timing[row["kind"]].append(p)
         elif row["kind"] == "sample":
-            if version == 2 and p["final"]:
+            if version >= 2 and p["final"]:
                 final_peak = p["peak_error_rad"]
                 continue
             key = (p["run_id"], p["cycle_seq"])
@@ -51,7 +123,7 @@ def analyze(directory, output=None):
     error = r - q
     shape = source - r
     summary = json.loads((directory / "summary.json").read_text())
-    peak = final_peak if version == 2 else np.max([s["peak_error_rad"] for s in samples], axis=0).tolist()
+    peak = final_peak if version >= 2 else np.max([s["peak_error_rad"] for s in samples], axis=0).tolist()
     sampled = {
         "sample_count": len(samples),
         "duration_s": float(t[-1]),
@@ -76,6 +148,8 @@ def analyze(directory, output=None):
         ),
         "note": "URScript time(0) has controller-step resolution here; compute=0 does not mean zero CPU work.",
     }
+    if version >= 3 and metadata["source"] == "teleop":
+        sampled["teleop_timing"] = analyze_timing(directory, refs, timing)
     summary["analysis"] = sampled
     summary["source_directory"] = str(directory.resolve())
     (output / "summary.json").write_text(
@@ -85,7 +159,7 @@ def analyze(directory, output=None):
         json.dumps(metadata, ensure_ascii=False, indent=2)
     )
     speeds = {}
-    if version == 2:
+    if version >= 2:
         speeds["reference_rad_s"] = [s["qd_ref"] for s in samples]
         speeds["actual_rad_s"] = [s["qd_actual"] for s in samples]
         if metadata["source"] == "teleop":

@@ -4,7 +4,7 @@ from copy import deepcopy
 from PyQt5 import QtCore
 import json
 from pathlib import Path
-from UR_Utils.impedance_config import snapshot, validate
+from UR_Utils.impedance_config import read_preset, snapshot, validate
 
 
 class ImpedanceParameters(QtCore.QObject):
@@ -48,14 +48,7 @@ class ImpedanceParameters(QtCore.QObject):
     def load(self, path):
         self.require_editable()
         data = json.loads(Path(path).read_text())
-        if (
-            data.get("record_type") != "joint_impedance_preset"
-            or data.get("schema_version") != 2
-        ):
-            raise ValueError(
-                "需要 joint_impedance_preset v2。迁移 v1 时请添加六轴 TELEOP_REF_OMEGA_RAD_S 并更新版本号"
-            )
-        self.draft = validate(data["parameters"])
+        self.draft = read_preset(data)
         self.changed.emit()
 
     def save(self, path):
@@ -63,7 +56,7 @@ class ImpedanceParameters(QtCore.QObject):
             json.dumps(
                 dict(
                     record_type="joint_impedance_preset",
-                    schema_version=2,
+                    schema_version=3,
                     parameters=validate(self.draft),
                 ),
                 ensure_ascii=False,

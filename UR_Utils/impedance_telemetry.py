@@ -34,10 +34,10 @@ STANDARD = {
 }
 OUTPUT_NAMES = (
     list(STANDARD)
-    + [f"output_int_register_{i}" for i in range(24, 47)]
+    + [f"output_int_register_{i}" for i in range(24, 48)]
     + [f"output_double_register_{i}" for i in range(24, 48)]
 )
-OUTPUT_TYPES = list(STANDARD.values()) + ["INT32"] * 23 + ["DOUBLE"] * 24
+OUTPUT_TYPES = list(STANDARD.values()) + ["INT32"] * 24 + ["DOUBLE"] * 24
 
 
 def decode(state, run_id):

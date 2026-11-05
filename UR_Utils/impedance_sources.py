@@ -2,6 +2,8 @@
 
 import threading
 import time
+import json
+from impedance_logger import RecordWriter
 from UR_Utils.impedance_reference import JointTargetFrame
 
 
@@ -44,6 +46,8 @@ class UDPImpedanceSource:
         )
 
     def start(self):
+        self.trace = RecordWriter(self.backend.directory / "source_timing.jsonl")
+        self.client.set_receive_trace(self.trace)
         self.thread.start()
 
     def close(self):
@@ -55,10 +59,17 @@ class UDPImpedanceSource:
             self._receive()
         except Exception as exc:
             self.backend.request_stop("UDP 目标异常：" + str(exc))
+        finally:
+            self.client.set_receive_trace(None)
+            result = self.trace.finish()
+            (self.backend.directory / "source_timing_summary.json").write_text(
+                json.dumps(result, ensure_ascii=False, indent=2))
 
     def _receive(self):
         previous = -1
         while not self.stop_event.wait(0.005):
+            if self.trace.error:
+                raise RuntimeError(self.trace.error)
             snapshot = self.client.get_monitor_snapshot()
             if snapshot["control_event_seq"] != self.control_event_seq:
                 self.backend.request_stop(snapshot["control_event_reason"])
@@ -84,5 +95,10 @@ class UDPImpedanceSource:
                     snapshot["received_monotonic"],
                     qd_rad_s=command.qd_arm,
                 )
+                started = time.monotonic()
                 if self.backend.submit_reference(frame):
+                    self.trace.record("adapter_submit", dict(
+                        source_seq=frame.source_seq, submit_start_monotonic_s=started,
+                        submit_done_monotonic_s=time.monotonic(), q_source=frame.q_rad,
+                        source_monotonic_s=frame.source_monotonic_s))
                     previous = snapshot["frame_count"]

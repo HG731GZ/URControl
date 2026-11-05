@@ -5,6 +5,9 @@ import math
 import re
 from pathlib import Path
 
+POSITION_FOLLOW = "rate_limited_position"
+POSITION_VELOCITY = "critically_damped_position_velocity"
+
 DEFAULTS = {
     "JOINT_K": [2400.0, 3200, 2600, 1000, 800, 1000],
     "JOINT_D": [150.0, 240, 180, 60, 40, 40],
@@ -12,6 +15,10 @@ DEFAULTS = {
     "TAU_RATE_MAX_NM_S": [300.0, 300, 200, 200, 200, 200],
     "REF_MAX_QD_RAD_S": [0.8235294117647058, 0.7058823529411765, 0.7058823529411765, 1.0, 1.0, 1.0],
     "TELEOP_REF_OMEGA_RAD_S": [40.0] * 6,
+    "TELEOP_REF_MODE": POSITION_FOLLOW,
+    "TELEOP_FOLLOW_V_RAD_S": [0.8235294117647058, 0.35, 0.35, 1, 1, 1],
+    "TELEOP_FOLLOW_A_RAD_S2": [30, 6, 6, 60, 60, 60],
+    "TELEOP_FOLLOW_T_S": [0.05, 0.12, 0.12, 0.05, 0.05, 0.05],
     "REF_MAX_QDD_RAD_S2": [30.0, 30.0, 30.0, 60.0, 60.0, 60.0],
     "JOINT_POSITION_LIMIT_RAD": [6.283185307179586, 6.283185307179586, 6.283185307179586, 6.283185307179586, 6.283185307179586, 6.283185307179586],
     "ENVELOPE_RAD": [0.22, 0.22, 0.22, 0.22, 0.22, 0.22],
@@ -49,7 +56,10 @@ def validate(config=None):
         raise ValueError(f"参数键不匹配：{set(cfg)^set(DEFAULTS)}")
     for key, default in DEFAULTS.items():
         value = cfg[key]
-        if isinstance(default, list):
+        if key == "TELEOP_REF_MODE":
+            if value not in (POSITION_FOLLOW, POSITION_VELOCITY):
+                raise ValueError("未知遥操作参考模式")
+        elif isinstance(default, list):
             if len(value) != 6 or any(not math.isfinite(float(x)) for x in value):
                 raise ValueError(f"{key} 必须是六个有限数")
             cfg[key] = [float(x) for x in value]
@@ -72,17 +82,40 @@ def validate(config=None):
     return cfg
 
 
+def read_preset(data):
+    if data.get("record_type") != "joint_impedance_preset" or data.get("schema_version") not in (2, 3):
+        raise ValueError("需要 joint_impedance_preset v2 或 v3 预设")
+    cfg = data["parameters"]
+    if data["schema_version"] == 2:
+        cfg = migrate_v2_parameters(cfg)
+    return validate(cfg)
+
+
+def migrate_v2_parameters(cfg):
+    """旧预设沿用原参考模型和限值，新增参数仅在切换模式后使用。"""
+    added = {k for k in DEFAULTS if k.startswith("TELEOP_FOLLOW_") or k == "TELEOP_REF_MODE"}
+    if set(cfg) != DEFAULTS.keys() - added:
+        raise ValueError("v2 阻抗参数键不匹配")
+    return {**cfg, **{k: deepcopy(DEFAULTS[k]) for k in added}, "TELEOP_REF_MODE": POSITION_VELOCITY}
+
+
 def render_script(config, run_id, reference_source="trajectory"):
     if reference_source not in ("teleop", "trajectory", "step"):
         raise ValueError("未知阻抗目标源")
     cfg = validate(config)
+    follow = reference_source == "teleop" and cfg["TELEOP_REF_MODE"] == POSITION_FOLLOW
     script = (
         Path(__file__)
         .with_name("scripts")
         .joinpath("impedance_control.script")
         .read_text()
     )
-    for key, value in cfg.items():
+    constants = dict(cfg, POSITION_FOLLOW=follow,
+                     VMAX=cfg["TELEOP_FOLLOW_V_RAD_S"] if follow else cfg["REF_MAX_QD_RAD_S"],
+                     AMAX=cfg["TELEOP_FOLLOW_A_RAD_S2"] if follow else cfg["REF_MAX_QDD_RAD_S2"])
+    constants["FOLLOW_T_EFF"] = [max(t, 2*v/a) for t, v, a in zip(
+        cfg["TELEOP_FOLLOW_T_S"], cfg["TELEOP_FOLLOW_V_RAD_S"], cfg["TELEOP_FOLLOW_A_RAD_S2"])]
+    for key, value in constants.items():
         script = script.replace("{{" + key + "}}", str(value))
     script = script.replace("{{RUN_ID}}", str(int(run_id)))
     script = script.replace("{{DIRECT_STEP}}", str(reference_source == "step"))

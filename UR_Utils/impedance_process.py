@@ -29,7 +29,11 @@ def _main(args, status_slot, reference_slot, stop_event, lease):
             if data.get("stop_reason"):
                 backend.request_stop(data["stop_reason"])
             else:
+                read_at = time.monotonic()
                 backend.frame = JointTargetFrame(**data)
+                backend.logger.record("ipc_read", dict(
+                    source_seq=backend.frame.source_seq, ipc_read_monotonic_s=read_at,
+                    source_monotonic_s=backend.frame.source_monotonic_s, q_source=backend.frame.q_rad))
         if (
             now - last_publish >= 0.02
             or not backend.status["active"]
@@ -109,6 +113,8 @@ class ImpedanceProcess:
             or Path("logs/impedance")
             / (datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{self.run_id}")
         ).resolve()
+        directory.mkdir(parents=True, exist_ok=False)
+        self.directory = directory
         self._status["log_directory"] = str(directory)
         self._args = dict(
             ip=robot_ip,
