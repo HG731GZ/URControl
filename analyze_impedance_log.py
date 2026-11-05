@@ -85,8 +85,10 @@ def analyze(directory, output=None):
     output.mkdir(parents=True, exist_ok=True)
     metadata = json.loads((directory / "metadata.json").read_text())
     version = metadata["schema_version"]
-    if version not in (1, 2, 3):
+    if version not in (1, 2, 3, 4):
         raise ValueError(f"未知阻抗日志版本 {version}")
+    has_tcp_wrench = version == 4
+    wrench_by_stamp = {}
     final_peak = None
     refs = {}
     samples = []
@@ -97,6 +99,8 @@ def analyze(directory, output=None):
         p = row["payload"]
         if row["kind"] == "reference":
             refs[p["reference_seq"]] = p
+        elif has_tcp_wrench and row["kind"] == "standard":
+            wrench_by_stamp[p["timestamp"]] = p["actual_TCP_force"]
         elif row["kind"] in timing:
             timing[row["kind"]].append(p)
         elif row["kind"] == "sample":
@@ -110,6 +114,9 @@ def analyze(directory, output=None):
     if not samples:
         raise ValueError("没有 RUNNING/ENDING 冻结样本，不能绘制跟踪效果")
     t = np.array([s["sample_time_s"] for s in samples])
+    if has_tcp_wrench:
+        # 用首次读到快照的机器人反馈时刻对齐标准帧；冻结时刻另列保留。
+        t = np.array([s["robot_timestamp_s"] for s in samples])
     t -= t[0]
     q = np.array([s["q_actual"] for s in samples])
     r = np.array([s["q_ref"] for s in samples])
@@ -150,6 +157,10 @@ def analyze(directory, output=None):
     }
     if version >= 3 and metadata["source"] == "teleop":
         sampled["teleop_timing"] = analyze_timing(directory, refs, timing)
+    if has_tcp_wrench:
+        sampled["tcp_wrench_matched_snapshots"] = sum(
+            s["robot_timestamp_s"] in wrench_by_stamp for s in samples
+        )
     summary["analysis"] = sampled
     summary["source_directory"] = str(directory.resolve())
     (output / "summary.json").write_text(
@@ -169,6 +180,10 @@ def analyze(directory, output=None):
                     if s["adopted_reference_seq"] in refs else [float("nan")] * 6
                     for s in samples
                 ]
+    wrench_columns = [
+        "robot_timestamp_s", "sample_time_s", "tcp_fx_n", "tcp_fy_n", "tcp_fz_n",
+        "tcp_mx_nm", "tcp_my_nm", "tcp_mz_nm",
+    ] if has_tcp_wrench else []
     with (output / "tracking.csv").open("w") as f:
         writer = csv.writer(f)
         writer.writerow(
@@ -185,8 +200,13 @@ def analyze(directory, output=None):
                 )
                 for j in range(1, 7)
             ]
+            + wrench_columns
         )
         for k, s in enumerate(samples):
+            wrench_row = []
+            if has_tcp_wrench:
+                stamp = s["robot_timestamp_s"]
+                wrench_row = [stamp, s["sample_time_s"], *wrench_by_stamp.get(stamp, [None] * 6)]
             writer.writerow(
                 [
                     t[k],
@@ -198,6 +218,7 @@ def analyze(directory, output=None):
                     *error[k],
                     *tau[k],
                     *(v for series in speeds.values() for v in series[k]),
+                    *wrench_row,
                 ]
             )
     import matplotlib
@@ -214,6 +235,8 @@ def analyze(directory, output=None):
         }
     )
     anchor = np.array(metadata["anchor"])
+    time_label = ("Robot feedback time since first tracking frame (s)" if has_tcp_wrench
+                  else "Time since RUNNING (s)")
     fig, axs = plt.subplots(3, 2, figsize=(13, 9), sharex=True)
     for j, ax in enumerate(axs.flat):
         ax.plot(
@@ -242,7 +265,7 @@ def analyze(directory, output=None):
         ax.set_ylabel("Offset (deg)")
         ax.grid(alpha=0.2)
         if j >= 4:
-            ax.set_xlabel("Time since RUNNING (s)")
+            ax.set_xlabel(time_label)
     axs[0, 0].legend(fontsize=8)
     stationary = np.max(np.ptp(q, axis=0)) < 1e-8 and np.max(np.ptp(r, axis=0)) > 0.01
     title = (
@@ -255,7 +278,8 @@ def analyze(directory, output=None):
     fig.savefig(output / "tracking_six_axes.png", bbox_inches="tight")
     plt.close(fig)
     j = int(np.argmax(np.ptp(r, axis=0)))
-    fig, axs = plt.subplots(3, 1, figsize=(12, 8), sharex=True)
+    panels = 5 if has_tcp_wrench else 3
+    fig, axs = plt.subplots(panels, 1, figsize=(12, 2.5 * panels + 0.5), sharex=True)
     axs[0].plot(
         t, np.rad2deg(source[:, j] - anchor[j]), ":", color="#888888", label="Source"
     )
@@ -269,7 +293,23 @@ def analyze(directory, output=None):
     axs[1].set_ylabel("Ref - actual (deg)")
     axs[2].plot(t, tau[:, j], color="#df7c25")
     axs[2].set_ylabel("Command torque (N m)")
-    axs[2].set_xlabel("Time since RUNNING (s)")
+    if has_tcp_wrench:
+        # 保留接触瞬间的原始采样峰值；标准帧丢失时曲线断开。
+        start = samples[0]["robot_timestamp_s"]
+        stop = samples[-1]["robot_timestamp_s"]
+        stamps = np.array([stamp for stamp in wrench_by_stamp if start <= stamp <= stop])
+        wrench = np.array([wrench_by_stamp[stamp] for stamp in stamps], dtype=float).reshape(-1, 6)
+        gaps = np.flatnonzero(np.diff(stamps) > 0.003) + 1
+        force_time = np.insert(stamps - start, gaps, np.nan)
+        wrench = np.insert(wrench, gaps, np.nan, axis=0)
+        for ax, values, prefix, unit in (
+            (axs[3], wrench[:, :3], "F", "N"), (axs[4], wrench[:, 3:], "M", "N m")
+        ):
+            for axis, value in zip("xyz", values.T):
+                ax.plot(force_time, value, label=prefix + axis, linewidth=1)
+            ax.set_ylabel(f"TCP {prefix} ({unit})")
+            ax.legend(ncol=3)
+    axs[-1].set_xlabel(time_label)
     for ax in axs:
         ax.grid(alpha=0.2)
     fig.suptitle(

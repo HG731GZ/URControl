@@ -32,12 +32,11 @@ STANDARD = {
     "actual_current_as_torque": "VECTOR6D",
     "actual_execution_time": "DOUBLE",
 }
-OUTPUT_NAMES = (
-    list(STANDARD)
-    + [f"output_int_register_{i}" for i in range(24, 48)]
-    + [f"output_double_register_{i}" for i in range(24, 48)]
-)
-OUTPUT_TYPES = list(STANDARD.values()) + ["INT32"] * 24 + ["DOUBLE"] * 24
+TELEOP_STANDARD = {**STANDARD, "actual_TCP_force": "VECTOR6D"}
+OUTPUT_REGISTERS = {
+    **{f"output_int_register_{i}": "INT32" for i in range(24, 48)},
+    **{f"output_double_register_{i}": "DOUBLE" for i in range(24, 48)},
+}
 
 
 def decode(state, run_id):

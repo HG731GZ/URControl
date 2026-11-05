@@ -60,7 +60,7 @@ class URImpedanceController:
             directory,
             dict(
                 record_type="joint_impedance_run",
-                schema_version=3,
+                schema_version=4 if source == "teleop" else 3,
                 teleop_velocity_input={
                     "source": "UDP J1-J6",
                     "unit": "rad/s",
@@ -82,7 +82,12 @@ class URImpedanceController:
                     for name in ("numpy", "UrRtde", "ur-rtde")
                 },
                 environment="URSim" if ip in ("localhost", "127.0.0.1") else "robot",
-                time_definition="snapshot: robot same-cycle; source: host monotonic, join by adopted_reference_seq",
+                time_definition=(
+                    "snapshot: robot same-cycle; source: host monotonic, join by adopted_reference_seq"
+                    + ("; standard.actual_TCP_force: Fx/Fy/Fz (N), Mx/My/Mz (N*m); "
+                       "standard.timestamp = sample.robot_timestamp_s at snapshot observation"
+                       if source == "teleop" else "")
+                ),
             ),
         )
 
@@ -146,9 +151,9 @@ class URImpedanceController:
         if version[0] != 5 or version[1] < 26:
             raise RuntimeError(f"要求 PolyScope 5.26+，实际 {version}")
         packet = conn.send_input_setup(protocol.INPUT_NAMES, protocol.INPUT_TYPES)
-        conn.send_output_setup(
-            protocol.OUTPUT_NAMES, protocol.OUTPUT_TYPES, frequency=500
-        )
+        standard_fields = protocol.TELEOP_STANDARD if self.source == "teleop" else protocol.STANDARD
+        output_fields = {**standard_fields, **protocol.OUTPUT_REGISTERS}
+        conn.send_output_setup(list(output_fields), list(output_fields.values()), frequency=500)
         if not conn.send_start():
             raise RuntimeError("RTDE 拒绝同步")
         baseline = conn.receive()
@@ -229,7 +234,7 @@ class URImpedanceController:
                 last_feedback = now
                 self.logger.record(
                     "standard",
-                    {name: getattr(state, name) for name in protocol.STANDARD},
+                    {name: getattr(state, name) for name in standard_fields},
                 )
                 if self.source == "teleop" and state.output_int_register_24 == self.run_id:
                     adopted = state.output_int_register_47
