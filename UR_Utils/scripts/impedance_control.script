@@ -14,6 +14,9 @@ def joint_impedance():
   end
   local K = {{JOINT_K}}
   local D = {{JOINT_D}}
+  if {{TELEOP}}:
+    local position_to_speed = K/D
+  end
   local vmax = {{VMAX}}
   local omega = {{TELEOP_REF_OMEGA_RAD_S}}
   local amax = {{AMAX}}
@@ -276,7 +279,13 @@ def joint_impedance():
       local error = qr-q
       local magnitude = absolute(error)
       peak = (peak+magnitude+absolute(peak-magnitude))*0.5
-      local raw = gain_scale*(K*error+D*(vr-v))
+      if {{TELEOP}}:
+        # 每轴的参考速度和位置误差产生的追赶速度共用该轴的速度预算。
+        local drive_v = bound(vr+position_to_speed*error,vmax)
+        local raw = gain_scale*D*(drive_v-v)
+      else:
+        local raw = gain_scale*(K*error+D*(vr-v))
+      end
       local bounded = bound(raw,taumax)
       tau = tau+bound(bounded-tau,trate*dt)
       local j = 0

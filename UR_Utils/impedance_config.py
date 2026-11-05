@@ -50,7 +50,14 @@ def snapshot():
     return deepcopy(DEFAULTS)
 
 
-def validate(config=None):
+def teleop_work_speed_limits(cfg):
+    """当前遥操作参考模式中，供参考运动和位置追赶共用的各轴速度上限。"""
+    if cfg["TELEOP_REF_MODE"] == POSITION_FOLLOW:
+        return cfg["TELEOP_FOLLOW_V_RAD_S"]
+    return cfg["REF_MAX_QD_RAD_S"]
+
+
+def validate(config=None, *, reference_source=None):
     cfg = snapshot() if config is None else deepcopy(config)
     if set(cfg) != set(DEFAULTS):
         raise ValueError(f"参数键不匹配：{set(cfg)^set(DEFAULTS)}")
@@ -74,6 +81,13 @@ def validate(config=None):
                 raise ValueError(f"{key} 不合法")
     if any(not 0.01 <= x <= 60 for x in cfg["TELEOP_REF_OMEGA_RAD_S"]):
         raise ValueError("遥操作参考带宽应在 0.01～60 rad/s 范围内")
+    if reference_source == "teleop":
+        limits = zip(teleop_work_speed_limits(cfg), cfg["ACTUAL_MAX_QD_RAD_S"])
+        for axis, (work, stop) in enumerate(limits, 1):
+            if work >= stop:
+                raise ValueError(
+                    f"遥操作 J{axis} 工作速度上限 {work:g} rad/s 必须低于实际速度停止阈值 {stop:g} rad/s"
+                )
     if not 0.002 < cfg["CYCLE_MAX_S"] <= 0.010:
         raise ValueError("循环间隔门槛须大于 2 ms 且不超过 10 ms")
     braking = max(cfg["ACTUAL_MAX_QD_RAD_S"]) / cfg["STOP_ACCEL_RAD_S2"]
@@ -102,7 +116,7 @@ def migrate_v2_parameters(cfg):
 def render_script(config, run_id, reference_source="trajectory"):
     if reference_source not in ("teleop", "trajectory", "step"):
         raise ValueError("未知阻抗目标源")
-    cfg = validate(config)
+    cfg = validate(config, reference_source=reference_source)
     follow = reference_source == "teleop" and cfg["TELEOP_REF_MODE"] == POSITION_FOLLOW
     script = (
         Path(__file__)
@@ -110,9 +124,12 @@ def render_script(config, run_id, reference_source="trajectory"):
         .joinpath("impedance_control.script")
         .read_text()
     )
-    constants = dict(cfg, POSITION_FOLLOW=follow,
-                     VMAX=cfg["TELEOP_FOLLOW_V_RAD_S"] if follow else cfg["REF_MAX_QD_RAD_S"],
-                     AMAX=cfg["TELEOP_FOLLOW_A_RAD_S2"] if follow else cfg["REF_MAX_QDD_RAD_S2"])
+    constants = dict(
+        cfg,
+        POSITION_FOLLOW=follow,
+        VMAX=teleop_work_speed_limits(cfg) if reference_source == "teleop" else cfg["REF_MAX_QD_RAD_S"],
+        AMAX=cfg["TELEOP_FOLLOW_A_RAD_S2"] if follow else cfg["REF_MAX_QDD_RAD_S2"],
+    )
     constants["FOLLOW_T_EFF"] = [max(t, 2*v/a) for t, v, a in zip(
         cfg["TELEOP_FOLLOW_T_S"], cfg["TELEOP_FOLLOW_V_RAD_S"], cfg["TELEOP_FOLLOW_A_RAD_S2"])]
     for key, value in constants.items():

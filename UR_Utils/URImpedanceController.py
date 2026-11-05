@@ -40,7 +40,9 @@ class URImpedanceController:
         service,
         parameter_revision=None,
     ):
-        self.ip, self.parameters, self.run_id = ip, config.validate(parameters), run_id
+        self.ip = ip
+        self.parameters = config.validate(parameters, reference_source=source)
+        self.run_id = run_id
         self.source, self.trajectory, self.play_hz = source, trajectory, play_hz
         self.stop_event, self.service = stop_event, service
         self.status = {
@@ -61,6 +63,13 @@ class URImpedanceController:
             dict(
                 record_type="joint_impedance_run",
                 schema_version=4 if source == "teleop" else 3,
+                torque_control=(
+                    {
+                        "law": "velocity_limited_pd",
+                        "work_speed_limit_rad_s": config.teleop_work_speed_limits(self.parameters),
+                    }
+                    if source == "teleop" else {"law": "pd"}
+                ),
                 teleop_velocity_input={
                     "source": "UDP J1-J6",
                     "unit": "rad/s",

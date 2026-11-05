@@ -78,7 +78,7 @@ class ImpedanceProcess:
         parameter_revision=None,
     ):
         self.robot_ip, self.reference_source = robot_ip, reference_source
-        self.parameters = validate(config)
+        self.parameters = validate(config, reference_source=reference_source)
         if reference_source not in ("trajectory", "step", "teleop"):
             raise ValueError("未知目标源")
         if reference_source in ("trajectory", "step") and trajectory is None:
