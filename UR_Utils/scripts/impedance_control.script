@@ -15,6 +15,7 @@ def joint_impedance():
   local K = {{JOINT_K}}
   local D = {{JOINT_D}}
   local vmax = {{REF_MAX_QD_RAD_S}}
+  local omega = {{TELEOP_REF_OMEGA_RAD_S}}
   local amax = {{REF_MAX_QDD_RAD_S2}}
   local taumax = {{TAU_MAX_NM}}
   local trate = {{TAU_RATE_MAX_NM_S}}
@@ -25,6 +26,7 @@ def joint_impedance():
   local anchor = get_actual_joint_positions()
   local qr = anchor
   local vr = [0,0,0,0,0,0]
+  local source_v = vr
   local source = anchor
   local tau = [0,0,0,0,0,0]
   local peak = [0,0,0,0,0,0]
@@ -54,7 +56,7 @@ def joint_impedance():
   global snap_phase = 1
   global snap_fault = 0
   global snap_mask = 0
-  global snap_peak = peak
+  global snap_axis_page = vr
   global snap_interval = 0
   global snap_compute = 0
   global snap_saturated = 0
@@ -75,7 +77,7 @@ def joint_impedance():
         local sp = snap_phase
         local sf = snap_fault
         local sm = snap_mask
-        local se = snap_peak
+        local se = snap_axis_page
         local si = snap_interval
         local sx = snap_compute
         local ss = snap_saturated
@@ -127,7 +129,7 @@ def joint_impedance():
     if read_input_integer_register(26) == 2:
       phase = 5
     end
-    if read_input_integer_register(24) != 1 or read_input_integer_register(25) != {{RUN_ID}}:
+    if read_input_integer_register(24) != 2 or read_input_integer_register(25) != {{RUN_ID}}:
       fault = 1
     end
     local new_hb = read_input_integer_register(27)
@@ -140,6 +142,7 @@ def joint_impedance():
     local submit = read_input_integer_register(30)
     if submit != adopted and read_input_integer_register(33) == submit:
       local incoming = [read_input_float_register(24),read_input_float_register(25),read_input_float_register(26),read_input_float_register(27),read_input_float_register(28),read_input_float_register(29)]
+      local incoming_v = [read_input_float_register(32),read_input_float_register(33),read_input_float_register(34),read_input_float_register(35),read_input_float_register(36),read_input_float_register(37)]
       local seq = read_input_integer_register(29)
       local age = read_input_float_register(30)
       local valid = read_input_integer_register(31)
@@ -161,6 +164,7 @@ def joint_impedance():
           end
           j = j+1
         end
+        source_v = incoming_v
         source = incoming
         adopted = submit
         if seq != source_seq:
@@ -216,6 +220,29 @@ def joint_impedance():
       if phase >= 3 and {{DIRECT_STEP}}:
         qr = source
         vr = [0,0,0,0,0,0]
+      elif phase >= 3 and {{TELEOP}}:
+        local wanted_a = omega*omega*(source-qr)+2*omega*(source_v-vr)
+        local next_v = bound(vr+bound(wanted_a,amax)*dt,vmax)
+        # 朝关节边界运动时，为本步积分和后续制动同时留出距离。
+        local j = 0
+        while j < 6:
+          local speed = norm(next_v[j])
+          local direction = 1
+          if next_v[j] < 0:
+            direction = -1
+          end
+          local room = qlimit[j]-direction*qr[j]
+          if speed*dt+speed*speed/(2*amax[j]) > room:
+            local adt = amax[j]*dt
+            next_v[j] = direction*(sqrt(adt*adt+2*amax[j]*room)-adt)
+          end
+          j = j+1
+        end
+        if norm(next_v-vr-wanted_a*dt) > 0.000000001:
+          shaped_cycle = 1
+        end
+        vr = next_v
+        qr = qr+vr*dt
       elif phase >= 3:
         local delta = source-qr
         local distance = absolute(delta)
@@ -262,7 +289,10 @@ def joint_impedance():
       snap_phase = phase
       snap_fault = fault
       snap_mask = mask
-      snap_peak = peak
+      snap_axis_page = vr
+      if phase == 5 or fault != 0:
+        snap_axis_page = peak
+      end
       snap_interval = max_interval
       snap_compute = max_compute
       snap_saturated = saturated

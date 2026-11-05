@@ -332,7 +332,7 @@ def create_teleop_impedance_preview(scenario='ready'):
     active = scenario in ('sync', 'preparing', 'running', 'stopping', 'unconfirmed')
     def refresh():
         now = time.monotonic()
-        udp = dict(command=None if scenario == 'offline' else SimpleNamespace(mode=0 if scenario == 'mode' else 1, q_arm=master),
+        udp = dict(command=None if scenario == 'offline' else SimpleNamespace(mode=0 if scenario == 'mode' else 1, q_arm=master, qd_arm=[0.0]*6),
                    frame_count=500, received_monotonic=now-(1.0 if scenario == 'stale' else .008), last_error=None)
         window.update_context(snapshot=udp, actual_q=None if scenario == 'offline' else actual,
                               config=snapshot(), revision=3, dirty=False,

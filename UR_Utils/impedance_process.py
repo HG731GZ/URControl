@@ -1,6 +1,6 @@
 """spawn 隔离通信，独立停止事件和父进程租约；停止未确认保持执行权。"""
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
@@ -138,13 +138,7 @@ class ImpedanceProcess:
         self._submitted_seq = 0
         if initial_reference is not None:
             self.submit_reference(
-                JointTargetFrame(
-                    self.run_id,
-                    reference_source,
-                    initial_reference.source_seq,
-                    initial_reference.q_rad,
-                    initial_reference.source_monotonic_s,
-                )
+                replace(initial_reference, run_id=self.run_id)
             )
 
     @property

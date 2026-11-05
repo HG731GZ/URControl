@@ -140,6 +140,7 @@ class ManualWindow(ImpedanceIntegration, QtWidgets.QMainWindow):
                 mode_event_sent = False
                 while not self.sender_stop.is_set():
                     elapsed = 0 if self.running_since is None else time.monotonic()-self.running_since
+                    qd = [0.0]*6
                     q = list(self.center)
                     q[0] += 0.02
                     if self.args.scenario == 'envelope':
@@ -151,18 +152,21 @@ class ManualWindow(ImpedanceIntegration, QtWidgets.QMainWindow):
                             q[0] = self.center[0] + .04
                     elif self.running_since is not None and self.args.scenario in ('follow','hidden','global-stop'):
                         q[0] = self.center[0] + .02*math.cos(2*math.pi*elapsed/4)
+                        qd[0] = -.02*(math.pi/2)*math.sin(math.pi*elapsed/2)
                     if self.args.scenario == 'latest':
                         offset = .08 if elapsed < .10 else (.02 if elapsed < .12 else -.01)
                         q[0] = self.center[0] + offset
                     elif self.args.scenario == 'combined':
                         offset = .01*math.cos(2*math.pi*elapsed/4)
                         q = [value + offset*(1 if j%2 == 0 else -1) for j,value in enumerate(self.center)]
+                        speed = -.01*(math.pi/2)*math.sin(math.pi*elapsed/2)
+                        qd = [speed*(1 if j%2 == 0 else -1) for j in range(6)]
                     if self.args.scenario == 'mode' and elapsed >= 1 and not mode_event_sent:
-                        sock.sendto(URUDPClient.pack(q,0,[0.0]*3),('127.0.0.1',self.args.port))
+                        sock.sendto(URUDPClient.pack_command(q,0,[0.0]*3,qd),('127.0.0.1',self.args.port))
                         mode_event_sent = True
                     stream_paused = (self.args.scenario == 'dropout' and elapsed >= 1) or (self.args.scenario == 'sync-dropout' and elapsed >= .15)
                     if not stream_paused:
-                        sock.sendto(URUDPClient.pack(q,1,[0.0]*3),('127.0.0.1',self.args.port))
+                        sock.sendto(URUDPClient.pack_command(q,1,[0.0]*3,qd),('127.0.0.1',self.args.port))
                     next_send += 1/self.args.hz
                     delay = next_send-time.monotonic()
                     if delay < -0.1:

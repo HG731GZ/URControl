@@ -14,6 +14,7 @@ class JointTargetFrame:
     valid: bool = True
     end_of_source: bool = False
     trajectory_row_position: float = 0.0
+    qd_rad_s: tuple | None = None
 
     def __post_init__(self):
         object.__setattr__(self, "q_rad", tuple(float(v) for v in self.q_rad))
@@ -26,6 +27,10 @@ class JointTargetFrame:
             raise ValueError("非法目标源或源序号")
         if len(self.q_rad) != 6 or not all(math.isfinite(v) for v in self.q_rad):
             raise ValueError("目标必须是六轴有限 rad")
+        if self.source == "teleop":
+            if self.qd_rad_s is None or len(self.qd_rad_s) != 6 or not all(map(math.isfinite, self.qd_rad_s)):
+                raise ValueError("遥操作目标须含同帧六轴有限速度（rad/s）")
+            object.__setattr__(self, "qd_rad_s", tuple(self.qd_rad_s))
         if (
             not math.isfinite(self.trajectory_row_position)
             or self.trajectory_row_position < 0

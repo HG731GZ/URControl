@@ -23,6 +23,7 @@ class ImpedanceTuningWindow(QtWidgets.QDialog):
         ("torqueSpin", "TAU_MAX_NM", 1.0),
         ("slewSpin", "TAU_RATE_MAX_NM_S", 1.0),
         ("referenceSpeedSpin", "REF_MAX_QD_RAD_S", 180 / math.pi),
+        ("teleopOmegaSpin", "TELEOP_REF_OMEGA_RAD_S", 1.0),
         ("accelerationSpin", "REF_MAX_QDD_RAD_S2", 180 / math.pi),
     )
 

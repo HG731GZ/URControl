@@ -11,9 +11,10 @@ URUdpClient.py — UDP通信客户端，用于接收/发送外部控制信号。
                              - TCP_VEL:  末端速度 [vx, vy, vz, wx, wy, wz] (m/s, rad/s)
     52       1    uint8      控制模式（0=OFF, 1=JOINT_TRACK, 2=JOINT_DELTA, 3=TCP_DELTA, 4=TCP_VEL）
     53      24    3×float64  夹钳广义坐标
-    77       4    uint32     CRC32 (IEEE 802.3)，校验范围 offset 4 ~ 76
-    81       4    uint8[4]   帧尾 (0x0D 0x0A 0x0D 0x0A)
-    总长度：85 字节
+    77      48    6×float64  主端六轴速度（J1～J6）
+    125      4    uint32     CRC32 (IEEE 802.3)，校验范围 offset 4 ~ 124
+    129       4    uint8[4]   帧尾 (0x0D 0x0A 0x0D 0x0A)
+    主端指令总长度：133 字节。从端反馈沿用 85 字节格式，夹爪后直接写 CRC32。
 """
 
 from __future__ import annotations
@@ -69,16 +70,18 @@ class UDPControlMode:
 class UDPCommand:
     """解析后的一帧控制指令。"""
 
-    __slots__ = ("q_arm", "mode", "q_gripper", "raw_packet", "recv_time")
+    __slots__ = ("q_arm", "mode", "q_gripper", "qd_arm", "raw_packet", "recv_time")
 
     def __init__(
         self,
         q_arm: List[float],
         mode: int,
         q_gripper: List[float],
+        qd_arm: List[float],
         raw_packet: Optional[bytes] = None,
     ):
         self.q_arm = q_arm
+        self.qd_arm = qd_arm
         self.mode = mode
         self.q_gripper = q_gripper
         self.raw_packet = raw_packet
@@ -133,13 +136,14 @@ class URUDPClient:
     FOOTER_SIZE = 4
     CRC_SIZE = 4
 
-    DATA_FORMAT = "!6dB3d"
-    DATA_SIZE = struct.calcsize(DATA_FORMAT)  # 73
+    FEEDBACK_FORMAT = "!6dB3d"
+    DATA_FORMAT = "!6dB3d6d"
+    DATA_SIZE = struct.calcsize(DATA_FORMAT)  # 121
 
     DATA_OFFSET = HEADER_SIZE                 # 4
-    CRC_OFFSET = DATA_OFFSET + DATA_SIZE      # 77
-    FOOTER_OFFSET = CRC_OFFSET + CRC_SIZE     # 81
-    PACKET_SIZE = FOOTER_OFFSET + FOOTER_SIZE # 85
+    CRC_OFFSET = DATA_OFFSET + DATA_SIZE      # 125
+    FOOTER_OFFSET = CRC_OFFSET + CRC_SIZE     # 129
+    PACKET_SIZE = FOOTER_OFFSET + FOOTER_SIZE # 133
     RECEIVE_DEADLINE_S = 0.25
     SEND_RETRY_INTERVAL = 1.0
     ERROR_LOG_INTERVAL = 5.0
@@ -277,10 +281,10 @@ class URUDPClient:
         expected = struct.unpack("!I", packet[self.CRC_OFFSET:self.FOOTER_OFFSET])[0]
         if expected != binascii.crc32(data) & 0xFFFFFFFF:
             raise ValueError("UDP CRC 校验失败")
-        q_arm, mode, q_gripper = self._parse_data(data)
-        if mode not in UDPControlMode._NAMES or not all(math.isfinite(v) for v in (*q_arm, *q_gripper)):
+        q_arm, mode, q_gripper, qd_arm = self._parse_data(data)
+        if mode not in UDPControlMode._NAMES or not all(math.isfinite(v) for v in (*q_arm, *q_gripper, *qd_arm)):
             raise ValueError("UDP 模式未知或目标包含非有限数")
-        return UDPCommand(q_arm, mode, q_gripper, raw_packet=packet)
+        return UDPCommand(q_arm, mode, q_gripper, qd_arm, raw_packet=packet)
 
     def _reader_loop(self) -> None:
         """有界排空后只发布最新位置；线程停顿后丢弃残留报文至排空。"""
@@ -374,13 +378,13 @@ class URUDPClient:
                 break
 
     @staticmethod
-    def _parse_data(data: bytes) -> Tuple[List[float], int, List[float]]:
-        """解析 73 字节数据段（6 double + 1 uint8 + 3 double）。"""
+    def _parse_data(data: bytes) -> Tuple[List[float], int, List[float], List[float]]:
+        """解析 121 字节指令数据段，位置、夹爪和速度共享收包身份。"""
         values = struct.unpack(URUDPClient.DATA_FORMAT, data)
         q_arm = list(values[:6])
         mode = int(values[6])
-        q_gripper = list(values[7:])
-        return q_arm, mode, q_gripper
+        q_gripper = list(values[7:10])
+        return q_arm, mode, q_gripper, list(values[10:16])
 
     # ------------------------------------------------------------------
     # 对外读取接口
@@ -466,10 +470,21 @@ class URUDPClient:
     # 对外发送接口
     # ------------------------------------------------------------------
 
+    @classmethod
+    def pack_command(cls, q_arm, mode, q_gripper, qd_arm):
+        """将人工主端的同帧位置和速度打包为 133 字节指令。"""
+        data = struct.pack(cls.DATA_FORMAT, *q_arm, mode, *q_gripper, *qd_arm)
+        return cls._wrap_data(data)
+
+    @classmethod
+    def _wrap_data(cls, data):
+        crc = struct.pack("!I", binascii.crc32(data) & 0xFFFFFFFF)
+        return cls.HEADER + data + crc + cls.FOOTER
+
     @staticmethod
     def pack(q_arm: List[float], mode: int, q_gripper: List[float]) -> bytes:
         """
-        将控制指令打包为完整的 85 字节协议帧（帧头 + 数据 + CRC32 + 帧尾）。
+        将从端反馈打包为完整的 85 字节协议帧（帧头 + 数据 + CRC32 + 帧尾）。
 
         Parameters
         ----------
@@ -488,16 +503,14 @@ class URUDPClient:
             raise ValueError(f"mode 必须在 0-255 之间，实际 {mode}")
 
         data = struct.pack(
-            URUDPClient.DATA_FORMAT,
+            URUDPClient.FEEDBACK_FORMAT,
             float(q_arm[0]), float(q_arm[1]), float(q_arm[2]),
             float(q_arm[3]), float(q_arm[4]), float(q_arm[5]),
             int(mode),
             float(q_gripper[0]), float(q_gripper[1]), float(q_gripper[2]),
         )
 
-        crc = struct.pack("!I", binascii.crc32(data) & 0xFFFFFFFF)
-
-        return URUDPClient.HEADER + data + crc + URUDPClient.FOOTER
+        return URUDPClient._wrap_data(data)
 
     def send_to(
         self,

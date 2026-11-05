@@ -299,7 +299,7 @@
             </property>
            </widget>
           </item>
-          <item row="3" column="0" colspan="4">
+          <item row="4" column="0" colspan="4">
            <widget class="QLabel" name="guardLabel">
             <property name="text">
              <string>摩擦补偿固定为 0；跟踪误差用于阻抗计算和记录，速度守卫及力矩限幅保持有效。</string>
@@ -330,6 +330,18 @@
             <property name="maximum">
              <double>3600</double>
             </property>
+           </widget>
+          </item>
+          <item row="3" column="0" colspan="2">
+           <widget class="QLabel" name="teleopOmegaLabel">
+            <property name="text"><string>遥操作参考带宽 ω（rad/s）</string></property>
+           </widget>
+          </item>
+          <item row="3" column="2" colspan="2">
+           <widget class="QDoubleSpinBox" name="teleopOmegaSpin">
+            <property name="decimals"><number>2</number></property>
+            <property name="minimum"><double>0.01</double></property>
+            <property name="maximum"><double>60.0</double></property>
            </widget>
           </item>
          </layout>

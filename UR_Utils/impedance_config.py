@@ -11,6 +11,7 @@ DEFAULTS = {
     "TAU_MAX_NM": [24.0, 24, 18, 6, 6, 6],
     "TAU_RATE_MAX_NM_S": [300.0, 300, 200, 200, 200, 200],
     "REF_MAX_QD_RAD_S": [0.8235294117647058, 0.7058823529411765, 0.7058823529411765, 1.0, 1.0, 1.0],
+    "TELEOP_REF_OMEGA_RAD_S": [40.0] * 6,
     "REF_MAX_QDD_RAD_S2": [30.0, 30.0, 30.0, 60.0, 60.0, 60.0],
     "JOINT_POSITION_LIMIT_RAD": [6.283185307179586, 6.283185307179586, 6.283185307179586, 6.283185307179586, 6.283185307179586, 6.283185307179586],
     "ENVELOPE_RAD": [0.22, 0.22, 0.22, 0.22, 0.22, 0.22],
@@ -61,6 +62,8 @@ def validate(config=None):
             cfg[key] = float(value)
             if not math.isfinite(cfg[key]) or cfg[key] <= 0:
                 raise ValueError(f"{key} 不合法")
+    if any(not 0.01 <= x <= 60 for x in cfg["TELEOP_REF_OMEGA_RAD_S"]):
+        raise ValueError("遥操作参考带宽应在 0.01～60 rad/s 范围内")
     if not 0.002 < cfg["CYCLE_MAX_S"] <= 0.010:
         raise ValueError("循环间隔门槛须大于 2 ms 且不超过 10 ms")
     braking = max(cfg["ACTUAL_MAX_QD_RAD_S"]) / cfg["STOP_ACCEL_RAD_S2"]

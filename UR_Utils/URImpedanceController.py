@@ -60,7 +60,15 @@ class URImpedanceController:
             directory,
             dict(
                 record_type="joint_impedance_run",
-                schema_version=1,
+                schema_version=2,
+                teleop_velocity_input={
+                    "source": "UDP J1-J6",
+                    "unit": "rad/s",
+                    "master_filter": "none",
+                    "receiver_filter": "none",
+                    "input_limit": "REF_MAX_QD_RAD_S",
+                    "reference_model": "critically_damped_position_velocity",
+                } if source == "teleop" else None,
                 parameters=self.parameters,
                 parameter_revision=parameter_revision,
                 run_id=run_id,
@@ -172,7 +180,7 @@ class URImpedanceController:
         )
         for name in protocol.INPUT_NAMES:
             setattr(packet, name, 0)
-        setattr(packet, "input_int_register_24", 1)
+        setattr(packet, "input_int_register_24", 2)
         setattr(packet, "input_int_register_25", self.run_id)
         self._send(packet)
         self.service(self)
@@ -303,7 +311,7 @@ class URImpedanceController:
                 frame = self.frame
                 if frame is None:
                     raise RuntimeError("没有有效首目标")
-                age = frame.check(self.run_id, now, cfg)
+                age = frame.check(self.run_id, time.monotonic(), cfg)
                 if (
                     self.source != "teleop"
                     and not seen_running
@@ -313,7 +321,7 @@ class URImpedanceController:
                     raise RuntimeError("首目标未与实际锚点同步")
                 reference_seq += 1
                 ints = [
-                    1,
+                    2,
                     self.run_id,
                     1,
                     heartbeat,
@@ -330,6 +338,14 @@ class URImpedanceController:
                     (*frame.q_rad, age, frame.trajectory_row_position), 24
                 ):
                     setattr(packet, f"input_double_register_{n}", v)
+                qd_used = None
+                if self.source == "teleop":
+                    qd_used = [
+                        max(-limit, min(limit, speed))
+                        for speed, limit in zip(frame.qd_rad_s, cfg["REF_MAX_QD_RAD_S"])
+                    ]
+                    for n, speed in enumerate(qd_used, 32):
+                        setattr(packet, f"input_double_register_{n}", speed)
                 self.status.update(
                     q_source=list(frame.q_rad),
                     source_age_s=age,
@@ -343,6 +359,8 @@ class URImpedanceController:
                         reference_seq=reference_seq,
                         source_seq=frame.source_seq,
                         q_source=frame.q_rad,
+                        qd_source_raw=frame.qd_rad_s,
+                        qd_source_used=qd_used,
                         source_monotonic_s=frame.source_monotonic_s,
                         source_age_s=age,
                         row_position=frame.trajectory_row_position,

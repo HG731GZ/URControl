@@ -11,6 +11,11 @@ def analyze(directory, output=None):
     directory = Path(directory)
     output = Path(output or directory)
     output.mkdir(parents=True, exist_ok=True)
+    metadata = json.loads((directory / "metadata.json").read_text())
+    version = metadata["schema_version"]
+    if version not in (1, 2):
+        raise ValueError(f"未知阻抗日志版本 {version}")
+    final_peak = None
     refs = {}
     samples = []
     seen = set()
@@ -23,6 +28,9 @@ def analyze(directory, output=None):
         elif row["kind"] == "standard":
             standard.append(p)
         elif row["kind"] == "sample":
+            if version == 2 and p["final"]:
+                final_peak = p["peak_error_rad"]
+                continue
             key = (p["run_id"], p["cycle_seq"])
             if key not in seen and p["phase"] in ("RUNNING", "ENDING"):
                 samples.append(p)
@@ -43,8 +51,7 @@ def analyze(directory, output=None):
     error = r - q
     shape = source - r
     summary = json.loads((directory / "summary.json").read_text())
-    metadata = json.loads((directory / "metadata.json").read_text())
-    peak = np.max(np.array([s["peak_error_rad"] for s in samples]), axis=0)
+    peak = final_peak if version == 2 else np.max([s["peak_error_rad"] for s in samples], axis=0).tolist()
     sampled = {
         "sample_count": len(samples),
         "duration_s": float(t[-1]),
@@ -53,7 +60,7 @@ def analyze(directory, output=None):
         "sampled_final_mean_error_rad": np.mean(
             error[t >= t[-1] - 0.5], axis=0
         ).tolist(),
-        "robot_accumulated_peak_error_rad": peak.tolist(),
+        "robot_accumulated_peak_error_rad": peak,
         "sampled_source_shaping_rmse_rad": np.sqrt(
             np.nanmean(shape**2, axis=0)
         ).tolist(),
@@ -77,6 +84,17 @@ def analyze(directory, output=None):
     (output / "metadata.json").write_text(
         json.dumps(metadata, ensure_ascii=False, indent=2)
     )
+    speeds = {}
+    if version == 2:
+        speeds["reference_rad_s"] = [s["qd_ref"] for s in samples]
+        speeds["actual_rad_s"] = [s["qd_actual"] for s in samples]
+        if metadata["source"] == "teleop":
+            for name in ("qd_source_raw", "qd_source_used"):
+                speeds[name] = [
+                    refs[s["adopted_reference_seq"]][name]
+                    if s["adopted_reference_seq"] in refs else [float("nan")] * 6
+                    for s in samples
+                ]
     with (output / "tracking.csv").open("w") as f:
         writer = csv.writer(f)
         writer.writerow(
@@ -89,6 +107,7 @@ def analyze(directory, output=None):
                     "actual_rad",
                     "error_rad",
                     "tau_nm",
+                    *speeds,
                 )
                 for j in range(1, 7)
             ]
@@ -104,6 +123,7 @@ def analyze(directory, output=None):
                     *q[k],
                     *error[k],
                     *tau[k],
+                    *(v for series in speeds.values() for v in series[k]),
                 ]
             )
     import matplotlib

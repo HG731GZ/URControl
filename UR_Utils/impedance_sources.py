@@ -82,6 +82,7 @@ class UDPImpedanceSource:
                     snapshot["frame_count"],
                     tuple(command.q_arm),
                     snapshot["received_monotonic"],
+                    qd_rad_s=command.qd_arm,
                 )
                 if self.backend.submit_reference(frame):
                     previous = snapshot["frame_count"]

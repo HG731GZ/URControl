@@ -50,10 +50,10 @@ class ImpedanceParameters(QtCore.QObject):
         data = json.loads(Path(path).read_text())
         if (
             data.get("record_type") != "joint_impedance_preset"
-            or data.get("schema_version") != 1
+            or data.get("schema_version") != 2
         ):
             raise ValueError(
-                "仅接受 joint_impedance_preset v1，不接受导纳预设或运行记录"
+                "需要 joint_impedance_preset v2。迁移 v1 时请添加六轴 TELEOP_REF_OMEGA_RAD_S 并更新版本号"
             )
         self.draft = validate(data["parameters"])
         self.changed.emit()
@@ -63,7 +63,7 @@ class ImpedanceParameters(QtCore.QObject):
             json.dumps(
                 dict(
                     record_type="joint_impedance_preset",
-                    schema_version=1,
+                    schema_version=2,
                     parameters=validate(self.draft),
                 ),
                 ensure_ascii=False,

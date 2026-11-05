@@ -29,7 +29,8 @@ def master_target(snapshot, config, now=None):
         raise ValueError('主端接收时刻来自未来')
     if age > config['SOURCE_TIMEOUT_S']:
         raise ValueError(f'主端目标已过期（最近接收 {age*1000:.0f} ms）')
-    frame = JointTargetFrame(1, 'teleop', snapshot['frame_count'], tuple(command.q_arm), stamp)
+    frame = JointTargetFrame(1, 'teleop', snapshot['frame_count'], tuple(command.q_arm), stamp,
+                             qd_rad_s=command.qd_arm)
     frame.check(1, now, config)
     return frame
 
