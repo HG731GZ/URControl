@@ -23,15 +23,21 @@ import binascii
 from copy import deepcopy
 import logging
 import math
+import platform
 import select
 import socket
 import struct
+import sys
 import threading
 import time
 from typing import Optional, Tuple, List
 
 
 logger = logging.getLogger(__name__)
+
+# Linux x86-64 和 arm64 的 SO_TIMESTAMPNS_NEW 返回两个有符号 64 位整数。
+_TIMESTAMPNS_NEW = 64 if sys.platform == "linux" and platform.machine() in ("x86_64", "aarch64") else None
+_KERNEL_TIMESPEC = struct.Struct("=qq")
 
 
 class UDPControlMode:
@@ -167,6 +173,7 @@ class URUDPClient:
 
         self._cond = threading.Condition()
         self._receive_trace = None
+        self._kernel_timestamps = False
         self._latest_command: Optional[UDPCommand] = None
         self._frame_count: int = 0
         self._published_frame_count = 0
@@ -209,6 +216,7 @@ class URUDPClient:
             sock.close()
             raise
         self._sock = sock
+        self._kernel_timestamps = False
 
         self._stop_event.clear()
         self._reader_thread = threading.Thread(
@@ -291,98 +299,121 @@ class URUDPClient:
         return UDPCommand(q_arm, mode, q_gripper, qd_arm, raw_packet=packet)
 
     def _reader_loop(self) -> None:
-        """有界排空后只发布最新位置；线程停顿后丢弃残留报文至排空。"""
+        """读端独立采用非阻塞操作，发送端沿用原 socket 的超时。"""
+        try:
+            with self._sock.dup() as reader:
+                reader.setblocking(False)
+                self._receive_batches(reader)
+        except OSError as exc:
+            if not self._stop_event.is_set():
+                self._control_event("UDP 接收失败：" + str(exc))
+                with self._cond:
+                    self._last_error = exc
+                    self._cond.notify_all()
+
+    def _read_datagram(self, sock):
+        """记录用户态读取时刻，Linux 遥操作诊断还记录内核时刻，两套时钟分别保存。"""
+        if not self._kernel_timestamps or self._receive_trace is None:
+            packet, addr = sock.recvfrom(self.PACKET_SIZE + 1)
+            return packet, addr, time.monotonic(), None, None
+        packet, ancillary, _, addr = sock.recvmsg(self.PACKET_SIZE + 1, socket.CMSG_SPACE(_KERNEL_TIMESPEC.size))
+        received, read_unix_ns = time.monotonic(), time.time_ns()
+        kernel_unix_ns = None
+        for level, kind, data in ancillary:
+            if level == socket.SOL_SOCKET and kind == _TIMESTAMPNS_NEW:
+                seconds, nanoseconds = _KERNEL_TIMESPEC.unpack(data)
+                kernel_unix_ns = seconds * 1_000_000_000 + nanoseconds
+                break
+        return packet, addr, received, read_unix_ns, kernel_unix_ns
+
+    def _receive_batches(self, sock) -> None:
+        """有界排空后只发布最新位置，线程停顿后丢弃残留报文至排空。"""
         previous_poll = time.monotonic()
         backlog_since = None
         discard = False
         pending = None
         while not self._stop_event.is_set():
-            try:
-                sock = self._sock
-                if sock is None:
-                    break
-                now = time.monotonic()
-                # 空闲等待最多 100 ms；超出通信期限的调度停顿不能刷新旧包年龄。
-                if now - previous_poll > self.RECEIVE_DEADLINE_S:
-                    discard = True
-                    pending = None
-                    self._control_event("UDP 接收线程停顿，丢弃残留报文")
-                    with self._cond:
-                        self._last_error = RuntimeError("UDP 接收线程停顿")
-                previous_poll = now
-                if not select.select([sock], [], [], min(self.recv_timeout, 0.1))[0]:
-                    pending = None
-                    backlog_since = None
-                    discard = False
-                    continue
-                deadline = time.monotonic() + 0.005
-                drained = False
-                for _ in range(256):
-                    packet, addr = sock.recvfrom(self.PACKET_SIZE + 1)
-                    received = time.monotonic()
-                    try:
-                        cmd = self._decode_packet(packet)
-                    except ValueError as exc:
-                        pending = None
-                        self._control_event(str(exc))
-                        with self._cond:
-                            self._last_error = exc
-                            self._cond.notify_all()
-                    else:
-                        with self._cond:
-                            self._frame_count += 1
-                            seq = self._frame_count
-                            if self._receive_trace is not None:
-                                self._receive_trace.record("udp_receive", dict(
-                                    source_seq=seq, source_monotonic_s=received, q_source=cmd.q_arm))
-                        if cmd.mode != UDPControlMode.JOINT_TRACK:
-                            self._control_event("主端退出关节跟踪模式：" + UDPControlMode.cn_name(cmd.mode))
-                        if not discard:
-                            pending = (cmd, addr, received, seq)
-                    if not select.select([sock], [], [], 0)[0]:
-                        drained = True
-                        break
-                    if time.monotonic() >= deadline:
-                        break
-                if time.monotonic() - previous_poll > self.RECEIVE_DEADLINE_S and not discard:
-                    # 排空过程中发生调度停顿时，本批不能以恢复后的读取时刻冒充新鲜输入。
-                    discard = True
-                    pending = None
-                    self._control_event("UDP 排空过程超出通信期限")
-                    with self._cond:
-                        self._last_error = RuntimeError("UDP 排空过程超出通信期限")
-                if drained:
-                    if pending is not None and not discard:
-                        cmd, addr, received, seq = pending
-                        with self._cond:
-                            self._latest_command = cmd
-                            self._published_frame_count = seq
-                            self._last_error = None
-                            self._last_update_time = cmd.recv_time
-                            self._last_received_monotonic = received
-                            self._sender_address = addr
-                            self._cond.notify_all()
-                    pending = None
-                    backlog_since = None
-                    discard = False
-                else:
-                    if backlog_since is None:
-                        backlog_since = time.monotonic()
-                    elif not discard and time.monotonic() - backlog_since > self.RECEIVE_DEADLINE_S:
-                        discard = True
-                        pending = None
-                        self._control_event("UDP 接收缓冲持续积压")
-                        with self._cond:
-                            self._last_error = RuntimeError("UDP 接收缓冲持续积压")
-                    self._stop_event.wait(0.001)
-            except OSError as exc:
-                if self._stop_event.is_set():
-                    break
-                self._control_event("UDP 接收失败：" + str(exc))
+            now = time.monotonic()
+            # 空闲等待最多 100 ms；超出通信期限的调度停顿不能刷新旧包年龄。
+            if now - previous_poll > self.RECEIVE_DEADLINE_S:
+                discard = True
+                pending = None
+                self._control_event("UDP 接收线程停顿，丢弃残留报文")
                 with self._cond:
-                    self._last_error = exc
-                    self._cond.notify_all()
-                break
+                    self._last_error = RuntimeError("UDP 接收线程停顿")
+            previous_poll = now
+            if not select.select([sock], [], [], min(self.recv_timeout, 0.1))[0]:
+                pending = None
+                backlog_since = None
+                discard = False
+                continue
+            deadline = time.monotonic() + 0.005
+            drained = False
+            for _ in range(256):
+                try:
+                    packet, addr, received, read_unix_ns, kernel_unix_ns = self._read_datagram(sock)
+                except BlockingIOError:
+                    drained = True
+                    break
+                try:
+                    cmd = self._decode_packet(packet)
+                except ValueError as exc:
+                    pending = None
+                    self._control_event(str(exc))
+                    with self._cond:
+                        self._last_error = exc
+                        self._cond.notify_all()
+                else:
+                    with self._cond:
+                        self._frame_count += 1
+                        seq = self._frame_count
+                        if self._receive_trace is not None:
+                            self._receive_trace.record("udp_receive", dict(
+                                source_seq=seq, source_monotonic_s=received, q_source=cmd.q_arm,
+                                read_unix_ns=read_unix_ns, kernel_rx_unix_ns=kernel_unix_ns))
+                    if cmd.mode != UDPControlMode.JOINT_TRACK:
+                        self._control_event("主端退出关节跟踪模式：" + UDPControlMode.cn_name(cmd.mode))
+                    if not discard:
+                        pending = (cmd, addr, received, seq)
+                if time.monotonic() >= deadline:
+                    break
+            if not drained:
+                # 正好用完本批预算时也要发布已经读尽的最后一帧。
+                drained = not select.select([sock], [], [], 0)[0]
+            if time.monotonic() - previous_poll > self.RECEIVE_DEADLINE_S and not discard:
+                # 排空过程中发生调度停顿时，本批的读取时刻不能代表目标新鲜度。
+                discard = True
+                pending = None
+                self._control_event("UDP 排空过程超出通信期限")
+                with self._cond:
+                    self._last_error = RuntimeError("UDP 排空过程超出通信期限")
+            if drained:
+                if pending is not None and not discard:
+                    cmd, addr, received, seq = pending
+                    with self._cond:
+                        self._latest_command = cmd
+                        self._published_frame_count = seq
+                        self._last_error = None
+                        self._last_update_time = cmd.recv_time
+                        self._last_received_monotonic = received
+                        self._sender_address = addr
+                        self._cond.notify_all()
+                        if self._receive_trace is not None:
+                            self._receive_trace.record("udp_publish", dict(
+                                source_seq=seq, published_monotonic_s=time.monotonic()))
+                pending = None
+                backlog_since = None
+                discard = False
+            else:
+                if backlog_since is None:
+                    backlog_since = time.monotonic()
+                elif not discard and time.monotonic() - backlog_since > self.RECEIVE_DEADLINE_S:
+                    discard = True
+                    pending = None
+                    self._control_event("UDP 接收缓冲持续积压")
+                    with self._cond:
+                        self._last_error = RuntimeError("UDP 接收缓冲持续积压")
+                self._stop_event.wait(0.001)
 
     @staticmethod
     def _parse_data(data: bytes) -> Tuple[List[float], int, List[float], List[float]]:
@@ -413,17 +444,36 @@ class URUDPClient:
     def set_receive_trace(self, writer):
         """仅在遥操作记录期间采集所有有效包，包括尚未发布就被覆盖的包。"""
         with self._cond:
+            enable = writer is not None
+            if _TIMESTAMPNS_NEW is not None and self._sock is not None and enable != self._kernel_timestamps:
+                try:
+                    self._sock.setsockopt(socket.SOL_SOCKET, _TIMESTAMPNS_NEW, int(enable))
+                except OSError as exc:
+                    logger.warning("UDP 内核诊断时间戳切换失败：%s", exc)
+                else:
+                    self._kernel_timestamps = enable
             self._receive_trace = writer
 
-    def wait_control_update(self, frame_count, control_event_seq, stop_event, deadline):
-        """等到发布新帧、发生控制事件、适配器关闭或本帧到期。"""
+    def wait_joint_target(self, previous_seq, control_event_seq, stop_event, deadline):
+        """等待并在同一把锁内取走最新关节目标，首次调用直接读取当前帧。"""
         with self._cond:
-            return self._cond.wait_for(
-                lambda: self._published_frame_count != frame_count
+            updated = self._cond.wait_for(
+                lambda: self._published_frame_count != previous_seq
                 or self._control_event_seq != control_event_seq
                 or stop_event.is_set(),
-                timeout=max(0.0, deadline - time.monotonic()),
+                timeout=None if deadline is None else max(0.0, deadline - time.monotonic()),
             )
+            if stop_event.is_set():
+                return None
+            if self._control_event_seq != control_event_seq:
+                raise ValueError(self._control_event_reason)
+            if not updated:
+                raise TimeoutError("UDP 目标断流")
+            cmd = self._latest_command
+            if self._last_error is not None or cmd is None or cmd.mode != UDPControlMode.JOINT_TRACK:
+                raise ValueError("UDP 模式变化或接收错误")
+            return (self._published_frame_count, self._last_received_monotonic,
+                    tuple(cmd.q_arm), tuple(cmd.qd_arm))
 
     def wake_control_waiters(self):
         """让等待新帧的适配器立即检查关闭信号。"""

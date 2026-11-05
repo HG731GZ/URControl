@@ -58,6 +58,8 @@ class UDPImpedanceSource:
     def _run(self):
         try:
             self._receive()
+        except (ValueError, TimeoutError) as exc:
+            self.backend.request_stop(str(exc))
         except Exception as exc:
             self.backend.request_stop("UDP 目标异常：" + str(exc))
         finally:
@@ -68,39 +70,23 @@ class UDPImpedanceSource:
 
     def _receive(self):
         timeout = self.backend.parameters["SOURCE_TIMEOUT_S"]
+        previous_seq = None
         deadline = None
         while not self.stop_event.is_set():
             if self.trace.error:
                 raise RuntimeError(self.trace.error)
-            snapshot = self.client.get_monitor_snapshot()
-            if snapshot["control_event_seq"] != self.control_event_seq:
-                self.backend.request_stop(snapshot["control_event_reason"])
+            target = self.client.wait_joint_target(previous_seq, self.control_event_seq, self.stop_event, deadline)
+            if target is None:
                 return
-            command = snapshot["command"]
-            if snapshot["last_error"] or command is None or command.mode != 1:
-                self.backend.request_stop("UDP 模式变化或接收错误")
-                return
-            received = snapshot["received_monotonic"]
-            if (
-                received is None
-                or time.monotonic() >= received + timeout
-                or (deadline is not None and received > deadline)
-            ):
+            previous_seq, received, q, qd = target
+            if time.monotonic() >= received + timeout or (deadline is not None and received > deadline):
                 self.backend.request_stop("UDP 目标断流")
                 return
             deadline = received + timeout
-            frame = JointTargetFrame(
-                self.backend.run_id, "teleop", snapshot["frame_count"], tuple(command.q_arm),
-                received, qd_rad_s=command.qd_arm,
-            )
+            frame = JointTargetFrame(self.backend.run_id, "teleop", previous_seq, q, received, qd_rad_s=qd)
             started = time.monotonic()
             if self.backend.submit_reference(frame):
                 self.trace.record("adapter_submit", dict(
                     source_seq=frame.source_seq, submit_start_monotonic_s=started,
                     submit_done_monotonic_s=time.monotonic(), q_source=frame.q_rad,
                     source_monotonic_s=received))
-            if not self.client.wait_control_update(
-                frame.source_seq, self.control_event_seq, self.stop_event, deadline
-            ):
-                self.backend.request_stop("UDP 目标断流")
-                return

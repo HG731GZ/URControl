@@ -43,15 +43,44 @@ def timing_statistics(rows):
     return result
 
 
+def udp_handoff_statistics(stages, published, kernel_read_delays, trace_summary):
+    """在首末 RTDE 源帧之间对账，缺少发布记录的旧日志只报告两端差集。"""
+    sent = stages["rtde_send"]
+    if not sent or not stages["udp_receive"]:
+        return None
+    first, last = sent[0][0], sent[-1][0]
+    received = {seq for seq, *_ in stages["udp_receive"] if first <= seq <= last}
+    submitted = {seq for seq, *_ in stages["adapter_submit"] if first <= seq <= last}
+    skipped = received - submitted
+    result = dict(first_source_seq=first, last_source_seq=last,
+                  received=len(received), adapter_submitted=len(submitted), received_not_submitted=len(skipped),
+                  received_not_published=None, published_not_submitted=None, kernel_to_read_ms=None)
+    if published and trace_summary and trace_summary["log_complete"]:
+        result["received_not_published"] = len(skipped - published)
+        result["published_not_submitted"] = len(skipped & published)
+    delays = [delay for seq, delay in kernel_read_delays if first <= seq <= last]
+    if delays:
+        result["kernel_to_read_ms"] = dict(count=len(delays), median=float(np.median(delays)),
+                                          p95=float(np.percentile(delays, 95)), maximum=max(delays))
+    return result
+
+
 def analyze_timing(directory, refs, timing):
     """各阶段分别用本时钟统计间隔，控制器采纳身份可关联主机发送记录。"""
     stages = {key: [] for key in ("udp_receive", "adapter_submit", "ipc_read", "rtde_send", "adoption")}
+    published = set()
+    kernel_read_delays = []
     trace = directory / "source_timing.jsonl"
     if trace.exists():
         with trace.open() as stream:
             for line in stream:
                 row = json.loads(line)
                 kind, p = row["kind"], row["payload"]
+                if kind == "udp_publish":
+                    published.add(p["source_seq"])
+                if kind == "udp_receive" and p.get("kernel_rx_unix_ns") is not None:
+                    delay_ms = (p["read_unix_ns"] - p["kernel_rx_unix_ns"]) / 1e6
+                    kernel_read_delays.append((p["source_seq"], delay_ms))
                 if kind in ("udp_receive", "adapter_submit"):
                     received = p["source_monotonic_s"]
                     stamp = received if kind == "udp_receive" else p["submit_done_monotonic_s"]
@@ -74,9 +103,11 @@ def analyze_timing(directory, refs, timing):
                 stamp, age = p["robot_timestamp_s"], None
             stages[kind].append((ref["source_seq"], ref["q_source"], stamp, age))
     trace_summary = directory / "source_timing_summary.json"
+    source_trace = json.loads(trace_summary.read_text()) if trace_summary.exists() else None
     return {"stages": {k: {"observations": len(rows), **timing_statistics(rows)} for k, rows in stages.items()},
             "unmatched_reference": unmatched,
-            "source_trace": json.loads(trace_summary.read_text()) if trace_summary.exists() else None}
+            "source_trace": source_trace,
+            "udp_handoff": udp_handoff_statistics(stages, published, kernel_read_delays, source_trace)}
 
 
 def analyze(directory, output=None):

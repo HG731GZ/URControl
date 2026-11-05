@@ -332,6 +332,8 @@ python analyze_impedance_log.py logs/impedance/<run>
 
 从 v3 起，遥操作日志在 `reference` 中记录主端原始速度和送给模型的速度，在运行期冻结样本中记录 `qd_ref`。限速位置跟随的模型输入速度为零。UDP 接收和适配器提交写入 `source_timing.jsonl`，IPC 读取、RTDE 发送及采纳写入 `records.jsonl`。输出整数寄存器 47 报告最新采纳的提交序号，采纳时刻取首次观察到该序号的 500 Hz 机器人反馈时刻。主机侧时刻使用本机单调钟。运行 `python analyze_impedance_log.py <本轮目录> --output <分析目录>` 可按源位置变化与保持分别查看新源间隔、最长间隔的两个源序号、重复次数、源年龄和最大位置步长。
 
+`udp_receive`、`udp_publish`、`adapter_submit` 分别记录每个有效包、排空后发布的最新源帧和成功转交的源帧。分析结果 `teleop_timing.udp_handoff` 按首末 RTDE 目标的源帧号统计，完整的新日志可分别计数“已收未发布”和“已发布未转交”。Linux x86-64 / arm64 上，启用内核时间戳后，每个有效包另存内核收包和应用读取的 Unix 纳秒时刻，两者的差用于定位本机读取延迟。源新鲜度和断流守卫使用单调时钟。旧日志缺少的诊断数据在分析中显示为 `null`。
+
 遥操作阻抗日志 v4 以 500 Hz 订阅从端 RTDE 的 `actual_TCP_force`。每个收到的 `standard` 帧把 Fx、Fy、Fz（N）和 Mx、My、Mz（N·m）与同帧的 `timestamp`、`actual_q`、`actual_qd` 写入 `records.jsonl`。三轴力与三轴力矩均保留控制器原值。
 
 离线分析生成的 `tracking.pdf` 和 `tracking.png` 在关节跟踪曲线下方分别绘制 TCP 力与力矩，以首个跟踪快照的 RTDE 观测时刻为时间零点。力曲线使用该时间范围内的原始标准帧，反馈缺帧处断线。`tracking.csv` 按冻结关节快照逐行导出，用 `sample.robot_timestamp_s` 精确匹配 `standard.timestamp`，缺帧留空。`robot_timestamp_s` 是首次读到该快照的反馈帧时刻，`sample_time_s` 是脚本冻结关节量时相对本轮起点的时刻。旧版日志继续输出原有关节图表。

@@ -1,6 +1,6 @@
 """spawn 隔离通信，独立停止事件和父进程租约；停止未确认保持执行权。"""
 
-from dataclasses import asdict, replace
+from dataclasses import replace
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
@@ -208,7 +208,8 @@ class ImpedanceProcess:
                 if frame.source_seq <= self._submitted_seq:
                     return False
                 remaining = self.parameters["SOURCE_TIMEOUT_S"] - age
-                if not self._reference_slot.publish(asdict(frame), blocking=True, timeout=remaining):
+                # 冻结帧的字段由 IPC 立即序列化，六轴元组无需事先深复制。
+                if not self._reference_slot.publish(vars(frame), blocking=True, timeout=remaining):
                     raise TimeoutError("目标在等待 IPC 提交时已过期")
                 self._submitted_seq = frame.source_seq
                 self._input_wakeup.set()
