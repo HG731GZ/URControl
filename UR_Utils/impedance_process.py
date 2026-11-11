@@ -14,7 +14,7 @@ from UR_Utils.impedance_config import validate
 from UR_Utils.URImpedanceController import URImpedanceController, idle_impedance_status
 
 
-def _main(args, status_slot, reference_slot, input_wakeup, stop_reason_slot, stop_event, lease):
+def _main(args, status_slot, torque_slot, reference_slot, input_wakeup, stop_reason_slot, stop_event, lease):
     parent = mp.parent_process()
     sequence = 0
     stop_sequence = 0
@@ -51,7 +51,8 @@ def _main(args, status_slot, reference_slot, input_wakeup, stop_reason_slot, sto
             last_publish = now
 
     try:
-        backend = URImpedanceController(**args, stop_event=stop_event, service=service, wait_for_input=wait_for_input)
+        backend = URImpedanceController(**args, stop_event=stop_event, service=service,
+                                        publish_torque=torque_slot.publish, wait_for_input=wait_for_input)
         backend.run()
         # 显示读取短暂占用槽位时，仍需发布最终状态。
         deadline = time.monotonic() + 0.5
@@ -101,6 +102,10 @@ class ImpedanceProcess:
         self.run_id = secrets.randbelow(2**30 - 1) + 1
         ctx = mp.get_context("spawn")
         self._status_slot = LatestSnapshot(ctx, 131072)
+        # 力矩单独跨进程交付，避免受 50 Hz 界面状态发布节拍限制。
+        self._torque_slot = LatestSnapshot(ctx, 2048)
+        self._torque_sequence = 0
+        self._latest_torque = None
         self._reference_slot = LatestSnapshot(ctx, 8192)
         self._input_wakeup = ctx.Event()
         self._stop_reason_slot = LatestSnapshot(ctx, 8192)
@@ -142,6 +147,7 @@ class ImpedanceProcess:
             args=(
                 self._args,
                 self._status_slot,
+                self._torque_slot,
                 self._reference_slot,
                 self._input_wakeup,
                 self._stop_reason_slot,
@@ -178,6 +184,18 @@ class ImpedanceProcess:
             if self._stop_reason and not self._status.get("last_error"):
                 self._status["last_error"] = self._stop_reason
             return deepcopy(self._status)
+
+    def get_compensated_torque_snapshot(self):
+        """读取本轮最新实测页，停止、进程退出或源样本过期后返回缺测。"""
+        if self._event.is_set() or not self._process.is_alive():
+            return None
+        self._torque_sequence, sample = self._torque_slot.read(self._torque_sequence)
+        if sample is not None:
+            self._latest_torque = sample
+        sample = self._latest_torque
+        if sample is None or time.monotonic() - sample["received_monotonic_s"] > self.parameters["FEEDBACK_TIMEOUT_S"]:
+            return None
+        return sample
 
     def start(self):
         if self._event.is_set():

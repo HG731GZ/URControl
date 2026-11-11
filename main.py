@@ -14,6 +14,7 @@ from PyQt5.QtWidgets import QApplication, QMainWindow
 import NetWorkSet
 from DataCollector import DataCollector
 from GripperController import GripperController, GRIPPER_SPEED_DEFAULT, GRIPPER_FORCE_DEFAULT
+from HighPreciseTimer import run_periodic
 from RealSenseCamera import Camera, CameraError
 from window_display import WindowDisplayController, configure_high_dpi
 from ui_classic_window import Ui_MainWindow
@@ -44,6 +45,7 @@ LOCAL_IP = NetWorkSet.get_local_ip()
 UDP_LOCAL_PORT = 5005
 UDP_REMOTE_PORT = 6005
 UDP_REMOTE_IP = '192.168.3.5'
+UDP_FEEDBACK_HZ = 200  # 从端发往主端的状态反馈频率，单位 Hz。
 UDP_COMMAND_TIMEOUT_S = admittance_config.MASTER_FRAME_TIMEOUT_S
 ROBOT_STATE_TIMEOUT_S = 0.5
 ROBOT_MODE_RUNNING = 7
@@ -90,6 +92,8 @@ class MainWindow(ImpedanceIntegration, QMainWindow):
         self.rtde_controller = None
         self.torque_client = None
         self.compensated_torque_client = None
+        self._udp_feedback_thread = None
+        self._udp_feedback_stop = threading.Event()
         self.gripper = None
         self.robot_state = None
         self.robot_ready = False
@@ -144,6 +148,8 @@ class MainWindow(ImpedanceIntegration, QMainWindow):
         self.camera_timer.start(50)
 
     def initialize_devices(self):
+        if UDP_FEEDBACK_HZ <= 0 or not np.isfinite(UDP_FEEDBACK_HZ):
+            raise ValueError('UDP_FEEDBACK_HZ 必须为有限正数')
         self.udp_client = URUDPClient(bind_host='0.0.0.0', bind_port=UDP_LOCAL_PORT)
         self.udp_client.start()
         self.camera_1 = Camera('d405', resolution=CAMERA_RESOLUTION, fps=CAMERA_FPS, rotation=180)
@@ -374,11 +380,21 @@ class MainWindow(ImpedanceIntegration, QMainWindow):
                 self.append_message(f'夹爪未连接，继续使用机械臂：{exc}')
         self.update_connection_label()
         self.update_robot_status()
+        self._udp_feedback_stop.clear()
+        self._udp_feedback_thread = threading.Thread(
+            name='UDPFeedbackTimer', target=run_periodic, daemon=True,
+            args=(UDP_FEEDBACK_HZ, self._udp_feedback_stop, self.send_udp_feedback))
+        self._udp_feedback_thread.start()
 
     def disconnect_robot(self):
         if self.defer_until_admittance_stopped(self.disconnect_robot):
             return False
         self.stop_control()
+        if self._udp_feedback_thread is not None:
+            self._udp_feedback_stop.set()
+            self._udp_feedback_thread.join()
+            self._udp_feedback_thread = None
+            self.udp_client.discard_pending_feedback()
         if self._telemetry_recorder is not None:
             self._telemetry_recorder.close()
             self.update_telemetry_status()
@@ -1285,7 +1301,7 @@ class MainWindow(ImpedanceIntegration, QMainWindow):
             self.rtde_controller.set_speed_slider(speed_percent / 100)
 
     def update_torque_subscription(self):
-        """按需读取 raw 显示；补偿力矩的显示和遥测共享同一后台采样。"""
+        """UDP 反馈、显示和遥测共用补偿力矩采样，raw 显示按需订阅。"""
         source_text = ('raw：实际电流换算关节力矩，保留重力、摩擦等分量。'
                        if SHOW_RAW_JOINT_TORQUES else
                        'UR 内部补偿关节力矩：未减导纳启动偏置，未滤波、未过死区。无有效当前测量时留空。')
@@ -1301,10 +1317,7 @@ class MainWindow(ImpedanceIntegration, QMainWindow):
         elif not enabled and self.torque_client is not None:
             self.torque_client.close()
             self.torque_client = None
-        recording = (self._telemetry_recorder is not None
-                     and self._telemetry_recorder.get_status()['phase'] != 'finished')
-        compensated_needed = (self.robot_ready and self.rtde_controller is not None
-                              and (recording or self.checkBox_FTSwitch.isChecked() and not SHOW_RAW_JOINT_TORQUES))
+        compensated_needed = self.robot_ready and self.rtde_controller is not None
         if compensated_needed and self.compensated_torque_client is None:
             self.compensated_torque_client = URCompensatedTorqueReader(self.rtde_controller)
             self.compensated_torque_client.start_reader_thread()
@@ -1317,6 +1330,24 @@ class MainWindow(ImpedanceIntegration, QMainWindow):
         if not self.checkBox_FTSwitch.isChecked():
             return None
         return self.torque_client if SHOW_RAW_JOINT_TORQUES else self.compensated_torque_client
+
+    def send_udp_feedback(self):
+        """按发送节拍读取后台缓存，位置与速度来自同一机器人状态帧。"""
+        snapshot = self.realtime_client.get_snapshot()
+        state = snapshot['state']
+        if state is None or snapshot['error'] is not None:
+            return
+        remaining = ROBOT_STATE_TIMEOUT_S - (time.monotonic() - snapshot['received_monotonic'])
+        if remaining <= 0:
+            return
+        fb = self.get_gripper_feedback()
+        gripper_values = [float('nan')] * 3 if fb is None else [fb.open, fb.current, fb.position]
+        reader = self.compensated_torque_client
+        torque = None if reader is None else reader.get_latest()
+        tau_arm = [float('nan')] * 6 if torque is None else torque[1]
+        self.udp_client.queue_send_to(
+            (UDP_REMOTE_IP, UDP_REMOTE_PORT), state.q_actual, UDPControlMode.OFF,
+            gripper_values, state.qd_actual, tau_arm, max_age=remaining)
 
     def update_robot_view(self):
         command = self.get_udp_snapshot()
@@ -1382,13 +1413,6 @@ class MainWindow(ImpedanceIntegration, QMainWindow):
             text = '未连接' if self.gripper is None else '无反馈'
             self.lineEdit_Clamp1.setText(text)
             self.lineEdit_Clamp2.setText(text)
-        # 机械臂反馈不依赖夹爪；不可用的夹爪量用 NaN 标记，不伪装为真实零值。
-        if self.robot_state is not None:
-            gripper_values = [float('nan')] * 3 if fb is None else [fb.open, fb.current, fb.position]
-            self.udp_client.queue_send_to(
-                (UDP_REMOTE_IP, UDP_REMOTE_PORT), self.robot_state.q_actual,
-                UDPControlMode.OFF, gripper_values, max_age=ROBOT_STATE_TIMEOUT_S)
-
         if self.checkBox_FTSwitch.isChecked():
             reader = self.get_display_torque_reader()
             sample = None if reader is None else reader.get_latest()

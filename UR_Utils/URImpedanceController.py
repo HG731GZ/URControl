@@ -38,6 +38,7 @@ class URImpedanceController:
         directory,
         stop_event,
         service,
+        publish_torque,
         parameter_revision=None,
         wait_for_input=time.sleep,
     ):
@@ -46,6 +47,7 @@ class URImpedanceController:
         self.run_id = run_id
         self.source, self.trajectory, self.play_hz = source, trajectory, play_hz
         self.stop_event, self.service = stop_event, service
+        self.publish_torque = publish_torque
         self.wait_for_input = wait_for_input
         self.status = {
             **idle_impedance_status(),
@@ -64,6 +66,7 @@ class URImpedanceController:
             directory,
             dict(
                 record_type="joint_impedance_run",
+                register_protocol_version=protocol.VERSION,
                 schema_version=4 if source == "teleop" else 3,
                 torque_control=(
                     {
@@ -200,7 +203,7 @@ class URImpedanceController:
         )
         for name in protocol.INPUT_NAMES:
             setattr(packet, name, 0)
-        setattr(packet, "input_int_register_24", 2)
+        setattr(packet, "input_int_register_24", protocol.VERSION)
         setattr(packet, "input_int_register_25", self.run_id)
         self._send(packet)
         self.service(self)
@@ -222,6 +225,8 @@ class URImpedanceController:
         backlog_since = None
         reference_seq = heartbeat = 0
         last_adopted = 0
+        last_torque_seq = 0
+        torque_sample = None
         player = None
         ready = False
         seen_running = False
@@ -246,6 +251,10 @@ class URImpedanceController:
                     continue
                 last_timestamp = state.timestamp
                 last_feedback = now
+                measured = protocol.decode_compensated_torque(state, self.run_id, last_torque_seq, now)
+                if measured is not None:
+                    last_torque_seq = measured["sample_seq"]
+                    torque_sample = measured
                 self.logger.record(
                     "standard",
                     {name: getattr(state, name) for name in standard_fields},
@@ -315,6 +324,9 @@ class URImpedanceController:
                     raise RuntimeError("运行程序中断或暂停")
             if conn.last_receive_drained:
                 backlog_since = None
+                if torque_sample is not None:
+                    self.publish_torque(torque_sample)
+                    torque_sample = None
             elif backlog_since is None:
                 backlog_since = now
             elif now - backlog_since > cfg["FEEDBACK_TIMEOUT_S"]:
@@ -359,7 +371,7 @@ class URImpedanceController:
                     raise RuntimeError("首目标未与实际锚点同步")
                 reference_seq += 1
                 ints = [
-                    2,
+                    protocol.VERSION,
                     self.run_id,
                     1,
                     heartbeat,

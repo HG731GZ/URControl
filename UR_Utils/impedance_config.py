@@ -5,6 +5,8 @@ import math
 import re
 from pathlib import Path
 
+from UR_Utils.impedance_telemetry import VERSION as REGISTER_PROTOCOL_VERSION
+
 POSITION_FOLLOW = "rate_limited_position"
 POSITION_VELOCITY = "critically_damped_position_velocity"
 
@@ -126,6 +128,7 @@ def render_script(config, run_id, reference_source="trajectory"):
     )
     constants = dict(
         cfg,
+        REGISTER_PROTOCOL_VERSION=REGISTER_PROTOCOL_VERSION,
         POSITION_FOLLOW=follow,
         VMAX=teleop_work_speed_limits(cfg) if reference_source == "teleop" else cfg["REF_MAX_QD_RAD_S"],
         AMAX=cfg["TELEOP_FOLLOW_A_RAD_S2"] if follow else cfg["REF_MAX_QDD_RAD_S2"],

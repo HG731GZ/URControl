@@ -1,6 +1,7 @@
 """主界面的只读实时状态进程，避免 RTDE 原生初始化占用 GIL 时阻塞收包。"""
 
 import multiprocessing
+import threading
 
 from UR_Utils.URRealtimeClient import URRealtimeClient
 from UR_Utils.control_process_ipc import LatestSnapshot
@@ -45,6 +46,7 @@ class URRealtimeMonitor:
         self._first_state = self._context.Event()
         self._snapshots = LatestSnapshot(self._context, capacity=65536)
         self._process = None
+        self._read_lock = threading.Lock()
         self._sequence = 0
         self._latest = {
             "state": None, "received_time": None, "received_monotonic": None,
@@ -69,19 +71,20 @@ class URRealtimeMonitor:
 
     def get_snapshot(self):
         """返回最新完整快照；新鲜度使用子进程的接收时刻，不使用读取时刻。"""
-        exitcode = None if self._process is None else self._process.exitcode
-        # 短暂等待复制完成，避免初始化后误用父进程阻塞前缓存的旧帧。
-        self._sequence, snapshot = self._snapshots.read(self._sequence, blocking=True)
-        if snapshot is not None:
-            self._latest = snapshot
-        if (exitcode is not None
-                and not self._stop_event.is_set() and self._latest["error"] is None):
-            self._latest = {
-                "state": None, "received_time": None, "received_monotonic": None,
-                "frame_count": 0,
-                "error": f"实时状态接收进程已退出，退出码 {exitcode}",
-            }
-        return self._latest
+        # 界面与反馈定时线程共同推进游标，避免较早读到的帧覆盖新帧。
+        with self._read_lock:
+            exitcode = None if self._process is None else self._process.exitcode
+            self._sequence, snapshot = self._snapshots.read(self._sequence, blocking=True)
+            if snapshot is not None:
+                self._latest = snapshot
+            if (exitcode is not None
+                    and not self._stop_event.is_set() and self._latest["error"] is None):
+                self._latest = {
+                    "state": None, "received_time": None, "received_monotonic": None,
+                    "frame_count": 0,
+                    "error": f"实时状态接收进程已退出，退出码 {exitcode}",
+                }
+            return self._latest
 
     def close(self):
         """先结束只读接收并回收进程；机器人运动停止仍由主窗口负责。"""

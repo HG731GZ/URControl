@@ -46,6 +46,7 @@ class RobotTelemetryRecorder:
                 "availability": "status=available 时 sample 有效；unavailable 时 sample=null 并说明原因；读取错误结束本轮并报告",
                 "ordinary_time": "source=rtde_control_getJointTorques：保留调用的主机起止时间；robot_timestamp_s 为返回时关联的 RTDE 时间，不是精确力矩采样时刻",
                 "admittance_time": "source=admittance_load_page：sample_time_s 为脚本相对采样时间，run_id/model_sample_seq/page_seq 标识原载荷页；重复身份不是新测量",
+                "impedance_time": "source=impedance_get_joint_torques：run_id/sample_seq 标识力矩测量，robot_timestamp_s 为首次观测该样本的 RTDE 帧时间",
                 "sampling": "标准状态目标 500 Hz；补偿力矩复用独立后台缓存，保留来源时间，不保证同频或与 raw 同步",
             },
             "scope": "标准 RTDE 字段与当前控制通道的补偿力矩缓存；导纳内部模型、片段与伺服计时由导纳诊断日志记录",

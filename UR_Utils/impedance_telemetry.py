@@ -1,4 +1,6 @@
-"""外部寄存器 24～47，独立协议 v2；浮点页始终为同周期快照。"""
+"""阻抗寄存器协议 v3，诊断页与六轴补偿实测力矩页独立提交。"""
+
+VERSION = 3
 
 PHASES = {1: "ARMED", 2: "RAMPING", 3: "RUNNING", 4: "ENDING", 5: "STOPPING"}
 FAULTS = {
@@ -41,26 +43,28 @@ OUTPUT_REGISTERS = {
 
 def decode(state, run_id):
     i = lambda n: getattr(state, f"output_int_register_{n}")
-    if i(24) != run_id or i(45) != run_id or i(29) != i(30) or i(29) <= 0:
+    if i(24) != run_id or i(45) <= 0:
         return None
     values = [getattr(state, f"output_double_register_{n}") for n in range(24, 48)]
-    final = bool(i(46))
+    flags = i(25)
+    phase, fault, limit_mask = flags & 7, (flags >> 3) & 7, flags >> 6
+    final = phase == 5 or fault != 0
     axis_page = [i(n) / 1e6 for n in range(38, 44)]
     return dict(
         run_id=run_id,
-        cycle_seq=i(28),
-        adopted_reference_seq=i(27),
+        cycle_seq=i(45) - 1,
+        adopted_reference_seq=i(34),
         source_seq=i(37),
-        phase=PHASES.get(i(25), "UNKNOWN"),
-        fault=FAULTS.get(i(26), "未知故障"),
-        fault_code=i(26),
+        phase=PHASES.get(phase, "UNKNOWN"),
+        fault=FAULTS.get(fault, "未知故障"),
+        fault_code=fault,
         q_ref=values[:6],
         q_actual=values[6:12],
         qd_actual=values[12:18],
         tau_cmd=values[18:],
         final=final,
-        missed_cycles=i(34),
-        limit_mask=i(31),
+        missed_cycles=int(fault == 7),
+        limit_mask=limit_mask,
         max_interval_s=i(32) / 1e6,
         max_compute_s=i(33) / 1e6,
         saturated_cycles=i(35),
@@ -70,3 +74,16 @@ def decode(state, run_id):
         sample_time_s=i(44) / 1000,
         robot_timestamp_s=state.timestamp,
     )
+
+
+def decode_compensated_torque(state, run_id, last_sequence, received_monotonic):
+    """从一份 RTDE 帧解出已提交的六轴实测值和来源身份。"""
+    sequence = state.output_int_register_46
+    if state.output_int_register_24 != run_id or state.runtime_state != 2 or sequence <= last_sequence:
+        return None
+    return {
+        "source": "impedance_get_joint_torques", "run_id": run_id,
+        "sample_seq": sequence,
+        "robot_timestamp_s": state.timestamp, "received_monotonic_s": received_monotonic,
+        "values_nm": [getattr(state, f"output_int_register_{n}") / 1e6 for n in range(26, 32)],
+    }

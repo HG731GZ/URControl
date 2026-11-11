@@ -1113,7 +1113,7 @@ class URRTDEController:
         """读取补偿力矩及来源身份；关联 RTDE 时间不冒充精确的力矩采样时刻。"""
         with self._lifecycle_lock:
             if self._impedance is not None and self._impedance.active:
-                return None
+                return self._impedance.get_compensated_torque_snapshot()
             if self._admittance is not None and self._admittance.active:
                 state = self._admittance.get_load_status()
                 load = state["load"]

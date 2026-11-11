@@ -71,7 +71,20 @@ def joint_impedance():
   global snap_source = 0
   thread publish():
     local sent = -1
+    local torque_seq = 0
     while True:
+      # 提交序号为零时六轴尚未写齐；微牛米定点值占用六个外部整数寄存器。
+      write_output_integer_register(46, 0)
+      if snap_phase != 5 and snap_fault == 0:
+        local measured = get_joint_torques()
+        local j = 0
+        while j < 6:
+          write_output_integer_register(26+j, floor(measured[j]*1000000+0.5))
+          j = j+1
+        end
+        torque_seq = torque_seq+1
+        write_output_integer_register(46, torque_seq)
+      end
       if snap_cycle != sent:
         enter_critical
         local sqr = snap_qr
@@ -91,28 +104,16 @@ def joint_impedance():
         local stm = snap_time
         local src = snap_source
         exit_critical
-        write_output_integer_register(29, sc+1)
-        write_output_integer_register(24, {{RUN_ID}})
-        write_output_integer_register(25, sp)
-        write_output_integer_register(26, sf)
-        write_output_integer_register(27, sa)
-        write_output_integer_register(28, sc)
-        write_output_integer_register(31, sm)
+        # 冻结诊断页与实测力矩页各自提交；阶段、故障各占三位，其余六位为限幅掩码。
+        write_output_integer_register(45, 0)
+        write_output_integer_register(25, sp+8*sf+64*sm)
         write_output_integer_register(32, floor(si*1000000))
         write_output_integer_register(33, floor(sx*1000000))
-        write_output_integer_register(34, 0)
-        if sf == 7:
-          write_output_integer_register(34, 1)
-        end
-        write_output_integer_register(46, 0)
-        if sp == 5 or sf != 0:
-          write_output_integer_register(46, 1)
-        end
+        write_output_integer_register(34, sa)
         write_output_integer_register(35, ss)
         write_output_integer_register(36, sh)
         write_output_integer_register(37, src)
         write_output_integer_register(44, floor(stm*1000))
-        write_output_integer_register(45, {{RUN_ID}})
         local j = 0
         while j < 6:
           write_output_float_register(24+j, sqr[j])
@@ -122,13 +123,16 @@ def joint_impedance():
           write_output_integer_register(38+j, floor(se[j]*1000000))
           j = j+1
         end
-        write_output_integer_register(30, sc+1)
+        write_output_integer_register(45, sc+1)
         sent = sc
       end
       sync()
     end
   end
+  write_output_integer_register(45, 0)
+  write_output_integer_register(46, 0)
   write_output_integer_register(47, 0)
+  write_output_integer_register(24, {{RUN_ID}})
   local publisher = run publish()
   rtde_set_watchdog("input_int_register_27", {{HARD_WATCHDOG_HZ}}, "stop")
   while phase < 5 and fault == 0:
@@ -136,7 +140,7 @@ def joint_impedance():
     if read_input_integer_register(26) == 2:
       phase = 5
     end
-    if read_input_integer_register(24) != 2 or read_input_integer_register(25) != {{RUN_ID}}:
+    if read_input_integer_register(24) != {{REGISTER_PROTOCOL_VERSION}} or read_input_integer_register(25) != {{RUN_ID}}:
       fault = 1
     end
     local new_hb = read_input_integer_register(27)

@@ -14,7 +14,8 @@ URUdpClient.py — UDP通信客户端，用于接收/发送外部控制信号。
     77      48    6×float64  主端六轴速度（J1～J6）
     125      4    uint32     CRC32 (IEEE 802.3)，校验范围 offset 4 ~ 124
     129       4    uint8[4]   帧尾 (0x0D 0x0A 0x0D 0x0A)
-    主端指令总长度：133 字节。从端反馈沿用 85 字节格式，夹爪后直接写 CRC32。
+    主端指令总长度为 133 字节。从端反馈共 181 字节，偏移 77 起为六轴实际速度
+    （rad/s），125 起为六轴净驱动力矩（Nm），173 起为数据段 CRC32，177 起为帧尾。
 """
 
 from __future__ import annotations
@@ -129,8 +130,8 @@ class URUDPClient:
     if cmd is not None:
         print(cmd.q_arm, cmd.mode, cmd.q_gripper)
 
-    # 发送指令到远程
-    client.send_to(('192.168.1.100', 5005), q_arm=[0.0]*6, mode=1, q_gripper=[0.0]*3)
+    # 将从端实测状态发往主端
+    client.send_to(('192.168.1.100', 6005), q_arm, UDPControlMode.OFF, q_gripper, qd_arm, tau_arm)
 
     client.stop()
     """
@@ -142,7 +143,7 @@ class URUDPClient:
     FOOTER_SIZE = 4
     CRC_SIZE = 4
 
-    FEEDBACK_FORMAT = "!6dB3d"
+    FEEDBACK_FORMAT = "!6dB3d6d6d"
     DATA_FORMAT = "!6dB3d6d"
     DATA_SIZE = struct.calcsize(DATA_FORMAT)  # 121
 
@@ -558,36 +559,18 @@ class URUDPClient:
         crc = struct.pack("!I", binascii.crc32(data) & 0xFFFFFFFF)
         return cls.HEADER + data + crc + cls.FOOTER
 
-    @staticmethod
-    def pack(q_arm: List[float], mode: int, q_gripper: List[float]) -> bytes:
-        """
-        将从端反馈打包为完整的 85 字节协议帧（帧头 + 数据 + CRC32 + 帧尾）。
-
-        Parameters
-        ----------
-        q_arm:
-            6 个机械臂广义坐标。
-        mode:
-            控制模式，取值见 UDPControlMode。
-        q_gripper:
-            3 个夹钳广义坐标。
-        """
-        if len(q_arm) != 6:
-            raise ValueError(f"q_arm 长度必须为 6，实际 {len(q_arm)}")
+    @classmethod
+    def pack(cls, q_arm, mode, q_gripper, qd_arm, tau_arm) -> bytes:
+        """将实际关节角（rad）、夹爪、轴速度（rad/s）和净驱动力矩（Nm）打包为 181 字节反馈。"""
+        if (len(q_arm), len(qd_arm), len(tau_arm)) != (6, 6, 6):
+            raise ValueError("关节角、关节速度和净驱动力矩各需六轴数据")
         if len(q_gripper) != 3:
             raise ValueError(f"q_gripper 长度必须为 3，实际 {len(q_gripper)}")
         if not (0 <= mode <= 255):
             raise ValueError(f"mode 必须在 0-255 之间，实际 {mode}")
 
-        data = struct.pack(
-            URUDPClient.FEEDBACK_FORMAT,
-            float(q_arm[0]), float(q_arm[1]), float(q_arm[2]),
-            float(q_arm[3]), float(q_arm[4]), float(q_arm[5]),
-            int(mode),
-            float(q_gripper[0]), float(q_gripper[1]), float(q_gripper[2]),
-        )
-
-        return URUDPClient._wrap_data(data)
+        data = struct.pack(cls.FEEDBACK_FORMAT, *q_arm, mode, *q_gripper, *qd_arm, *tau_arm)
+        return cls._wrap_data(data)
 
     def send_to(
         self,
@@ -595,6 +578,8 @@ class URUDPClient:
         q_arm: List[float],
         mode: int,
         q_gripper: List[float],
+        qd_arm: List[float],
+        tau_arm: List[float],
     ) -> bool:
         """
         同步发送，网络失败返回 False 并记录发送错误；界面应使用 queue_send_to()。
@@ -603,10 +588,10 @@ class URUDPClient:
         ----------
         target:
             (ip, port) 目标地址。
-        q_arm, mode, q_gripper:
+        q_arm, mode, q_gripper, qd_arm, tau_arm:
             控制数据，见 pack()。
         """
-        packet = self.pack(q_arm, mode, q_gripper)
+        packet = self.pack(q_arm, mode, q_gripper, qd_arm, tau_arm)
         return self._send_packet(packet, target)
 
     def _send_packet(self, packet: bytes, target: Tuple[str, int]) -> bool:
@@ -637,16 +622,21 @@ class URUDPClient:
 
     def queue_send_to(
         self, target: Tuple[str, int], q_arm: List[float], mode: int,
-        q_gripper: List[float], *, max_age: float = 0.5,
+        q_gripper: List[float], qd_arm: List[float], tau_arm: List[float], *, max_age: float = 0.5,
     ) -> bool:
         """提交最新反馈；等待超过 max_age 秒则丢弃。True 不代表远端已收到。"""
-        packet = self.pack(q_arm, mode, q_gripper)
+        packet = self.pack(q_arm, mode, q_gripper, qd_arm, tau_arm)
         with self._send_cond:
             if self._sock is None or self._stop_event.is_set():
                 return False
             self._pending_send = (packet, target, time.monotonic() + max_age)
             self._send_cond.notify()
         return True
+
+    def discard_pending_feedback(self):
+        """机器人断开连接时清除尚在等待发送的反馈。"""
+        with self._send_cond:
+            self._pending_send = None
 
     def _writer_loop(self) -> None:
         next_attempt = 0.0
