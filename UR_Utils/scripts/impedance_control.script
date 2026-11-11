@@ -309,7 +309,8 @@ def joint_impedance():
     if compute > max_compute:
       max_compute = compute
     end
-    if cycle % 5 == 0 or phase == 1 or phase == 5 or fault != 0:
+    # 每五个控制步冻结两次，使主端可以按 200 Hz 取得限幅后的命令力矩。
+    if cycle % 5 == 0 or cycle % 5 == 2 or phase == 1 or phase == 5 or fault != 0:
       enter_critical
       snap_qr = qr
       snap_q = q

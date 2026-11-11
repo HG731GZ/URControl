@@ -1113,7 +1113,7 @@ class URRTDEController:
         """读取补偿力矩及来源身份；关联 RTDE 时间不冒充精确的力矩采样时刻。"""
         with self._lifecycle_lock:
             if self._impedance is not None and self._impedance.active:
-                return self._impedance.get_compensated_torque_snapshot()
+                return self._impedance.get_torque_snapshot("measured")
             if self._admittance is not None and self._admittance.active:
                 state = self._admittance.get_load_status()
                 load = state["load"]
@@ -1143,6 +1143,25 @@ class URRTDEController:
                     "robot_timestamp_s": self.rtde_r.getTimestamp(),
                     "read_started_monotonic_s": started, "read_finished_monotonic_s": finished,
                 }
+
+    def get_impedance_command_torques(self):
+        """供遥操作窗口和 UDP 读取最新的六轴阻抗命令力矩，单位为 Nm。"""
+        backend = self._impedance
+        sample = None if backend is None else backend.get_torque_snapshot("command")
+        return None if sample is None else sample["values_nm"]
+
+    def get_udp_torques(self, compensated_reader):
+        """按当前控制来源取 UDP 力矩，只读缓存；交接期间不发送上一模式的值。"""
+        backend = self._impedance
+        if backend is not None and backend.active:
+            return self.get_impedance_command_torques()
+        if compensated_reader is not None:
+            sample = compensated_reader.get_snapshot()["sample"]
+            if sample is not None and sample["source"] == "impedance_get_joint_torques":
+                return None
+        else:
+            return None
+        return None if sample is None else sample["values_nm"]
 
     def stop_raw_torque_stream(self) -> None:
         """停止关节力矩订阅；下次读取时重新建立连接。"""

@@ -54,7 +54,7 @@ class TeleopImpedanceWindow(QtWidgets.QWidget):
         self.ui.stopButton.clicked.connect(self.stop_requested.emit)
         self.ui.syncButton.clicked.connect(self.sync_requested.emit)
 
-    def update_context(self, *, snapshot, actual_q, config, revision, dirty,
+    def update_context(self, *, snapshot, actual_q, command_torques, config, revision, dirty,
                        reason, phase, can_sync, can_start, can_stop, result, now=None):
         now = time.monotonic() if now is None else now
         self.ui.parameterLabel.setText(f'参数：已应用版本 {revision}' + (' · 参数有未应用修改，请在单关节窗口处理' if dirty else ''))
@@ -73,6 +73,7 @@ class TeleopImpedanceWindow(QtWidgets.QWidget):
         for name, q in (('master', q_master), ('actual', actual_q)):
             for j in range(6):
                 getattr(self.ui, f'{name}Angle{j}').setText('—' if q is None else f'{math.degrees(q[j]):.4f}')
+        self._set_command_torques(command_torques)
         if q_master is not None and tuple(q_master) != self._master:
             self._master = tuple(q_master)
             self.visualizer.update_virtual(self._master)
@@ -84,9 +85,14 @@ class TeleopImpedanceWindow(QtWidgets.QWidget):
         master_label = '新鲜' if q_master is not None else ('已过期' if self._master is not None else '无数据')
         self.ui.legendLabel.setText(f'实体：从端实际（{actual_label}） · 半透明：主端目标（{master_label}） · 主从为异步显示')
 
+    def _set_command_torques(self, values_nm):
+        for j in range(6):
+            getattr(self.ui, f'commandTorque{j}').setText('—' if values_nm is None else f'{values_nm[j]:.4f}')
+
     def clear_robot(self):
-        """断开或切换机器人时清除旧实际姿态。"""
+        """断开或切换机器人时清除旧实际姿态与命令力矩。"""
         self._actual = None
+        self._set_command_torques(None)
         self.visualizer.set_visibility(actual=False, virtual=self._master is not None)
         for j in range(6):
             getattr(self.ui, f'actualAngle{j}').setText('—')

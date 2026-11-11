@@ -15,7 +15,7 @@ URUdpClient.py — UDP通信客户端，用于接收/发送外部控制信号。
     125      4    uint32     CRC32 (IEEE 802.3)，校验范围 offset 4 ~ 124
     129       4    uint8[4]   帧尾 (0x0D 0x0A 0x0D 0x0A)
     主端指令总长度为 133 字节。从端反馈共 181 字节，偏移 77 起为六轴实际速度
-    （rad/s），125 起为六轴净驱动力矩（Nm），173 起为数据段 CRC32，177 起为帧尾。
+    （rad/s），125 起为六轴关节力矩（Nm，阻抗模式为命令值），173 起为数据段 CRC32，177 起为帧尾。
 """
 
 from __future__ import annotations
@@ -561,9 +561,9 @@ class URUDPClient:
 
     @classmethod
     def pack(cls, q_arm, mode, q_gripper, qd_arm, tau_arm) -> bytes:
-        """将实际关节角（rad）、夹爪、轴速度（rad/s）和净驱动力矩（Nm）打包为 181 字节反馈。"""
+        """将实际关节角（rad）、夹爪、轴速度（rad/s）和关节力矩（Nm）打包为 181 字节反馈。"""
         if (len(q_arm), len(qd_arm), len(tau_arm)) != (6, 6, 6):
-            raise ValueError("关节角、关节速度和净驱动力矩各需六轴数据")
+            raise ValueError("关节角、关节速度和关节力矩各需六轴数据")
         if len(q_gripper) != 3:
             raise ValueError(f"q_gripper 长度必须为 3，实际 {len(q_gripper)}")
         if not (0 <= mode <= 255):

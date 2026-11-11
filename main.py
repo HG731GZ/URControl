@@ -1342,9 +1342,9 @@ class MainWindow(ImpedanceIntegration, QMainWindow):
             return
         fb = self.get_gripper_feedback()
         gripper_values = [float('nan')] * 3 if fb is None else [fb.open, fb.current, fb.position]
-        reader = self.compensated_torque_client
-        torque = None if reader is None else reader.get_latest()
-        tau_arm = [float('nan')] * 6 if torque is None else torque[1]
+        controller = self.rtde_controller
+        torque = None if controller is None else controller.get_udp_torques(self.compensated_torque_client)
+        tau_arm = [float('nan')] * 6 if torque is None else torque
         self.udp_client.queue_send_to(
             (UDP_REMOTE_IP, UDP_REMOTE_PORT), state.q_actual, UDPControlMode.OFF,
             gripper_values, state.qd_actual, tau_arm, max_age=remaining)

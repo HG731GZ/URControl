@@ -335,6 +335,7 @@ def create_teleop_impedance_preview(scenario='ready'):
         udp = dict(command=None if scenario == 'offline' else SimpleNamespace(mode=0 if scenario == 'mode' else 1, q_arm=master, qd_arm=[0.0]*6),
                    frame_count=500, received_monotonic=now-(1.0 if scenario == 'stale' else .008), last_error=None)
         window.update_context(snapshot=udp, actual_q=None if scenario == 'offline' else actual,
+                              command_torques=[1.25, -2.5, 0.0, 0.75, -0.125, 0.25] if scenario == 'running' else None,
                               config=snapshot(), revision=3, dirty=False,
                               reason=phases[scenario], phase=phases[scenario],
                               can_sync=scenario in ('ready', 'stopped'), can_start=scenario in ('ready', 'stopped'),

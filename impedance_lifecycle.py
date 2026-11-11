@@ -388,8 +388,12 @@ class ImpedanceIntegration:
             if own_run:
                 reason = (self._teleop_sync['reason'] if self._teleop_sync
                           else status.get('stop_error') or status.get('last_error') or phase)
+            command_torques = None
+            if state is not None and status['active'] and status.get('source') == 'teleop':
+                command_torques = self.rtde_controller.get_impedance_command_torques()
             self.teleop_impedance_window.update_context(
-                snapshot=snapshot, actual_q=actual_q, config=self.impedance_parameters.prepared,
+                snapshot=snapshot, actual_q=actual_q, command_torques=command_torques,
+                config=self.impedance_parameters.prepared,
                 revision=self.impedance_parameters.revision, dirty=self.impedance_parameters.dirty,
                 reason=reason, phase='可以直接开启；同步可选',
                 can_sync=not sync_reason, can_start=not start_reason, can_stop=own_run,

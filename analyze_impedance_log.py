@@ -116,10 +116,12 @@ def analyze(directory, output=None):
     output.mkdir(parents=True, exist_ok=True)
     metadata = json.loads((directory / "metadata.json").read_text())
     version = metadata["schema_version"]
-    if version not in (1, 2, 3, 4):
+    if version not in (1, 2, 3, 4, 5):
         raise ValueError(f"未知阻抗日志版本 {version}")
-    has_tcp_wrench = version == 4
+    has_tcp_wrench = version >= 4
+    has_measured_torque = version >= 5
     wrench_by_stamp = {}
+    torque_by_stamp = {}
     final_peak = None
     refs = {}
     samples = []
@@ -132,6 +134,9 @@ def analyze(directory, output=None):
             refs[p["reference_seq"]] = p
         elif has_tcp_wrench and row["kind"] == "standard":
             wrench_by_stamp[p["timestamp"]] = p["actual_TCP_force"]
+            if has_measured_torque and p["compensated_joint_torque"] is not None:
+                measured = p["compensated_joint_torque"]
+                torque_by_stamp[measured["robot_timestamp_s"]] = measured
         elif row["kind"] in timing:
             timing[row["kind"]].append(p)
         elif row["kind"] == "sample":
@@ -215,6 +220,10 @@ def analyze(directory, output=None):
         "robot_timestamp_s", "sample_time_s", "tcp_fx_n", "tcp_fy_n", "tcp_fz_n",
         "tcp_mx_nm", "tcp_my_nm", "tcp_mz_nm",
     ] if has_tcp_wrench else []
+    torque_columns = (
+        ["torque_sample_seq"] + [f"compensated_tau_nm_j{j}" for j in range(1, 7)]
+        if has_measured_torque else []
+    )
     with (output / "tracking.csv").open("w") as f:
         writer = csv.writer(f)
         writer.writerow(
@@ -231,13 +240,18 @@ def analyze(directory, output=None):
                 )
                 for j in range(1, 7)
             ]
-            + wrench_columns
+            + wrench_columns + torque_columns
         )
         for k, s in enumerate(samples):
             wrench_row = []
+            torque_row = []
             if has_tcp_wrench:
                 stamp = s["robot_timestamp_s"]
                 wrench_row = [stamp, s["sample_time_s"], *wrench_by_stamp.get(stamp, [None] * 6)]
+            if has_measured_torque:
+                measured = torque_by_stamp.get(s["robot_timestamp_s"])
+                torque_row = ([measured["sample_seq"], *measured["values_nm"]]
+                              if measured is not None else [None] * len(torque_columns))
             writer.writerow(
                 [
                     t[k],
@@ -250,6 +264,7 @@ def analyze(directory, output=None):
                     *tau[k],
                     *(v for series in speeds.values() for v in series[k]),
                     *wrench_row,
+                    *torque_row,
                 ]
             )
     import matplotlib
@@ -322,12 +337,20 @@ def analyze(directory, output=None):
     axs[0].legend(ncol=3)
     axs[1].plot(t, np.rad2deg(error[:, j]), color="#2474b5")
     axs[1].set_ylabel("Ref - actual (deg)")
-    axs[2].plot(t, tau[:, j], color="#df7c25")
+    axs[2].plot(t, tau[:, j], color="#df7c25", label="Command")
     axs[2].set_ylabel("Command torque (N m)")
     if has_tcp_wrench:
         # 保留接触瞬间的原始采样峰值；标准帧丢失时曲线断开。
         start = samples[0]["robot_timestamp_s"]
         stop = samples[-1]["robot_timestamp_s"]
+        if has_measured_torque:
+            # 保留两次关节快照之间的独立实测点，缺测处不连线。
+            torque_times = [stamp for stamp in torque_by_stamp if start <= stamp <= stop]
+            axs[2].plot(np.array(torque_times) - start,
+                        [torque_by_stamp[stamp]["values_nm"][j] for stamp in torque_times],
+                        ".", markersize=2, color="#2474b5", label="Measured (UR compensated)")
+            axs[2].set_ylabel("Joint torque (N m)")
+            axs[2].legend(ncol=2)
         stamps = np.array([stamp for stamp in wrench_by_stamp if start <= stamp <= stop])
         wrench = np.array([wrench_by_stamp[stamp] for stamp in stamps], dtype=float).reshape(-1, 6)
         gaps = np.flatnonzero(np.diff(stamps) > 0.003) + 1

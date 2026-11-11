@@ -185,14 +185,15 @@ class ImpedanceProcess:
                 self._status["last_error"] = self._stop_reason
             return deepcopy(self._status)
 
-    def get_compensated_torque_snapshot(self):
-        """读取本轮最新实测页，停止、进程退出或源样本过期后返回缺测。"""
+    def get_torque_snapshot(self, kind):
+        """读取本轮命令或实测力矩，各自按首次接收时刻判断是否过期。"""
         if self._event.is_set() or not self._process.is_alive():
             return None
-        self._torque_sequence, sample = self._torque_slot.read(self._torque_sequence)
-        if sample is not None:
-            self._latest_torque = sample
-        sample = self._latest_torque
+        with self._status_lock:
+            self._torque_sequence, torques = self._torque_slot.read(self._torque_sequence)
+            if torques is not None:
+                self._latest_torque = torques
+            sample = None if self._latest_torque is None else self._latest_torque[kind]
         if sample is None or time.monotonic() - sample["received_monotonic_s"] > self.parameters["FEEDBACK_TIMEOUT_S"]:
             return None
         return sample

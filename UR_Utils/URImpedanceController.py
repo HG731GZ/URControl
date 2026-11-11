@@ -67,7 +67,7 @@ class URImpedanceController:
             dict(
                 record_type="joint_impedance_run",
                 register_protocol_version=protocol.VERSION,
-                schema_version=4 if source == "teleop" else 3,
+                schema_version=5 if source == "teleop" else 3,
                 torque_control=(
                     {
                         "law": "velocity_limited_pd",
@@ -100,7 +100,9 @@ class URImpedanceController:
                 time_definition=(
                     "snapshot: robot same-cycle; source: host monotonic, join by adopted_reference_seq"
                     + ("; standard.actual_TCP_force: Fx/Fy/Fz (N), Mx/My/Mz (N*m); "
-                       "standard.timestamp = sample.robot_timestamp_s at snapshot observation"
+                       "standard.timestamp = sample.robot_timestamp_s at snapshot observation; "
+                       "standard.compensated_joint_torque: new get_joint_torques() sample, "
+                       "values_nm in J1-J6 order, robot_timestamp_s at first RTDE observation"
                        if source == "teleop" else "")
                 ),
             ),
@@ -226,7 +228,8 @@ class URImpedanceController:
         reference_seq = heartbeat = 0
         last_adopted = 0
         last_torque_seq = 0
-        torque_sample = None
+        torques = {"measured": None, "command": None}
+        torques_updated = False
         player = None
         ready = False
         seen_running = False
@@ -254,11 +257,13 @@ class URImpedanceController:
                 measured = protocol.decode_compensated_torque(state, self.run_id, last_torque_seq, now)
                 if measured is not None:
                     last_torque_seq = measured["sample_seq"]
-                    torque_sample = measured
-                self.logger.record(
-                    "standard",
-                    {name: getattr(state, name) for name in standard_fields},
-                )
+                    torques["measured"] = measured
+                    torques_updated = True
+                standard = {name: getattr(state, name) for name in standard_fields}
+                if self.source == "teleop":
+                    # 逐帧保存新提交的力矩页，避免界面只发布最新样本时漏记。
+                    standard["compensated_joint_torque"] = measured
+                self.logger.record("standard", standard)
                 if self.source == "teleop" and state.output_int_register_24 == self.run_id:
                     adopted = state.output_int_register_47
                     if adopted > last_adopted:
@@ -273,8 +278,17 @@ class URImpedanceController:
                     or (seen_running and state.speed_scaling < 0.99)
                 ):
                     raise RuntimeError("机器人模式/安全状态/速度缩放改变")
-                if sample is not None and sample["cycle_seq"] != last_cycle:
+                new_sample = sample is not None and sample["cycle_seq"] != last_cycle
+                if new_sample:
                     last_cycle = sample["cycle_seq"]
+                    commanding = sample["phase"] in ("RAMPING", "RUNNING", "ENDING") and not sample["final"]
+                    torques["command"] = (
+                        {"values_nm": sample["tau_cmd"], "received_monotonic_s": now}
+                        if commanding and state.runtime_state == 2 else None
+                    )
+                    torques_updated = True
+                # 第五步之间增发的命令快照只供 UDP 使用，常规诊断仍按原周期处理。
+                if new_sample and (last_cycle % 5 == 0 or sample["phase"] == "ARMED" or sample["final"]):
                     self.status.update(
                         sample=sample,
                         phase=sample["phase"],
@@ -324,9 +338,9 @@ class URImpedanceController:
                     raise RuntimeError("运行程序中断或暂停")
             if conn.last_receive_drained:
                 backlog_since = None
-                if torque_sample is not None:
-                    self.publish_torque(torque_sample)
-                    torque_sample = None
+                if torques_updated:
+                    self.publish_torque(torques)
+                    torques_updated = False
             elif backlog_since is None:
                 backlog_since = now
             elif now - backlog_since > cfg["FEEDBACK_TIMEOUT_S"]:
