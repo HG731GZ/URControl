@@ -170,6 +170,11 @@ class ImpedanceProcess:
     def active(self):
         return self.get_status()["active"]
 
+    @property
+    def stop_requested(self):
+        """界面或控制进程已请求停止，终态确认可能仍在进行。"""
+        return self._event.is_set() or (self._external_event is not None and self._external_event.is_set())
+
     def get_status(self):
         with self._status_lock:
             self._sequence, value = self._status_slot.read(self._sequence)

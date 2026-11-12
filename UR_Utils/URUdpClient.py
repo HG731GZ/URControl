@@ -14,14 +14,15 @@ URUdpClient.py — UDP通信客户端，用于接收/发送外部控制信号。
     77      48    6×float64  主端六轴速度（J1～J6）
     125      4    uint32     CRC32 (IEEE 802.3)，校验范围 offset 4 ~ 124
     129       4    uint8[4]   帧尾 (0x0D 0x0A 0x0D 0x0A)
-    主端指令总长度为 133 字节。从端反馈共 181 字节，偏移 77 起为六轴实际速度
-    （rad/s），125 起为六轴关节力矩（Nm，阻抗模式为命令值），173 起为数据段 CRC32，177 起为帧尾。
+    主端指令总长度为 133 字节。从端反馈共 182 字节，偏移 77 起为六轴实际速度
+    （rad/s），125 起为六轴关节力矩（Nm），173 为遥操作状态，174 起为数据段 CRC32，178 起为帧尾。
 """
 
 from __future__ import annotations
 
 import binascii
 from copy import deepcopy
+from enum import IntEnum
 import logging
 import math
 import platform
@@ -39,6 +40,13 @@ logger = logging.getLogger(__name__)
 # Linux x86-64 和 arm64 的 SO_TIMESTAMPNS_NEW 返回两个有符号 64 位整数。
 _TIMESTAMPNS_NEW = 64 if sys.platform == "linux" and platform.machine() in ("x86_64", "aarch64") else None
 _KERNEL_TIMESPEC = struct.Struct("=qq")
+
+
+class TeleopState(IntEnum):
+    """从端反馈中的遥操作状态。"""
+    OFF = 0
+    RTDE_FOLLOW = 1
+    IMPEDANCE = 2
 
 
 class UDPControlMode:
@@ -131,7 +139,7 @@ class URUDPClient:
         print(cmd.q_arm, cmd.mode, cmd.q_gripper)
 
     # 将从端实测状态发往主端
-    client.send_to(('192.168.1.100', 6005), q_arm, UDPControlMode.OFF, q_gripper, qd_arm, tau_arm)
+    client.send_to(('192.168.1.100', 6005), q_arm, UDPControlMode.OFF, q_gripper, qd_arm, tau_arm, teleop_state)
 
     client.stop()
     """
@@ -143,7 +151,7 @@ class URUDPClient:
     FOOTER_SIZE = 4
     CRC_SIZE = 4
 
-    FEEDBACK_FORMAT = "!6dB3d6d6d"
+    FEEDBACK_FORMAT = "!6dB3d6d6dB"
     DATA_FORMAT = "!6dB3d6d"
     DATA_SIZE = struct.calcsize(DATA_FORMAT)  # 121
 
@@ -560,8 +568,8 @@ class URUDPClient:
         return cls.HEADER + data + crc + cls.FOOTER
 
     @classmethod
-    def pack(cls, q_arm, mode, q_gripper, qd_arm, tau_arm) -> bytes:
-        """将实际关节角（rad）、夹爪、轴速度（rad/s）和关节力矩（Nm）打包为 181 字节反馈。"""
+    def pack(cls, q_arm, mode, q_gripper, qd_arm, tau_arm, teleop_state) -> bytes:
+        """将实际关节角、夹爪、轴速度、关节力矩及遥操作状态打包为 182 字节反馈。"""
         if (len(q_arm), len(qd_arm), len(tau_arm)) != (6, 6, 6):
             raise ValueError("关节角、关节速度和关节力矩各需六轴数据")
         if len(q_gripper) != 3:
@@ -569,7 +577,7 @@ class URUDPClient:
         if not (0 <= mode <= 255):
             raise ValueError(f"mode 必须在 0-255 之间，实际 {mode}")
 
-        data = struct.pack(cls.FEEDBACK_FORMAT, *q_arm, mode, *q_gripper, *qd_arm, *tau_arm)
+        data = struct.pack(cls.FEEDBACK_FORMAT, *q_arm, mode, *q_gripper, *qd_arm, *tau_arm, TeleopState(teleop_state))
         return cls._wrap_data(data)
 
     def send_to(
@@ -580,6 +588,7 @@ class URUDPClient:
         q_gripper: List[float],
         qd_arm: List[float],
         tau_arm: List[float],
+        teleop_state: TeleopState,
     ) -> bool:
         """
         同步发送，网络失败返回 False 并记录发送错误；界面应使用 queue_send_to()。
@@ -588,10 +597,10 @@ class URUDPClient:
         ----------
         target:
             (ip, port) 目标地址。
-        q_arm, mode, q_gripper, qd_arm, tau_arm:
+        q_arm, mode, q_gripper, qd_arm, tau_arm, teleop_state:
             控制数据，见 pack()。
         """
-        packet = self.pack(q_arm, mode, q_gripper, qd_arm, tau_arm)
+        packet = self.pack(q_arm, mode, q_gripper, qd_arm, tau_arm, teleop_state)
         return self._send_packet(packet, target)
 
     def _send_packet(self, packet: bytes, target: Tuple[str, int]) -> bool:
@@ -622,10 +631,11 @@ class URUDPClient:
 
     def queue_send_to(
         self, target: Tuple[str, int], q_arm: List[float], mode: int,
-        q_gripper: List[float], qd_arm: List[float], tau_arm: List[float], *, max_age: float = 0.5,
+        q_gripper: List[float], qd_arm: List[float], tau_arm: List[float], teleop_state: TeleopState,
+        *, max_age: float = 0.5,
     ) -> bool:
         """提交最新反馈；等待超过 max_age 秒则丢弃。True 不代表远端已收到。"""
-        packet = self.pack(q_arm, mode, q_gripper, qd_arm, tau_arm)
+        packet = self.pack(q_arm, mode, q_gripper, qd_arm, tau_arm, teleop_state)
         with self._send_cond:
             if self._sock is None or self._stop_event.is_set():
                 return False

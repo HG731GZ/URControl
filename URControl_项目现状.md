@@ -369,7 +369,7 @@ J2/J4/J5/J6 后续在实机分别完成一次双向无接触往返和一次人�
 
 <a id="udp-protocol"></a>
 
-本节整合原独立协议说明，并按 [URUdpClient.py](UR_Utils/URUdpClient.py) 核对。主端指令为 133 B，从端反馈为 181 B，大端、无填充；默认绑定端口 5005，反馈目的端口 6005。
+本节整合原独立协议说明，并按 [URUdpClient.py](UR_Utils/URUdpClient.py) 核对。主端指令为 133 B，从端反馈为 182 B，大端、无填充；默认绑定端口 5005，反馈目的端口 6005。
 
 | 偏移 | 长度 / B | 类型 | 主端指令字段 |
 | --- | ---: | --- | --- |
@@ -391,7 +391,7 @@ J2/J4/J5/J6 后续在实机分别完成一次双向无接触往返和一次人�
 
 CRC 使用 CRC32/IEEE 802.3，反射多项式 `0xEDB88320`；Python 实现为 `binascii.crc32(data) & 0xFFFFFFFF`，结果按大端四字节发送。接收依次检查长度、帧头、CRC、帧尾，失败帧丢弃并记录。CRC 是通信协议字段，不是文件或交付物哈希清单。
 
-主端数据段格式为 `!6dB3d6d`，模拟主端调用 `URUDPClient.pack_command(q_arm, mode, q_gripper, qd_arm)`。从端反馈数据段为 `!6dB3d6d6d`，由 `URUDPClient.pack(q_arm, mode, q_gripper, qd_arm, tau_arm)` 编码。跨语言实现须逐字段按网络字节序序列化；仅使用 packed C 结构体不能完成主机到网络字节序转换。
+主端数据段格式为 `!6dB3d6d`，模拟主端调用 `URUDPClient.pack_command(q_arm, mode, q_gripper, qd_arm)`。从端反馈数据段为 `!6dB3d6d6dB`，由 `URUDPClient.pack(q_arm, mode, q_gripper, qd_arm, tau_arm, teleop_state)` 编码。跨语言实现须逐字段按网络字节序序列化；仅使用 packed C 结构体不能完成主机到网络字节序转换。
 
 反馈沿用同一绑定 socket，`mode=OFF`，q 为实际关节角，grip 依次为夹爪开度、原始电流、原始位置。夹爪未连接、无响应或反馈过期时，三个 grip 字段为 IEEE 754 `NaN`，机械臂反馈仍可发送；该约定仅用于反馈方向。控制方向夹爪字段由对应夹爪业务解释。
 
@@ -399,8 +399,11 @@ CRC 使用 CRC32/IEEE 802.3，反射多项式 `0xEDB88320`；Python 实现为 `b
 | --- | ---: | --- |
 | 77～124 | 48 | J1～J6 实际关节速度（rad/s），与实际关节角来自同一状态帧 |
 | 125～172 | 48 | J1～J6 关节力矩（Nm），阻抗模式取命令力矩，普通控制和关节力矩导纳取补偿实测值 |
-| 173～176 | 4 | 大端 CRC32，覆盖偏移 4～172 |
-| 177～180 | 4 | 帧尾 `0D 0A 0D 0A` |
+| 173 | 1 | `teleop_state`（uint8）：0 未开启，1 普通 RTDE 跟随，2 阻抗遥操作 |
+| 174～177 | 4 | 大端 CRC32，覆盖偏移 4～173 |
+| 178～181 | 4 | 帧尾 `0D 0A 0D 0A` |
+
+普通 RTDE 跟随启动成功后报 1。阻抗遥操作进入增益爬升（RAMPING）、运行（RUNNING）或收尾（ENDING）阶段时报 2。同步定位、启动准备、请求停止及其他控制模式均报 0。
 
 普通控制和关节力矩输入的导纳模式回传 `get_joint_torques()` 补偿实测值。轨迹、阶跃和遥操作阻抗回传传入 `direct_torque()` 的 `tau_cmd`，已应用幅值与变化率限制。阻抗脚本每五个 2 ms 控制步冻结两次命令，发送线程按自己的节拍取最新有效值。尚无有效命令、停止或数据过期时，相应字段写 `NaN`。
 

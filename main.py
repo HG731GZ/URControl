@@ -31,7 +31,7 @@ from UR_Utils.URAdmittanceController import PHASE_NAMES, EXIT_REASONS, idle_admi
 from UR_Utils.URRTDETorqueClient import URRTDETorqueClient
 from UR_Utils.URCompensatedTorqueReader import URCompensatedTorqueReader
 from UR_Utils.URTcpClient import URTcpError
-from UR_Utils.URUdpClient import URUDPClient, UDPControlMode
+from UR_Utils.URUdpClient import URUDPClient, UDPControlMode, TeleopState
 from UR_Utils.ur5e_visualizer import UR5eDualVisualizer
 
 UR_REAL_IP = '192.168.3.15'
@@ -1343,11 +1343,15 @@ class MainWindow(ImpedanceIntegration, QMainWindow):
         fb = self.get_gripper_feedback()
         gripper_values = [float('nan')] * 3 if fb is None else [fb.open, fb.current, fb.position]
         controller = self.rtde_controller
-        torque = None if controller is None else controller.get_udp_torques(self.compensated_torque_client)
+        torque, teleop_state = None, TeleopState.OFF
+        if controller is not None:
+            ordinary_following = self.control_source == 'udp' and self.admittance_mode == 'off'
+            torque, teleop_state = controller.get_udp_feedback(
+                self.compensated_torque_client, ordinary_following=ordinary_following)
         tau_arm = [float('nan')] * 6 if torque is None else torque
         self.udp_client.queue_send_to(
             (UDP_REMOTE_IP, UDP_REMOTE_PORT), state.q_actual, UDPControlMode.OFF,
-            gripper_values, state.qd_actual, tau_arm, max_age=remaining)
+            gripper_values, state.qd_actual, tau_arm, teleop_state, max_age=remaining)
 
     def update_robot_view(self):
         command = self.get_udp_snapshot()

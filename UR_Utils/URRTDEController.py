@@ -12,6 +12,7 @@ import rtde_control
 import rtde_io
 import rtde_receive
 from UR_Utils.URRTDETorqueClient import URRTDETorqueClient
+from UR_Utils.URUdpClient import TeleopState
 from UR_Utils.URAdmittanceController import idle_admittance_status
 from UR_Utils.admittance_process import AdmittanceProcess
 from UR_Utils.impedance_process import ImpedanceProcess
@@ -1151,17 +1152,27 @@ class URRTDEController:
         return None if sample is None else sample["values_nm"]
 
     def get_udp_torques(self, compensated_reader):
-        """按当前控制来源取 UDP 力矩，只读缓存；交接期间不发送上一模式的值。"""
+        """读取反馈帧中的六轴力矩。"""
+        return self.get_udp_feedback(compensated_reader, ordinary_following=False)[0]
+
+    def get_udp_feedback(self, compensated_reader, *, ordinary_following):
+        """按控制后端的运行状态取得本帧力矩和遥操作状态。"""
         backend = self._impedance
-        if backend is not None and backend.active:
-            return self.get_impedance_command_torques()
+        if backend is not None:
+            status = backend.get_status()
+            if status["active"]:
+                teleop = (backend.reference_source == "teleop" and not backend.stop_requested
+                          and status["phase"] in ("RAMPING", "RUNNING", "ENDING"))
+                state = TeleopState.IMPEDANCE if teleop else TeleopState.OFF
+                return self.get_impedance_command_torques(), state
+        state = TeleopState.RTDE_FOLLOW if ordinary_following and self._running.is_set() else TeleopState.OFF
+        sample = None
         if compensated_reader is not None:
             sample = compensated_reader.get_snapshot()["sample"]
             if sample is not None and sample["source"] == "impedance_get_joint_torques":
-                return None
-        else:
-            return None
-        return None if sample is None else sample["values_nm"]
+                sample = None
+        torque = None if sample is None else sample["values_nm"]
+        return torque, state
 
     def stop_raw_torque_stream(self) -> None:
         """停止关节力矩订阅；下次读取时重新建立连接。"""
