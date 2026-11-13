@@ -5,7 +5,7 @@ import json
 import time
 from UR_Utils.impedance_process import ImpedanceProcess
 from UR_Utils.impedance_trajectory import JointTrajectory
-from UR_Utils.impedance_config import migrate_v2_parameters, read_preset, snapshot
+from UR_Utils.impedance_config import read_preset, read_saved_parameters, snapshot
 
 
 def main():
@@ -22,9 +22,7 @@ def main():
         if preset.get("record_type") == "joint_impedance_preset":
             cfg = read_preset(preset)
         else:
-            cfg = preset.get("parameters", preset)
-            if "TELEOP_REF_MODE" not in cfg:
-                cfg = migrate_v2_parameters(cfg)
+            cfg = read_saved_parameters(preset.get("parameters", preset))
     backend = ImpedanceProcess(
         a.robot_ip,
         config=cfg,

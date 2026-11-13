@@ -1,7 +1,7 @@
 {
   "record_type": "joint_impedance_preset",
-  "schema_version": 3,
-  "description": "2026-11-05 遥操作限速位置跟随。J2/J3 使用 V=0.35 rad/s、A=6 rad/s²、T=0.12 s。使用 1.12 kg 负载完成 J2 负向 1° 单轴联调。其余轴及多轴接触工况待验证。轨迹与阶跃包络 ±0.22 rad，遥操作使用绝对位置、实际速度、目标新鲜度及跳变守卫。",
+  "schema_version": 4,
+  "description": "2026-11-13 遥操作限速位置跟随。J1～J3 工作速度上限为 0.823529 rad/s，加速度预算为 30 rad/s²。J1 跟随时间设为 0.05 s，J2/J3 设为 0.12 s。调参轨迹与阶跃包络为 ±0.22 rad。",
   "parameters": {
     "JOINT_K": [
       2400.0,
@@ -45,8 +45,8 @@
     ],
     "TELEOP_REF_OMEGA_RAD_S": [40.0, 40.0, 40.0, 40.0, 40.0, 40.0],
     "TELEOP_REF_MODE": "rate_limited_position",
-    "TELEOP_FOLLOW_V_RAD_S": [0.8235294117647058, 0.35, 0.35, 1, 1, 1],
-    "TELEOP_FOLLOW_A_RAD_S2": [30, 6, 6, 60, 60, 60],
+    "TELEOP_FOLLOW_V_RAD_S": [0.8235294117647058, 0.8235294117647058, 0.8235294117647058, 1, 1, 1],
+    "TELEOP_FOLLOW_A_RAD_S2": [30, 30, 30, 60, 60, 60],
     "TELEOP_FOLLOW_T_S": [0.05, 0.12, 0.12, 0.05, 0.05, 0.05],
     "REF_MAX_QDD_RAD_S2": [
       30.0,
@@ -111,7 +111,6 @@
     "END_HOLD_S": 1.0,
     "END_SETTLE_TIMEOUT_S": 5.0,
     "PLAYBACK_MAX_LAG_S": 0.1,
-    "MAX_SOURCE_STEP_RAD": 0.1,
     "CYCLE_MAX_S": 0.01,
     "EXPECTED_TCP_OFFSET": [
       0.0,

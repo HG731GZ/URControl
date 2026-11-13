@@ -4,7 +4,7 @@ from copy import deepcopy
 from PyQt5 import QtCore
 import json
 from pathlib import Path
-from UR_Utils.impedance_config import read_preset, snapshot, validate
+from UR_Utils.impedance_config import PRESET_VERSION, read_preset, snapshot, validate
 
 
 class ImpedanceParameters(QtCore.QObject):
@@ -56,7 +56,7 @@ class ImpedanceParameters(QtCore.QObject):
             json.dumps(
                 dict(
                     record_type="joint_impedance_preset",
-                    schema_version=3,
+                    schema_version=PRESET_VERSION,
                     parameters=validate(self.draft),
                 ),
                 ensure_ascii=False,

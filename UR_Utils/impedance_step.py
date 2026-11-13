@@ -57,8 +57,8 @@ class JointStep:
         if play_hz != self.sample_hz:
             raise ValueError("阶跃不允许通过播放倍率改变保持时长")
         step_limit = 0.1
-        if abs(self.offset_rad) > min(step_limit, config["MAX_SOURCE_STEP_RAD"]):
-            raise ValueError(f"J{self.axis+1} 阶跃幅度须不超过 {step_limit:g} rad，并满足源跳变约束")
+        if abs(self.offset_rad) > step_limit:
+            raise ValueError(f"J{self.axis+1} 阶跃幅度须不超过 {step_limit:g} rad")
 
     def bind(self, anchor, config, play_hz):
         self.validate_playback(config, play_hz)

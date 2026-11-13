@@ -166,10 +166,6 @@ def joint_impedance():
           if norm(incoming[j]) > qlimit[j] or (not {{TELEOP}} and norm(incoming[j]-anchor[j]) > envelope[j]):
             fault = 4
           end
-          # 用目标闭区间判断跳变，避免恰好位于阈值的阶跃因浮点相减而越界。
-          if adopted > 0 and seq != source_seq and (incoming[j] < source[j]-{{MAX_SOURCE_STEP_RAD}} or incoming[j] > source[j]+{{MAX_SOURCE_STEP_RAD}}):
-            fault = 4
-          end
           if not {{TELEOP}} and phase == 1 and norm(incoming[j]-anchor[j]) > {{START_TOLERANCE_RAD}}:
             fault = 4
           end

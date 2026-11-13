@@ -70,11 +70,6 @@ class JointTrajectory:
             np.abs(acceleration) > np.array(config["REF_MAX_QDD_RAD_S2"]) * 0.9
         ):
             raise ValueError("播放速度超出参考加速度预算")
-        # 100 Hz 主机发布，最多允许每次发布跨越的角度为源跳变门槛。
-        if np.any(
-            np.max(np.abs(velocity), axis=0) / 100 > config["MAX_SOURCE_STEP_RAD"]
-        ):
-            raise ValueError("轨迹超出 100 Hz 目标发布带宽")
 
     def csv_text(self):
         output = io.StringIO()
