@@ -1114,7 +1114,7 @@ class URRTDEController:
         """读取补偿力矩及来源身份；关联 RTDE 时间不冒充精确的力矩采样时刻。"""
         with self._lifecycle_lock:
             if self._impedance is not None and self._impedance.active:
-                return self._impedance.get_torque_snapshot("measured")
+                return self._impedance.get_feedback_snapshot("measured")
             if self._admittance is not None and self._admittance.active:
                 state = self._admittance.get_load_status()
                 load = state["load"]
@@ -1148,7 +1148,7 @@ class URRTDEController:
     def get_impedance_command_torques(self):
         """供遥操作窗口和 UDP 读取最新的六轴阻抗命令力矩，单位为 Nm。"""
         backend = self._impedance
-        sample = None if backend is None else backend.get_torque_snapshot("command")
+        sample = None if backend is None else backend.get_feedback_snapshot("command")
         return None if sample is None else sample["values_nm"]
 
     def get_udp_torques(self, compensated_reader):
@@ -1156,7 +1156,7 @@ class URRTDEController:
         return self.get_udp_feedback(compensated_reader, ordinary_following=False)[0]
 
     def get_udp_feedback(self, compensated_reader, *, ordinary_following):
-        """按控制后端的运行状态取得本帧力矩和遥操作状态。"""
+        """按同一后端状态取得力矩、遥操作状态及阻抗实际加速度。"""
         backend = self._impedance
         if backend is not None:
             status = backend.get_status()
@@ -1164,7 +1164,11 @@ class URRTDEController:
                 teleop = (backend.reference_source == "teleop" and not backend.stop_requested
                           and status["phase"] in ("RAMPING", "RUNNING", "ENDING"))
                 state = TeleopState.IMPEDANCE if teleop else TeleopState.OFF
-                return self.get_impedance_command_torques(), state
+                acceleration = None
+                if not backend.stop_requested and status["phase"] in ("RAMPING", "RUNNING", "ENDING"):
+                    acceleration = backend.get_feedback_snapshot("acceleration")
+                qdd = None if acceleration is None else acceleration["values_rad_s2"]
+                return self.get_impedance_command_torques(), state, qdd
         state = TeleopState.RTDE_FOLLOW if ordinary_following and self._running.is_set() else TeleopState.OFF
         sample = None
         if compensated_reader is not None:
@@ -1172,7 +1176,7 @@ class URRTDEController:
             if sample is not None and sample["source"] == "impedance_get_joint_torques":
                 sample = None
         torque = None if sample is None else sample["values_nm"]
-        return torque, state
+        return torque, state, None
 
     def stop_raw_torque_stream(self) -> None:
         """停止关节力矩订阅；下次读取时重新建立连接。"""

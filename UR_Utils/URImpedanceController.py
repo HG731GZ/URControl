@@ -67,6 +67,12 @@ class URImpedanceController:
             dict(
                 record_type="joint_impedance_run",
                 register_protocol_version=protocol.VERSION,
+                joint_acceleration={
+                    "source": "get_actual_joint_accelerations",
+                    "unit": "rad/s²", "axis_order": ["J1", "J2", "J3", "J4", "J5", "J6"],
+                    "register_resolution": 1e-6, "nominal_sample_hz": 250,
+                    "filter": "none", "timestamp": "first_rtde_observation",
+                },
                 schema_version=5 if source == "teleop" else 3,
                 torque_control=(
                     {
@@ -228,7 +234,8 @@ class URImpedanceController:
         reference_seq = heartbeat = 0
         last_adopted = 0
         last_torque_seq = 0
-        torques = {"measured": None, "command": None}
+        last_acceleration_seq = 0
+        torques = {"measured": None, "command": None, "acceleration": None}
         torques_updated = False
         player = None
         ready = False
@@ -259,7 +266,13 @@ class URImpedanceController:
                     last_torque_seq = measured["sample_seq"]
                     torques["measured"] = measured
                     torques_updated = True
+                acceleration = protocol.decode_joint_acceleration(state, self.run_id, last_acceleration_seq, now)
+                if acceleration is not None:
+                    last_acceleration_seq = acceleration["sample_seq"]
+                    torques["acceleration"] = acceleration
+                    torques_updated = True
                 standard = {name: getattr(state, name) for name in standard_fields}
+                standard["joint_acceleration"] = acceleration
                 if self.source == "teleop":
                     # 逐帧保存新提交的力矩页，避免界面只发布最新样本时漏记。
                     standard["compensated_joint_torque"] = measured

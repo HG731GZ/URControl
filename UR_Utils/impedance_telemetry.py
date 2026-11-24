@@ -1,6 +1,6 @@
-"""阻抗寄存器协议 v3，诊断页与六轴补偿实测力矩页独立提交。"""
+"""阻抗寄存器协议 v4，诊断页独立提交，测量页交替发布力矩与加速度。"""
 
-VERSION = 3
+VERSION = 4
 
 PHASES = {1: "ARMED", 2: "RAMPING", 3: "RUNNING", 4: "ENDING", 5: "STOPPING"}
 FAULTS = {
@@ -79,11 +79,26 @@ def decode(state, run_id):
 def decode_compensated_torque(state, run_id, last_sequence, received_monotonic):
     """从一份 RTDE 帧解出已提交的六轴实测值和来源身份。"""
     sequence = state.output_int_register_46
-    if state.output_int_register_24 != run_id or state.runtime_state != 2 or sequence <= last_sequence:
+    if (state.output_int_register_24 != run_id or state.runtime_state != 2
+            or sequence <= last_sequence or sequence % 2 != 0):
         return None
     return {
         "source": "impedance_get_joint_torques", "run_id": run_id,
         "sample_seq": sequence,
         "robot_timestamp_s": state.timestamp, "received_monotonic_s": received_monotonic,
         "values_nm": [getattr(state, f"output_int_register_{n}") / 1e6 for n in range(26, 32)],
+    }
+
+
+def decode_joint_acceleration(state, run_id, last_sequence, received_monotonic):
+    """解出加速度页，保留控制器原始值的微弧度每平方秒精度。"""
+    sequence = state.output_int_register_46
+    if (state.output_int_register_24 != run_id or state.runtime_state != 2
+            or sequence <= last_sequence or sequence % 2 != 1):
+        return None
+    return {
+        "source": "impedance_get_actual_joint_accelerations", "run_id": run_id,
+        "sample_seq": sequence,
+        "robot_timestamp_s": state.timestamp, "received_monotonic_s": received_monotonic,
+        "values_rad_s2": [getattr(state, f"output_int_register_{n}") / 1e6 for n in range(26, 32)],
     }

@@ -1343,15 +1343,16 @@ class MainWindow(ImpedanceIntegration, QMainWindow):
         fb = self.get_gripper_feedback()
         gripper_values = [float('nan')] * 3 if fb is None else [fb.open, fb.current, fb.position]
         controller = self.rtde_controller
-        torque, teleop_state = None, TeleopState.OFF
+        torque, teleop_state, acceleration = None, TeleopState.OFF, None
         if controller is not None:
             ordinary_following = self.control_source == 'udp' and self.admittance_mode == 'off'
-            torque, teleop_state = controller.get_udp_feedback(
+            torque, teleop_state, acceleration = controller.get_udp_feedback(
                 self.compensated_torque_client, ordinary_following=ordinary_following)
         tau_arm = [float('nan')] * 6 if torque is None else torque
+        qdd_arm = [float('nan')] * 6 if acceleration is None else acceleration
         self.udp_client.queue_send_to(
             (UDP_REMOTE_IP, UDP_REMOTE_PORT), state.q_actual, UDPControlMode.OFF,
-            gripper_values, state.qd_actual, tau_arm, teleop_state, max_age=remaining)
+            gripper_values, state.qd_actual, tau_arm, teleop_state, qdd_arm, max_age=remaining)
 
     def update_robot_view(self):
         command = self.get_udp_snapshot()

@@ -72,18 +72,24 @@ def joint_impedance():
   thread publish():
     local sent = -1
     local torque_seq = 0
+    local measurement_page = 0
     while True:
-      # 提交序号为零时六轴尚未写齐；微牛米定点值占用六个外部整数寄存器。
+      # 两种测量交替使用六个外部整数寄存器，提交号最低位区分页类型。
       write_output_integer_register(46, 0)
       if snap_phase != 5 and snap_fault == 0:
-        local measured = get_joint_torques()
+        if measurement_page == 0:
+          local measured = get_joint_torques()
+        else:
+          local measured = get_actual_joint_accelerations()
+        end
         local j = 0
         while j < 6:
           write_output_integer_register(26+j, floor(measured[j]*1000000+0.5))
           j = j+1
         end
         torque_seq = torque_seq+1
-        write_output_integer_register(46, torque_seq)
+        write_output_integer_register(46, torque_seq*2+measurement_page)
+        measurement_page = 1-measurement_page
       end
       if snap_cycle != sent:
         enter_critical

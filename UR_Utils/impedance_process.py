@@ -102,7 +102,7 @@ class ImpedanceProcess:
         self.run_id = secrets.randbelow(2**30 - 1) + 1
         ctx = mp.get_context("spawn")
         self._status_slot = LatestSnapshot(ctx, 131072)
-        # 力矩单独跨进程交付，避免受 50 Hz 界面状态发布节拍限制。
+        # 力矩与加速度单独跨进程交付，避免受 50 Hz 界面状态发布节拍限制。
         self._torque_slot = LatestSnapshot(ctx, 2048)
         self._torque_sequence = 0
         self._latest_torque = None
@@ -190,8 +190,8 @@ class ImpedanceProcess:
                 self._status["last_error"] = self._stop_reason
             return deepcopy(self._status)
 
-    def get_torque_snapshot(self, kind):
-        """读取本轮命令或实测力矩，各自按首次接收时刻判断是否过期。"""
+    def get_feedback_snapshot(self, kind):
+        """读取本轮力矩或加速度，各自按首次接收时刻判断是否过期。"""
         if self._event.is_set() or not self._process.is_alive():
             return None
         with self._status_lock:
