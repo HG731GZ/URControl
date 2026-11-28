@@ -11,7 +11,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtWidgets import QApplication, QMainWindow
 
-import NetWorkSet
+import udp_settings
 from DataCollector import DataCollector
 from GripperController import GripperController, GRIPPER_SPEED_DEFAULT, GRIPPER_FORCE_DEFAULT
 from HighPreciseTimer import run_periodic
@@ -41,11 +41,11 @@ TCP_JOG_LINEAR_SPEED_M_S = 0.05
 TCP_JOG_ANGULAR_SPEED_RAD_S = 0.5
 CAMERA_RESOLUTION = (1280, 720)
 CAMERA_FPS = 30
-LOCAL_IP = NetWorkSet.get_local_ip()
-UDP_LOCAL_PORT = 5005
-UDP_REMOTE_PORT = 6005
-UDP_REMOTE_IP = '192.168.3.5'
-UDP_FEEDBACK_HZ = 200  # 从端发往主端的状态反馈频率，单位 Hz。
+LOCAL_IP = udp_settings.LOCAL_IP
+UDP_LOCAL_PORT = udp_settings.LOCAL_PORT
+UDP_REMOTE_PORT = udp_settings.REMOTE_PORT
+UDP_REMOTE_IP = udp_settings.REMOTE_IP
+UDP_FEEDBACK_HZ = udp_settings.FEEDBACK_HZ  # 从端发往主端的状态反馈频率，单位 Hz。
 UDP_COMMAND_TIMEOUT_S = admittance_config.MASTER_FRAME_TIMEOUT_S
 ROBOT_STATE_TIMEOUT_S = 0.5
 ROBOT_MODE_RUNNING = 7
@@ -92,6 +92,10 @@ class MainWindow(ImpedanceIntegration, QMainWindow):
         self.rtde_controller = None
         self.torque_client = None
         self.compensated_torque_client = None
+        self._udp_snapshot_lock = threading.Lock()
+        self._udp_samples_enabled = False
+        self._udp_link_notice = None
+        self._udp_follow_event_seq = 0
         self._udp_feedback_thread = None
         self._udp_feedback_stop = threading.Event()
         self.gripper = None
@@ -150,8 +154,13 @@ class MainWindow(ImpedanceIntegration, QMainWindow):
     def initialize_devices(self):
         if UDP_FEEDBACK_HZ <= 0 or not np.isfinite(UDP_FEEDBACK_HZ):
             raise ValueError('UDP_FEEDBACK_HZ 必须为有限正数')
-        self.udp_client = URUDPClient(bind_host='0.0.0.0', bind_port=UDP_LOCAL_PORT)
+        self.udp_client = URUDPClient(bind_host=udp_settings.LOCAL_IP, bind_port=UDP_LOCAL_PORT,
+                                      peer=(UDP_REMOTE_IP, UDP_REMOTE_PORT))
         self.udp_client.start()
+        self._udp_feedback_thread = threading.Thread(
+            name='UDPFeedbackTimer', target=run_periodic, daemon=True,
+            args=(UDP_FEEDBACK_HZ, self._udp_feedback_stop, self.send_udp_feedback))
+        self._udp_feedback_thread.start()
         self.camera_1 = Camera('d405', resolution=CAMERA_RESOLUTION, fps=CAMERA_FPS, rotation=180)
         self.camera_2 = Camera('d435i', resolution=(640, 480), fps=CAMERA_FPS, rotation=90)
 
@@ -380,21 +389,15 @@ class MainWindow(ImpedanceIntegration, QMainWindow):
                 self.append_message(f'夹爪未连接，继续使用机械臂：{exc}')
         self.update_connection_label()
         self.update_robot_status()
-        self._udp_feedback_stop.clear()
-        self._udp_feedback_thread = threading.Thread(
-            name='UDPFeedbackTimer', target=run_periodic, daemon=True,
-            args=(UDP_FEEDBACK_HZ, self._udp_feedback_stop, self.send_udp_feedback))
-        self._udp_feedback_thread.start()
+        with self._udp_snapshot_lock:
+            self._udp_samples_enabled = True
 
     def disconnect_robot(self):
         if self.defer_until_admittance_stopped(self.disconnect_robot):
             return False
+        with self._udp_snapshot_lock:
+            self._udp_samples_enabled = False
         self.stop_control()
-        if self._udp_feedback_thread is not None:
-            self._udp_feedback_stop.set()
-            self._udp_feedback_thread.join()
-            self._udp_feedback_thread = None
-            self.udp_client.discard_pending_feedback()
         if self._telemetry_recorder is not None:
             self._telemetry_recorder.close()
             self.update_telemetry_status()
@@ -515,6 +518,14 @@ class MainWindow(ImpedanceIntegration, QMainWindow):
         return command, source_seq
 
     def update_robot_status(self):
+        udp = self.udp_client.get_monitor_snapshot()
+        link_notice = (udp['link_event_count'], udp['slave_session'], udp['send_last_error'])
+        if link_notice != self._udp_link_notice:
+            self._udp_link_notice = link_notice
+            self.append_message(
+                f"UDP {udp['link_state']}：主端会话={udp['master_session']}，"
+                f"从端会话={udp['slave_session']}，事件={udp['link_reason']}，"
+                f"发送错误={udp['send_last_error']}")
         state, connection_error = self.get_robot_snapshot_and_error()
         if connection_error != self._robot_connection_error:
             self._robot_connection_error = connection_error
@@ -919,6 +930,7 @@ class MainWindow(ImpedanceIntegration, QMainWindow):
         if state is None or np.max(np.abs(state.qd_actual)) > parameters['STATIONARY_MAX_QD_RAD_S']:
             self.append_message('导纳偏置采样前请保持机器人静止、无外部接触')
             return
+        self._udp_follow_event_seq = self.udp_client.get_monitor_snapshot()['control_event_seq']
         command, source_seq = self.get_udp_snapshot_and_count(parameters['MASTER_FRAME_TIMEOUT_S'])
         if reference_source == 'teleop':
             if command is None or command.mode != UDPControlMode.JOINT_TRACK:
@@ -992,6 +1004,7 @@ class MainWindow(ImpedanceIntegration, QMainWindow):
             'reference_source': reference_source, 'space': space, 'config': deepcopy(parameters),
             'q_master': command.q_arm if reference_source == 'teleop' else None,
             'source_seq': source_seq if reference_source == 'teleop' else None,
+            'udp_identity': (command.master_session, command.cmd_seq) if reference_source == 'teleop' else (0, 0),
         })
 
     def dispatch_admittance_worker(self, operation, start_kwargs=None):
@@ -1240,6 +1253,7 @@ class MainWindow(ImpedanceIntegration, QMainWindow):
             return
         if not self.on_stop_control():
             return
+        self._udp_follow_event_seq = self.udp_client.get_monitor_snapshot()['control_event_seq']
         command = self.get_udp_snapshot()
         if command is None or command.mode != UDPControlMode.JOINT_TRACK:
             self.append_message('没有有效的 UDP 关节跟踪指令')
@@ -1255,6 +1269,11 @@ class MainWindow(ImpedanceIntegration, QMainWindow):
     def update_udp_control(self):
         if self.control_source != 'udp':
             return
+        udp = self.udp_client.get_monitor_snapshot()
+        if udp['control_event_seq'] != self._udp_follow_event_seq:
+            self.on_stop_control()
+            self.append_message('UDP 跟随已停止：' + str(udp['control_event_reason']))
+            return
         timeout_s = (UDP_COMMAND_TIMEOUT_S if self.admittance_mode == 'off' else
                      self._admittance_parameters['MASTER_FRAME_TIMEOUT_S'])
         command, source_seq = self.get_udp_snapshot_and_count(timeout_s)
@@ -1263,7 +1282,8 @@ class MainWindow(ImpedanceIntegration, QMainWindow):
             self.append_message('UDP 跟随已停止：关闭、断流或不支持的控制模式')
             return
         try:
-            self.rtde_controller.track_joint(command.q_arm, dq_max=1, source_seq=source_seq)
+            self.rtde_controller.track_joint(command.q_arm, dq_max=1, source_seq=source_seq,
+                                             udp_identity=(command.master_session, command.cmd_seq))
         except (RuntimeError, OSError, RTDEException, ValueError) as exc:
             self.on_stop_control()
             self.append_message(f'UDP 目标提交失败：{exc}')
@@ -1332,27 +1352,36 @@ class MainWindow(ImpedanceIntegration, QMainWindow):
         return self.torque_client if SHOW_RAW_JOINT_TORQUES else self.compensated_torque_client
 
     def send_udp_feedback(self):
-        """按发送节拍读取后台缓存，位置与速度来自同一机器人状态帧。"""
-        snapshot = self.realtime_client.get_snapshot()
-        state = snapshot['state']
-        if state is None or snapshot['error'] is not None:
-            return
-        remaining = ROBOT_STATE_TIMEOUT_S - (time.monotonic() - snapshot['received_monotonic'])
-        if remaining <= 0:
-            return
-        fb = self.get_gripper_feedback()
+        """缓存快照与设备断开互斥；断开期间仍继续本地反馈节拍。"""
+        with self._udp_snapshot_lock:
+            self._queue_udp_feedback()
+
+    def _queue_udp_feedback(self):
+        """连接驱动前也按 200 Hz 发包；缺测量用 NaN 和零时刻明确标识。"""
+        realtime = self.realtime_client if self._udp_samples_enabled else None
+        snapshot = None if realtime is None else realtime.get_snapshot()
+        valid = (snapshot is not None and snapshot['state'] is not None and snapshot['error'] is None
+                 and time.monotonic() - snapshot['received_monotonic'] <= ROBOT_STATE_TIMEOUT_S)
+        state = snapshot['state'] if valid else None
+        q = [float('nan')] * 6 if state is None else list(state.q_actual)
+        dq = [float('nan')] * 6 if state is None else list(state.qd_actual)
+        t_qdq = snapshot['t_qdq_us'] if valid else 0
+        fb = self.get_gripper_feedback() if self._udp_samples_enabled else None
         gripper_values = [float('nan')] * 3 if fb is None else [fb.open, fb.current, fb.position]
-        controller = self.rtde_controller
+        controller = self.rtde_controller if self._udp_samples_enabled else None
         torque, teleop_state, acceleration = None, TeleopState.OFF, None
+        t_tau = t_ddq = 0
+        event = None
         if controller is not None:
             ordinary_following = self.control_source == 'udp' and self.admittance_mode == 'off'
-            torque, teleop_state, acceleration = controller.get_udp_feedback(
+            torque, teleop_state, acceleration, t_tau, t_ddq, event = controller.get_udp_feedback(
                 self.compensated_torque_client, ordinary_following=ordinary_following)
+        self.udp_client.note_applied(event)
         tau_arm = [float('nan')] * 6 if torque is None else torque
         qdd_arm = [float('nan')] * 6 if acceleration is None else acceleration
         self.udp_client.queue_send_to(
-            (UDP_REMOTE_IP, UDP_REMOTE_PORT), state.q_actual, UDPControlMode.OFF,
-            gripper_values, state.qd_actual, tau_arm, teleop_state, qdd_arm, max_age=remaining)
+            (UDP_REMOTE_IP, UDP_REMOTE_PORT), q, UDPControlMode.OFF,
+            gripper_values, dq, tau_arm, teleop_state, qdd_arm, sample_times=(t_qdq, t_tau, t_ddq))
 
     def update_robot_view(self):
         command = self.get_udp_snapshot()
@@ -1679,6 +1708,8 @@ class MainWindow(ImpedanceIntegration, QMainWindow):
         if self.impedance_window is not None:
             self.impedance_window.hide()
             self.impedance_window.deleteLater()
+        self._udp_feedback_stop.set()
+        self._udp_feedback_thread.join()
         self.udp_client.stop()
         for camera in (self.camera_1, self.camera_2):
             if camera is not None:

@@ -1,47 +1,24 @@
-"""
-URUdpClient.py — UDP通信客户端，用于接收/发送外部控制信号。
-
-通讯协议（定长数据包，大端字节序，无填充）：
-    offset  size  type        含义
-    ------  ----  ----        ----
-    0        4    uint8[4]   帧头 (0x55 0xAA 0x55 0xAA)
-    4       48    6×float64  机械臂广义坐标（单位取决模式）
-                             - JOINT_TRACK / JOINT_DELTA: 关节角 q[0..5] (rad)
-                             - TCP_DELTA: 末端位姿增量 [dx, dy, dz, drx, dry, drz] (m, rad)
-                             - TCP_VEL:  末端速度 [vx, vy, vz, wx, wy, wz] (m/s, rad/s)
-    52       1    uint8      控制模式（0=OFF, 1=JOINT_TRACK, 2=JOINT_DELTA, 3=TCP_DELTA, 4=TCP_VEL）
-    53      24    3×float64  夹钳广义坐标
-    77      48    6×float64  主端六轴速度（J1～J6）
-    125      4    uint32     CRC32 (IEEE 802.3)，校验范围 offset 4 ~ 124
-    129       4    uint8[4]   帧尾 (0x0D 0x0A 0x0D 0x0A)
-    主端指令总长度为 133 字节。从端反馈共 230 字节，偏移 77 起为六轴实际速度
-    （rad/s），125 起为六轴关节力矩（Nm），173 为遥操作状态，174 起为六轴实际加速度（rad/s²），222 起为数据段 CRC32，226 起为帧尾。
-    非阻抗控制或样本无效时，加速度六轴均为 NaN。
-"""
+"""异步 UDP v2：独立收包、周期反馈、同帧回显以及逐包事件；布局见 UDP反馈协议.md。"""
 
 from __future__ import annotations
 
-import binascii
+import zlib
+import errno
 from copy import deepcopy
 from enum import IntEnum
 import logging
 import math
-import platform
 import select
 import socket
 import struct
-import sys
 import threading
 import time
 from typing import Optional, Tuple, List
 
 
+from UR_Utils.udp_events import monotonic_us, new_session, record
+
 logger = logging.getLogger(__name__)
-
-# Linux x86-64 和 arm64 的 SO_TIMESTAMPNS_NEW 返回两个有符号 64 位整数。
-_TIMESTAMPNS_NEW = 64 if sys.platform == "linux" and platform.machine() in ("x86_64", "aarch64") else None
-_KERNEL_TIMESPEC = struct.Struct("=qq")
-
 
 class TeleopState(IntEnum):
     """从端反馈中的遥操作状态。"""
@@ -86,7 +63,7 @@ class UDPControlMode:
 class UDPCommand:
     """解析后的一帧控制指令。"""
 
-    __slots__ = ("q_arm", "mode", "q_gripper", "qd_arm", "raw_packet", "recv_time")
+    __slots__ = ("q_arm", "mode", "q_gripper", "qd_arm", "raw_packet", "recv_time", "master_session", "cmd_seq", "t1_us", "t2_us", "kind")
 
     def __init__(
         self,
@@ -95,7 +72,11 @@ class UDPCommand:
         q_gripper: List[float],
         qd_arm: List[float],
         raw_packet: Optional[bytes] = None,
+        *, master_session=0, cmd_seq=0, t1_us=0, kind=0,
     ):
+        self.master_session = master_session
+        self.cmd_seq, self.t1_us = cmd_seq, t1_us
+        self.kind, self.t2_us = kind, 0
         self.q_arm = q_arm
         self.qd_arm = qd_arm
         self.mode = mode
@@ -157,11 +138,12 @@ class URUDPClient:
     DATA_SIZE = struct.calcsize(DATA_FORMAT)  # 121
 
     DATA_OFFSET = HEADER_SIZE                 # 4
-    CRC_OFFSET = DATA_OFFSET + DATA_SIZE      # 125
-    FOOTER_OFFSET = CRC_OFFSET + CRC_SIZE     # 129
-    PACKET_SIZE = FOOTER_OFFSET + FOOTER_SIZE # 133
+    COMMAND_EXTENSION = struct.Struct(">BB3Q")
+    FEEDBACK_EXTENSION = struct.Struct(">BB13Q")
+    CRC_OFFSET = DATA_OFFSET + DATA_SIZE + COMMAND_EXTENSION.size  # 151
+    FOOTER_OFFSET = CRC_OFFSET + CRC_SIZE     # 155
+    PACKET_SIZE = FOOTER_OFFSET + FOOTER_SIZE # 159
     RECEIVE_DEADLINE_S = 0.25
-    SEND_RETRY_INTERVAL = 1.0
     ERROR_LOG_INTERVAL = 5.0
 
     def __init__(
@@ -170,7 +152,27 @@ class URUDPClient:
         bind_port: int = 5005,
         recv_timeout: float = 0.1,
         send_interval: float = 0.0,
+        *, kind=0, peer=None,
     ):
+        if kind not in (0, 1):
+            raise ValueError("UDP 模式须为 0 或 1")
+        self.kind = kind
+        self.peer = peer
+        self.slave_session = 0
+        self._master_session = 0
+        self._retired_master_sessions = set()
+        self._last_progress_us = 0
+        self._link_state = "waiting"
+        self._link_event_count = 0
+        self._link_reason = None
+        self._publication_restart_reason = None
+        self._echo = (0, 0, 0, 0)
+        self._fb_seq = 0
+        self._highest_cmd_seq = 0
+        self._packet_counts = {}
+        self._seen = {}
+        self._seen_max = {}
+        self._applied = (0, 0, 0)
         self.bind_host = bind_host
         self.bind_port = bind_port
         self.recv_timeout = recv_timeout
@@ -182,8 +184,6 @@ class URUDPClient:
         self._stop_event = threading.Event()
 
         self._cond = threading.Condition()
-        self._receive_trace = None
-        self._kernel_timestamps = False
         self._latest_command: Optional[UDPCommand] = None
         self._frame_count: int = 0
         self._published_frame_count = 0
@@ -216,7 +216,6 @@ class URUDPClient:
                 and self._writer_thread.is_alive()):
             return
         self.stop()
-
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -225,8 +224,24 @@ class URUDPClient:
         except OSError:
             sock.close()
             raise
+        with self._cond:
+            self.slave_session = new_session()
+            self._link_state = "waiting"
+            self._last_progress_us = 0
+            self._publication_restart_reason = None
+            self._last_error = None
+            self._last_send_error = None
+        record("slave_session_started", slave_session=self.slave_session, kind=self.kind,
+               t_event_us=monotonic_us(), reason="socket_start")
+        self._echo = (0, 0, 0, 0)
+        self._fb_seq = 0
+        self._highest_cmd_seq = 0
+        self._packet_counts = {}
+        self._seen = {}
+        self._seen_max = {}
+        self._latest_command = None
+        self._applied = (0, 0, 0)
         self._sock = sock
-        self._kernel_timestamps = False
 
         self._stop_event.clear()
         self._reader_thread = threading.Thread(
@@ -261,9 +276,11 @@ class URUDPClient:
         if sock is not None:
             sock.close()
             self._sock = None
+            with self._cond:
+                self._link_event_locked("stopped", "socket_stop", monotonic_us())
 
     def restart(self) -> None:
-        """重新启动：先 stop 再 start。"""
+        """重新创建本端发布会话；对端可依据新会话独立重置反馈序号。"""
         self.stop()
 
         with self._cond:
@@ -301,12 +318,19 @@ class URUDPClient:
             raise ValueError("UDP 帧头或帧尾错误")
         data = packet[self.DATA_OFFSET:self.CRC_OFFSET]
         expected = struct.unpack("!I", packet[self.CRC_OFFSET:self.FOOTER_OFFSET])[0]
-        if expected != binascii.crc32(data) & 0xFFFFFFFF:
+        if expected != zlib.crc32(data) & 0xFFFFFFFF:
             raise ValueError("UDP CRC 校验失败")
-        q_arm, mode, q_gripper, qd_arm = self._parse_data(data)
+        version, kind, session, seq, t1 = self.COMMAND_EXTENSION.unpack(data[self.DATA_SIZE:])
+        if version != 2 or kind not in (0, 1) or session == 0 or seq == 0:
+            raise ValueError("UDP v2 版本、模式或会话/序号无效")
+        payload = data[:self.DATA_SIZE]
+        if kind == 1 and payload != bytes(self.DATA_SIZE):
+            raise ValueError("网络诊断业务载荷必须全零")
+        q_arm, mode, q_gripper, qd_arm = self._parse_data(payload)
         if mode not in UDPControlMode._NAMES or not all(math.isfinite(v) for v in (*q_arm, *q_gripper, *qd_arm)):
             raise ValueError("UDP 模式未知或目标包含非有限数")
-        return UDPCommand(q_arm, mode, q_gripper, qd_arm, raw_packet=packet)
+        return UDPCommand(q_arm, mode, q_gripper, qd_arm, raw_packet=packet,
+                          master_session=session, cmd_seq=seq, t1_us=t1, kind=kind)
 
     def _reader_loop(self) -> None:
         """读端独立采用非阻塞操作，发送端沿用原 socket 的超时。"""
@@ -316,25 +340,13 @@ class URUDPClient:
                 self._receive_batches(reader)
         except OSError as exc:
             if not self._stop_event.is_set():
-                self._control_event("UDP 接收失败：" + str(exc))
-                with self._cond:
-                    self._last_error = exc
-                    self._cond.notify_all()
+                self._receive_network_error(exc)
 
     def _read_datagram(self, sock):
-        """记录用户态读取时刻，Linux 遥操作诊断还记录内核时刻，两套时钟分别保存。"""
-        if not self._kernel_timestamps or self._receive_trace is None:
-            packet, addr = sock.recvfrom(self.PACKET_SIZE + 1)
-            return packet, addr, time.monotonic(), None, None
-        packet, ancillary, _, addr = sock.recvmsg(self.PACKET_SIZE + 1, socket.CMSG_SPACE(_KERNEL_TIMESPEC.size))
-        received, read_unix_ns = time.monotonic(), time.time_ns()
-        kernel_unix_ns = None
-        for level, kind, data in ancillary:
-            if level == socket.SOL_SOCKET and kind == _TIMESTAMPNS_NEW:
-                seconds, nanoseconds = _KERNEL_TIMESPEC.unpack(data)
-                kernel_unix_ns = seconds * 1_000_000_000 + nanoseconds
-                break
-        return packet, addr, received, read_unix_ns, kernel_unix_ns
+        """在套接字读取返回后立即采集用户态单调时刻。"""
+        packet, addr = sock.recvfrom(self.PACKET_SIZE + 1)
+        t2_us = monotonic_us()
+        return packet, addr, t2_us
 
     def _receive_batches(self, sock) -> None:
         """有界排空后只发布最新位置，线程停顿后丢弃残留报文至排空。"""
@@ -344,6 +356,7 @@ class URUDPClient:
         pending = None
         while not self._stop_event.is_set():
             now = time.monotonic()
+            self._check_link_deadline()
             # 空闲等待最多 100 ms；超出通信期限的调度停顿不能刷新旧包年龄。
             if now - previous_poll > self.RECEIVE_DEADLINE_S:
                 discard = True
@@ -361,26 +374,34 @@ class URUDPClient:
             drained = False
             for _ in range(256):
                 try:
-                    packet, addr, received, read_unix_ns, kernel_unix_ns = self._read_datagram(sock)
+                    packet, addr, t2_us = self._read_datagram(sock)
+                    received = t2_us / 1_000_000
                 except BlockingIOError:
                     drained = True
+                    break
+                except OSError as exc:
+                    if exc.errno not in (errno.ENETDOWN, errno.ENETUNREACH, errno.EHOSTUNREACH, errno.ECONNREFUSED):
+                        raise
+                    self._receive_network_error(exc)
+                    pending = None
+                    drained = True
+                    self._stop_event.wait(self.recv_timeout)
                     break
                 try:
                     cmd = self._decode_packet(packet)
                 except ValueError as exc:
-                    pending = None
-                    self._control_event(str(exc))
                     with self._cond:
-                        self._last_error = exc
-                        self._cond.notify_all()
+                        self._packet_counts["rejected"] = self._packet_counts.get("rejected", 0) + 1
+                    record("udp_rejected", t2_us=t2_us, reason=str(exc), address=addr, size=len(packet))
                 else:
+                    cmd.t2_us = t2_us
+                    if not self._accept_received(cmd, addr, discard) or self.kind == 1:
+                        if time.monotonic() >= deadline:
+                            break
+                        continue
                     with self._cond:
                         self._frame_count += 1
                         seq = self._frame_count
-                        if self._receive_trace is not None:
-                            self._receive_trace.record("udp_receive", dict(
-                                source_seq=seq, source_monotonic_s=received, q_source=cmd.q_arm,
-                                read_unix_ns=read_unix_ns, kernel_rx_unix_ns=kernel_unix_ns))
                     if cmd.mode != UDPControlMode.JOINT_TRACK:
                         self._control_event("主端退出关节跟踪模式：" + UDPControlMode.cn_name(cmd.mode))
                     if not discard:
@@ -398,7 +419,7 @@ class URUDPClient:
                 with self._cond:
                     self._last_error = RuntimeError("UDP 排空过程超出通信期限")
             if drained:
-                if pending is not None and not discard:
+                if pending is not None and not discard and pending[0].master_session == self._master_session:
                     cmd, addr, received, seq = pending
                     with self._cond:
                         self._latest_command = cmd
@@ -408,9 +429,8 @@ class URUDPClient:
                         self._last_received_monotonic = received
                         self._sender_address = addr
                         self._cond.notify_all()
-                        if self._receive_trace is not None:
-                            self._receive_trace.record("udp_publish", dict(
-                                source_seq=seq, published_monotonic_s=time.monotonic()))
+                        record("udp_publish", master_session=cmd.master_session, cmd_seq=cmd.cmd_seq,
+                               source_seq=seq, t2_us=cmd.t2_us, t_publish_us=monotonic_us())
                 pending = None
                 backlog_since = None
                 discard = False
@@ -424,6 +444,100 @@ class URUDPClient:
                     with self._cond:
                         self._last_error = RuntimeError("UDP 接收缓冲持续积压")
                 self._stop_event.wait(0.001)
+
+    def _receive_network_error(self, exc):
+        """网络接口故障清除可用目标；后续读操作接收新帧，不重放失败报文。"""
+        with self._cond:
+            self._last_error = exc
+            self._latest_command = None
+            self._echo = (0, 0, 0, 0)
+            if self._link_state != "error":
+                self._publication_restart_reason = "receive_error"
+                self._link_event_locked("error", str(exc), monotonic_us())
+                if self.kind == 0:
+                    self._control_event("UDP 接收失败：" + str(exc))
+            self._cond.notify_all()
+
+    def _link_event_locked(self, state, reason, t_event_us):
+        """在接收状态边界只发布一次事件，界面和日志读取同一状态。"""
+        self._link_state = state
+        self._link_event_count += 1
+        self._link_reason = reason
+        record("udp_link", state=state, reason=reason, t_event_us=t_event_us,
+               master_session=self._master_session, slave_session=self.slave_session)
+
+    def _check_link_deadline(self):
+        """有效新帧超期表示断流；保留序号高水位，重复包不能冒充恢复。"""
+        now_us = monotonic_us()
+        with self._cond:
+            if self._link_state == "online" and now_us - self._last_progress_us > round(self.RECEIVE_DEADLINE_S * 1_000_000):
+                self._latest_command = None
+                self._echo = (0, 0, 0, 0)
+                self._publication_restart_reason = "receive_timeout"
+                self._link_event_locked("timeout", "超过 250 ms 没有有效新帧", now_us)
+                if self.kind == 0:
+                    self._control_event("UDP 主端断流")
+
+    def _accept_received(self, cmd, addr, discard):
+        """自动接纳新主端会话，已退役会话只能计数，不能重新接管目标。"""
+        key = (addr, cmd.kind, cmd.master_session)
+        seen = self._seen.setdefault(key, set())
+        duplicate = cmd.cmd_seq in seen
+        previous_max = self._seen_max.get(key, 0)
+        self._seen_max[key] = max(previous_max, cmd.cmd_seq)
+        seen.add(cmd.cmd_seq)
+        reason = "new"
+        with self._cond:
+            if self.peer is not None and addr != self.peer:
+                reason = "wrong_peer"
+            elif cmd.kind != self.kind:
+                reason = "wrong_kind"
+            elif cmd.master_session in self._retired_master_sessions:
+                reason = "retired_session"
+            else:
+                if cmd.master_session != self._master_session:
+                    previous_session = self._master_session
+                    if previous_session:
+                        self._retired_master_sessions.add(previous_session)
+                    self._master_session = cmd.master_session
+                    self._highest_cmd_seq = 0
+                    self._latest_command = None
+                    self._last_received_monotonic = None
+                    self._applied = (0, 0, 0)
+                    self._echo = (0, 0, 0, 0)
+                    self._link_event_locked("online", "master_session_changed" if previous_session else "master_session_discovered", cmd.t2_us)
+                    record("master_session_changed", previous_master_session=previous_session,
+                           master_session=cmd.master_session, first_cmd_seq=cmd.cmd_seq, t_event_us=cmd.t2_us)
+                    if previous_session and self.kind == 0:
+                        self._control_event("主端 UDP 发布会话已重启")
+                if duplicate:
+                    reason = "duplicate"
+                elif cmd.cmd_seq <= self._highest_cmd_seq:
+                    reason = "out_of_order"
+                else:
+                    self._highest_cmd_seq = cmd.cmd_seq
+                    self._last_progress_us = cmd.t2_us
+                    if not discard:
+                        self._last_error = None
+                    self._echo = (cmd.master_session, cmd.cmd_seq, cmd.t1_us, cmd.t2_us)
+                    if self._link_state != "online":
+                        self._link_event_locked("online", "receive_recovered", cmd.t2_us)
+                    if discard and self.kind == 0:
+                        reason = "backlog_discard"
+            self._packet_counts[reason] = self._packet_counts.get(reason, 0) + 1
+        record("udp_receive", master_session=cmd.master_session,
+               cmd_seq=cmd.cmd_seq, t1_us=cmd.t1_us, t2_us=cmd.t2_us, kind=cmd.kind,
+               disposition=reason, duplicate=duplicate, out_of_order=cmd.cmd_seq < previous_max,
+               q_rad=cmd.q_arm, qd_rad_s=cmd.qd_arm, mode=cmd.mode, address=addr)
+        return reason == "new"
+
+    def note_applied(self, event):
+        """跨进程快照可重复读取，只有更晚的采用事件推进反馈字段。"""
+        if event is None or self.kind != 0:
+            return
+        with self._cond:
+            if event["applied_master_session"] == self._master_session and event["t_apply_us"] > self._applied[2]:
+                self._applied = (event["applied_master_session"], event["applied_cmd_seq"], event["t_apply_us"])
 
     @staticmethod
     def _parse_data(data: bytes) -> Tuple[List[float], int, List[float], List[float]]:
@@ -451,19 +565,6 @@ class URUDPClient:
         with self._cond:
             return self._latest_command, self._published_frame_count
 
-    def set_receive_trace(self, writer):
-        """仅在遥操作记录期间采集所有有效包，包括尚未发布就被覆盖的包。"""
-        with self._cond:
-            enable = writer is not None
-            if _TIMESTAMPNS_NEW is not None and self._sock is not None and enable != self._kernel_timestamps:
-                try:
-                    self._sock.setsockopt(socket.SOL_SOCKET, _TIMESTAMPNS_NEW, int(enable))
-                except OSError as exc:
-                    logger.warning("UDP 内核诊断时间戳切换失败：%s", exc)
-                else:
-                    self._kernel_timestamps = enable
-            self._receive_trace = writer
-
     def wait_joint_target(self, previous_seq, control_event_seq, stop_event, deadline):
         """等待并在同一把锁内取走最新关节目标，首次调用直接读取当前帧。"""
         with self._cond:
@@ -483,7 +584,7 @@ class URUDPClient:
             if self._last_error is not None or cmd is None or cmd.mode != UDPControlMode.JOINT_TRACK:
                 raise ValueError("UDP 模式变化或接收错误")
             return (self._published_frame_count, self._last_received_monotonic,
-                    tuple(cmd.q_arm), tuple(cmd.qd_arm))
+                    tuple(cmd.q_arm), tuple(cmd.qd_arm), (cmd.master_session, cmd.cmd_seq))
 
     def wake_control_waiters(self):
         """让等待新帧的适配器立即检查关闭信号。"""
@@ -506,6 +607,12 @@ class URUDPClient:
                 "send_last_error": None if self._last_send_error is None else str(self._last_send_error),
                 "send_count": self._send_count,
                 "send_error_count": self._send_error_count,
+                "packet_counts": dict(self._packet_counts),
+                "kind": self.kind,
+                "slave_session": self.slave_session, "master_session": self._master_session,
+                "link_state": self._link_state, "link_event_count": self._link_event_count,
+                "link_reason": self._link_reason, "latest_cmd_seq": self._highest_cmd_seq,
+                "fb_seq": self._fb_seq,
             }
 
     def wait_next(
@@ -558,19 +665,29 @@ class URUDPClient:
     # ------------------------------------------------------------------
 
     @classmethod
-    def pack_command(cls, q_arm, mode, q_gripper, qd_arm):
-        """将人工主端的同帧位置和速度打包为 133 字节指令。"""
+    def pack_command(cls, q_arm, mode, q_gripper, qd_arm, *, master_session, cmd_seq, t1_us, kind=0):
+        """将人工主端的同帧位置和速度打包为 159 字节 v2 指令。"""
         data = struct.pack(cls.DATA_FORMAT, *q_arm, mode, *q_gripper, *qd_arm)
-        return cls._wrap_data(data)
+        if kind == 1:
+            data = bytes(cls.DATA_SIZE)
+        return cls._wrap_data(data + cls.COMMAND_EXTENSION.pack(2, kind, master_session, cmd_seq, t1_us))
 
     @classmethod
     def _wrap_data(cls, data):
-        crc = struct.pack("!I", binascii.crc32(data) & 0xFFFFFFFF)
+        crc = struct.pack("!I", zlib.crc32(data) & 0xFFFFFFFF)
         return cls.HEADER + data + crc + cls.FOOTER
 
     @classmethod
-    def pack(cls, q_arm, mode, q_gripper, qd_arm, tau_arm, teleop_state, qdd_arm) -> bytes:
-        """将实际关节角、夹爪、轴速度、关节力矩、遥操作状态及实际加速度打包为 230 字节反馈。"""
+    def pack(cls, q_arm, mode, q_gripper, qd_arm, tau_arm, teleop_state, qdd_arm, *, extension):
+        """离线编码完整 v2 反馈；在线发送由发送线程临近 sendto 取 t3。"""
+        data = cls.pack_payload(q_arm, mode, q_gripper, qd_arm, tau_arm, teleop_state, qdd_arm)
+        if extension[1] == 1:
+            data = bytes(struct.calcsize(cls.FEEDBACK_FORMAT))
+        return cls._wrap_data(data + cls.FEEDBACK_EXTENSION.pack(*extension))
+
+    @classmethod
+    def pack_payload(cls, q_arm, mode, q_gripper, qd_arm, tau_arm, teleop_state, qdd_arm) -> bytes:
+        """将实际关节角、夹爪、轴速度、关节力矩、遥操作状态及实际加速度打包为 218 字节原业务载荷。"""
         if (len(q_arm), len(qd_arm), len(tau_arm), len(qdd_arm)) != (6, 6, 6, 6):
             raise ValueError("关节角、关节速度、关节力矩和关节加速度各需六轴数据")
         if len(q_gripper) != 3:
@@ -579,7 +696,7 @@ class URUDPClient:
             raise ValueError(f"mode 必须在 0-255 之间，实际 {mode}")
 
         data = struct.pack(cls.FEEDBACK_FORMAT, *q_arm, mode, *q_gripper, *qd_arm, *tau_arm, TeleopState(teleop_state), *qdd_arm)
-        return cls._wrap_data(data)
+        return data
 
     def send_to(
         self,
@@ -602,10 +719,10 @@ class URUDPClient:
         q_arm, mode, q_gripper, qd_arm, tau_arm, teleop_state, qdd_arm:
             控制数据，见 pack()。
         """
-        packet = self.pack(q_arm, mode, q_gripper, qd_arm, tau_arm, teleop_state, qdd_arm)
+        packet = self.pack_payload(q_arm, mode, q_gripper, qd_arm, tau_arm, teleop_state, qdd_arm)
         return self._send_packet(packet, target)
 
-    def _send_packet(self, packet: bytes, target: Tuple[str, int]) -> bool:
+    def _send_packet(self, payload: bytes, target: Tuple[str, int], sample_times=(0, 0, 0)) -> bool:
         with self._send_lock:
             delay = self.send_interval - (time.monotonic() - self._last_send_time)
             if self._stop_event.wait(max(0.0, delay)):
@@ -613,20 +730,47 @@ class URUDPClient:
             sock = self._sock
             if sock is None:
                 return False
+            with self._cond:
+                restart_reason = self._publication_restart_reason
+                if restart_reason is not None:
+                    self.slave_session = new_session()
+                    self._fb_seq = 0
+                    self._publication_restart_reason = None
+                    record("slave_session_started", slave_session=self.slave_session, kind=self.kind,
+                           t_event_us=monotonic_us(), reason=restart_reason)
+                echo = self._echo
+                applied = self._applied if self.kind == 0 else (0, 0, 0)
+                self._fb_seq += 1
+                slave_session, fb_seq = self.slave_session, self._fb_seq
+            if self.kind == 1:
+                payload = bytes(struct.calcsize(self.FEEDBACK_FORMAT))
+                sample_times = (0, 0, 0)
+            # 快照已冻结；只剩扩展打包和 CRC，不能把入队时刻当作发送时刻。
+            t3_us = monotonic_us()
+            extension = (2, self.kind, slave_session, fb_seq, *echo, t3_us, *applied, *sample_times)
+            packet = self._wrap_data(payload + self.FEEDBACK_EXTENSION.pack(*extension))
             try:
                 sock.sendto(packet, target)
             except OSError as exc:
+                record("udp_send", extension=extension, success=False, error=str(exc))
                 if not self._stop_event.is_set():
                     now = time.monotonic()
                     with self._cond:
+                        if self._last_send_error is None:
+                            self._publication_restart_reason = "send_error"
+                            record("udp_send_error", error=str(exc), t_event_us=monotonic_us())
                         self._last_send_error = exc
                         self._send_error_count += 1
                     if now - self._last_send_error_logged >= self.ERROR_LOG_INTERVAL:
                         logger.warning("UDP 反馈发送失败，等待后续反馈重试 (%s): %s", target, exc)
                         self._last_send_error_logged = now
                 return False
+            record("udp_send", extension=extension, success=True, payload_hex=payload.hex())
             self._last_send_time = time.monotonic()
             with self._cond:
+                if self._last_send_error is not None:
+                    record("udp_send_recovered", slave_session=slave_session, fb_seq=fb_seq,
+                           t_event_us=monotonic_us())
                 self._last_send_error = None
                 self._send_count += 1
             return True
@@ -635,14 +779,14 @@ class URUDPClient:
         self, target: Tuple[str, int], q_arm: List[float], mode: int,
         q_gripper: List[float], qd_arm: List[float], tau_arm: List[float], teleop_state: TeleopState,
         qdd_arm: List[float],
-        *, max_age: float = 0.5,
+        *, max_age: float = 0.5, sample_times=(0, 0, 0),
     ) -> bool:
         """提交最新反馈；等待超过 max_age 秒则丢弃。True 不代表远端已收到。"""
-        packet = self.pack(q_arm, mode, q_gripper, qd_arm, tau_arm, teleop_state, qdd_arm)
+        packet = self.pack_payload(q_arm, mode, q_gripper, qd_arm, tau_arm, teleop_state, qdd_arm)
         with self._send_cond:
             if self._sock is None or self._stop_event.is_set():
                 return False
-            self._pending_send = (packet, target, time.monotonic() + max_age)
+            self._pending_send = (packet, target, time.monotonic() + max_age, sample_times)
             self._send_cond.notify()
         return True
 
@@ -659,15 +803,15 @@ class URUDPClient:
                     lambda: self._pending_send is not None or self._stop_event.is_set())
             if self._stop_event.wait(max(0.0, next_attempt - time.monotonic())):
                 break
-            # 等待退避结束后再取最新帧，期间的旧反馈已被覆盖。
+            # 按原本地节拍取最新反馈，不对失败报文自动重发。
             with self._send_cond:
                 if self._stop_event.is_set():
                     break
                 pending, self._pending_send = self._pending_send, None
             if pending is None:
                 continue
-            packet, target, deadline = pending
+            packet, target, deadline, sample_times = pending
             if time.monotonic() > deadline:
                 continue
-            sent = self._send_packet(packet, target)
-            next_attempt = time.monotonic() + (self.send_interval if sent else self.SEND_RETRY_INTERVAL)
+            self._send_packet(packet, target, sample_times)
+            next_attempt = time.monotonic() + self.send_interval

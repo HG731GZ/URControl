@@ -47,7 +47,6 @@ class UDPImpedanceSource:
 
     def start(self):
         self.trace = RecordWriter(self.backend.directory / "source_timing.jsonl")
-        self.client.set_receive_trace(self.trace)
         self.thread.start()
 
     def close(self):
@@ -63,7 +62,6 @@ class UDPImpedanceSource:
         except Exception as exc:
             self.backend.request_stop("UDP 目标异常：" + str(exc))
         finally:
-            self.client.set_receive_trace(None)
             result = self.trace.finish()
             (self.backend.directory / "source_timing_summary.json").write_text(
                 json.dumps(result, ensure_ascii=False, indent=2))
@@ -78,12 +76,12 @@ class UDPImpedanceSource:
             target = self.client.wait_joint_target(previous_seq, self.control_event_seq, self.stop_event, deadline)
             if target is None:
                 return
-            previous_seq, received, q, qd = target
+            previous_seq, received, q, qd, identity = target
             if time.monotonic() >= received + timeout or (deadline is not None and received > deadline):
                 self.backend.request_stop("UDP 目标断流")
                 return
             deadline = received + timeout
-            frame = JointTargetFrame(self.backend.run_id, "teleop", previous_seq, q, received, qd_rad_s=qd)
+            frame = JointTargetFrame(self.backend.run_id, "teleop", previous_seq, q, received, qd_rad_s=qd, udp_identity=identity)
             started = time.monotonic()
             if self.backend.submit_reference(frame):
                 self.trace.record("adapter_submit", dict(

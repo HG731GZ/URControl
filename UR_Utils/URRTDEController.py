@@ -3,6 +3,7 @@ from __future__ import annotations
 from functools import wraps
 from copy import deepcopy
 import time
+from UR_Utils.udp_events import monotonic_us, applied_event
 import threading
 from typing import Optional, Sequence, Literal
 
@@ -141,6 +142,9 @@ class URRTDEController:
         self._thread: Optional[threading.Thread] = None
         self._dq_max = self._parse_dq_max(default_dq_max)
 
+        self._udp_target_identity = (0, 0)
+        self._udp_target_cmd_seq = -1
+        self._udp_applied = None
         self._target_q: Optional[np.ndarray] = None
 
         self._cmd_seq = 0
@@ -372,7 +376,7 @@ class URRTDEController:
 
     def start_admittance(
         self, reference_source: str, space: str, *,
-        q_master: Optional[Sequence[float]] = None, source_seq: Optional[int] = None,
+        q_master: Optional[Sequence[float]] = None, source_seq: Optional[int] = None, udp_identity=(0, 0),
         config: Optional[dict] = None, stop_event: Optional[threading.Event] = None,
         log_sink=None,
     ) -> bool:
@@ -392,7 +396,7 @@ class URRTDEController:
             cfg["JOINT_POSITION_LIMIT_RAD"] = self._joint_position_limit.tolist()
             backend = AdmittanceProcess(
                 self.robot_ip, reference_source, space,
-                q_master=q_master, source_seq=source_seq, config=cfg, stop_event=stop_event,
+                q_master=q_master, source_seq=source_seq, udp_identity=udp_identity, config=cfg, stop_event=stop_event,
                 log_sink=log_sink,
             )
             # 先发布本轮后端，使其他线程在等待生命周期锁时也能保留停止请求。
@@ -623,6 +627,7 @@ class URRTDEController:
         dq_max: Optional[float | Sequence[float]] = None,
         *,
         source_seq: Optional[int] = None,
+        udp_identity=(0, 0),
     ) -> None:
         """
         闭环跟踪输入关节角 q。
@@ -647,7 +652,7 @@ class URRTDEController:
                 raise RuntimeError('阻抗目标必须使用独立接口；停止后不自动恢复 UDP 跟随')
             backend = self._admittance
             if backend is not None and backend.active:
-                backend.submit_reference(q, source_seq=source_seq)
+                backend.submit_reference(q, source_seq=source_seq, udp_identity=udp_identity)
             else:
                 if backend is not None and not self._ordinary_connected and source_seq is not None:
                     raise RuntimeError("本轮导纳已结束，主端新帧不能自动恢复运动，请先调用 start()")
@@ -665,6 +670,8 @@ class URRTDEController:
                     self._dq_max = new_dq_max
                 self._target_reached = False
                 self._cmd_seq += 1
+                self._udp_target_identity = tuple(udp_identity)
+                self._udp_target_cmd_seq = self._cmd_seq
                 self._last_error = None
 
     @_ordinary_motion
@@ -1129,7 +1136,7 @@ class URRTDEController:
                     "robot_timestamp_s": load["robot_timestamp_s"],
                     "sample_time_s": load["sample_time_s"], "run_id": load["run_id"],
                     "model_sample_seq": load["model_sample_seq"], "page_seq": load["page_seq"],
-                    "received_monotonic_s": load["received_monotonic_s"],
+                    "received_monotonic_s": load["received_monotonic_s"], "t_tau_us": load["t_tau_us"],
                 }
             if not self._ordinary_connected:
                 return None
@@ -1138,11 +1145,12 @@ class URRTDEController:
                     return None
                 started = time.monotonic()
                 torques = self.rtde_c.getJointTorques()
+                sample_us = monotonic_us()
                 finished = time.monotonic()
                 return {
                     "source": "rtde_control_getJointTorques", "values_nm": list(torques),
                     "robot_timestamp_s": self.rtde_r.getTimestamp(),
-                    "read_started_monotonic_s": started, "read_finished_monotonic_s": finished,
+                    "read_started_monotonic_s": started, "read_finished_monotonic_s": finished, "t_tau_us": sample_us,
                 }
 
     def get_impedance_command_torques(self):
@@ -1156,27 +1164,36 @@ class URRTDEController:
         return self.get_udp_feedback(compensated_reader, ordinary_following=False)[0]
 
     def get_udp_feedback(self, compensated_reader, *, ordinary_following):
-        """按同一后端状态取得力矩、遥操作状态及阻抗实际加速度。"""
+        """冻结各源当前快照；数值、原更新时间和最近采用共同返回。"""
+        events = [self._udp_applied]
         backend = self._impedance
+        bundle = None
+        status = None
         if backend is not None:
             status = backend.get_status()
-            if status["active"]:
-                teleop = (backend.reference_source == "teleop" and not backend.stop_requested
-                          and status["phase"] in ("RAMPING", "RUNNING", "ENDING"))
-                state = TeleopState.IMPEDANCE if teleop else TeleopState.OFF
-                acceleration = None
-                if not backend.stop_requested and status["phase"] in ("RAMPING", "RUNNING", "ENDING"):
-                    acceleration = backend.get_feedback_snapshot("acceleration")
-                qdd = None if acceleration is None else acceleration["values_rad_s2"]
-                return self.get_impedance_command_torques(), state, qdd
+            bundle = backend.get_feedback_bundle()
+            events.extend((status.get("udp_applied"), bundle["applied"]))
+        if self._admittance is not None:
+            events.append(self._admittance.get_status().get("udp_applied"))
+        event = max((item for item in events if item is not None),
+                    key=lambda item: item["t_apply_us"], default=None)
+        if status is not None and status["active"]:
+            teleop = (backend.reference_source == "teleop" and not backend.stop_requested
+                      and status["phase"] in ("RAMPING", "RUNNING", "ENDING"))
+            state = TeleopState.IMPEDANCE if teleop else TeleopState.OFF
+            torque = bundle["command"]
+            acceleration = bundle["acceleration"] if (not backend.stop_requested and
+                status["phase"] in ("RAMPING", "RUNNING", "ENDING")) else None
+            return (None if torque is None else torque["values_nm"], state,
+                    None if acceleration is None else acceleration["values_rad_s2"],
+                    0 if torque is None else torque["t_tau_us"],
+                    0 if acceleration is None else acceleration["t_ddq_us"], event)
         state = TeleopState.RTDE_FOLLOW if ordinary_following and self._running.is_set() else TeleopState.OFF
-        sample = None
-        if compensated_reader is not None:
-            sample = compensated_reader.get_snapshot()["sample"]
-            if sample is not None and sample["source"] == "impedance_get_joint_torques":
-                sample = None
-        torque = None if sample is None else sample["values_nm"]
-        return torque, state, None
+        sample = None if compensated_reader is None else compensated_reader.get_snapshot()["sample"]
+        if sample is not None and sample["source"] == "impedance_get_joint_torques":
+            sample = None
+        return (None if sample is None else sample["values_nm"], state, None,
+                0 if sample is None else sample["t_tau_us"], 0, event)
 
     def stop_raw_torque_stream(self) -> None:
         """停止关节力矩订阅；下次读取时重新建立连接。"""
@@ -1254,6 +1271,7 @@ class URRTDEController:
                 "target_tcp_dx_max": self._target_tcp_dx_max,
                 "target_tcp_dq_max": self._target_tcp_dq_max,
                 "pending_tcp_cmd_seq": self._pending_tcp_cmd_seq,
+                "udp_identity": self._udp_target_identity if self._udp_target_cmd_seq == self._cmd_seq else (0, 0),
                 "cmd_seq": self._cmd_seq,
                 "loop_count": self._loop_count,
                 "servo_count": self._servo_count,
@@ -1487,7 +1505,7 @@ class URRTDEController:
                         if not self.rtde_c.isJointsWithinSafetyLimits(q_cmd.tolist()):
                             raise RuntimeError(f"RTDE q_cmd safety check failed: {q_cmd.tolist()}")
 
-                    self.rtde_c.servoJ(
+                    accepted = self.rtde_c.servoJ(
                         q_cmd.tolist(),
                         self.servo_speed,
                         self.servo_acceleration,
@@ -1495,6 +1513,13 @@ class URRTDEController:
                         self.lookahead_time,
                         self.gain,
                     )
+
+                if accepted:
+                    identity = snap["udp_identity"]
+                    if identity != (0, 0):
+                        previous = self._udp_applied
+                        if previous is None or identity != (previous["applied_master_session"], previous["applied_cmd_seq"]):
+                            self._udp_applied = applied_event(identity, q_cmd, "rtde_control.servoJ 返回成功")
 
                 with self._lock:
                     self._servo_count += 1
@@ -1651,6 +1676,7 @@ class URRTDEController:
                 "target_tcp_dq_max": self._target_tcp_dq_max,
                 "pending_tcp_cmd_seq": self._pending_tcp_cmd_seq,
                 "pending_tcp_servo_deadline": self._pending_tcp_servo_deadline,
+                "udp_identity": self._udp_target_identity if self._udp_target_cmd_seq == self._cmd_seq else (0, 0),
                 "cmd_seq": self._cmd_seq,
                 "loop_count": self._loop_count,
                 "servo_count": self._servo_count,

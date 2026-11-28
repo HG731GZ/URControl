@@ -103,7 +103,7 @@ class ImpedanceProcess:
         ctx = mp.get_context("spawn")
         self._status_slot = LatestSnapshot(ctx, 131072)
         # 力矩与加速度单独跨进程交付，避免受 50 Hz 界面状态发布节拍限制。
-        self._torque_slot = LatestSnapshot(ctx, 2048)
+        self._torque_slot = LatestSnapshot(ctx, 4096)
         self._torque_sequence = 0
         self._latest_torque = None
         self._reference_slot = LatestSnapshot(ctx, 8192)
@@ -190,18 +190,24 @@ class ImpedanceProcess:
                 self._status["last_error"] = self._stop_reason
             return deepcopy(self._status)
 
-    def get_feedback_snapshot(self, kind):
-        """读取本轮力矩或加速度，各自按首次接收时刻判断是否过期。"""
-        if self._event.is_set() or not self._process.is_alive():
-            return None
+    def get_feedback_bundle(self):
+        """一次读取整份不可变 IPC 快照，数值与其原时刻、采用身份共同交付。"""
         with self._status_lock:
-            self._torque_sequence, torques = self._torque_slot.read(self._torque_sequence)
-            if torques is not None:
-                self._latest_torque = torques
-            sample = None if self._latest_torque is None else self._latest_torque[kind]
-        if sample is None or time.monotonic() - sample["received_monotonic_s"] > self.parameters["FEEDBACK_TIMEOUT_S"]:
-            return None
-        return sample
+            self._torque_sequence, value = self._torque_slot.read(self._torque_sequence)
+            if value is not None:
+                self._latest_torque = value
+            bundle = self._latest_torque
+        if bundle is None:
+            return dict(measured=None, command=None, acceleration=None, applied=None)
+        running = not self._event.is_set() and self._process.is_alive()
+        now = time.monotonic()
+        return {kind: sample if kind == "applied" or (running and sample is not None and
+                now - sample["received_monotonic_s"] <= self.parameters["FEEDBACK_TIMEOUT_S"]) else None
+                for kind, sample in bundle.items()}
+
+    def get_feedback_snapshot(self, kind):
+        """界面单项读取仍沿用原数据源和新鲜度条件。"""
+        return self.get_feedback_bundle()[kind]
 
     def start(self):
         if self._event.is_set():

@@ -15,6 +15,7 @@ class JointTargetFrame:
     end_of_source: bool = False
     trajectory_row_position: float = 0.0
     qd_rad_s: tuple | None = None
+    udp_identity: tuple = (0, 0)
 
     def __post_init__(self):
         object.__setattr__(self, "q_rad", tuple(float(v) for v in self.q_rad))

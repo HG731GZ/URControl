@@ -8,6 +8,7 @@ import math
 import secrets
 import threading
 import time
+from UR_Utils.udp_events import monotonic_us, applied_event
 from typing import Optional, Sequence
 
 import numpy as np
@@ -108,7 +109,7 @@ class URAdmittanceController:
 
     def __init__(
         self, robot_ip: str, reference_source: str, space: str, *,
-        q_master: Optional[Sequence[float]] = None, source_seq: Optional[int] = None,
+        q_master: Optional[Sequence[float]] = None, source_seq: Optional[int] = None, udp_identity=(0, 0),
         config: Optional[dict] = None, stop_event: Optional[threading.Event] = None,
         log_sink=None, owner_service=None,
     ):
@@ -161,6 +162,10 @@ class URAdmittanceController:
         self._scaling_changed = False
         self._active = True
         self._q_master = None
+        self._udp_identity = tuple(udp_identity)
+        self._udp_applied = None
+        self._load_identity = None
+        self._load_timestamp_us = 0
         self._source_seq = None
         self._sent_references = OrderedDict()
         self._heartbeat = 0
@@ -337,7 +342,7 @@ class URAdmittanceController:
             raise ValueError("遥操作导纳必须提供非负整数源帧序号")
         return q_arr.copy(), int(source_seq)
 
-    def submit_reference(self, q: Sequence[float], *, source_seq: int) -> None:
+    def submit_reference(self, q: Sequence[float], *, source_seq: int, udp_identity=(0, 0)) -> None:
         """保存名义主端参考；相同帧身份不产生新的主端采样。"""
         if self.reference_source != "teleop":
             raise RuntimeError("定点柔顺期间不能提交主端关节目标")
@@ -352,6 +357,7 @@ class URAdmittanceController:
             new_sample = seq != self._source_seq
             self._q_master = q_arr.copy()
             self._source_seq = seq
+            self._udp_identity = tuple(udp_identity)
             self._status["submitted_source_seq"] = seq
             self._status["q_master_submitted"] = q_arr.tolist()
             submitted_monotonic = time.monotonic()
@@ -560,6 +566,7 @@ class URAdmittanceController:
         with self._lock:
             snapshot_acquired = clock_sample()
             seq = self._source_seq
+            udp_identity = self._udp_identity
             q = None if self._q_master is None else self._q_master.copy()
         snapshot_finished = clock_sample()
         wire_seq = -1 if seq is None else seq % (2 ** 31)
@@ -578,6 +585,12 @@ class URAdmittanceController:
         send_error = None
         try:
             self._connection.send_prepared(prepared, deadline=send_deadline)
+            previous = self._udp_applied
+            if values[0] and udp_identity != (0, 0) and (previous is None or udp_identity !=
+                    (previous["applied_master_session"], previous["applied_cmd_seq"])):
+                self._udp_applied = applied_event(udp_identity, wire_q, "admittance.send_prepared 返回成功")
+                with self._state_lock():
+                    self._status["udp_applied"] = self._udp_applied
         except Exception as error:
             send_error = error
             raise
@@ -821,6 +834,12 @@ class URAdmittanceController:
             page = self._decode_page(ints, values)
             page.update(received_monotonic_s=received_monotonic,
                         robot_timestamp_s=float(state.timestamp))
+        if page is not None and "input_raw_nm" in page and page["load_source"] == "joint_torque":
+            identity = (page["run_id"], page["model_sample_seq"], page["page_seq"])
+            if identity != self._load_identity:
+                self._load_identity = identity
+                self._load_timestamp_us = monotonic_us()
+            page["t_tau_us"] = self._load_timestamp_us
         entry = self._sent_references.get(adopted) if self.reference_source == "teleop" else None
         final_statistics = None
         self._record_timing("decode", elapsed_sample(decode_started))

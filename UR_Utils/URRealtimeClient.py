@@ -2,6 +2,7 @@ import socket
 import struct
 import threading
 import time
+from UR_Utils.udp_events import monotonic_us
 from typing import List, Optional, Tuple
 from UR_Utils.URTcpClient import URTcpClient, URTcpTimeoutError
 from UR_Utils.URRealtimeUtils import URRealtimeParser, URRealtimeState, URRealtimeParseError
@@ -75,6 +76,7 @@ class URRealtimeClient(URTcpClient):
         self._stop_reader_event = threading.Event()
 
         self._state_cond = threading.Condition()
+        self._t_qdq_us = 0
         self._latest_state: Optional[URRealtimeState] = None
         self._latest_packet: Optional[bytes] = None
         self._last_error: Optional[BaseException] = None
@@ -179,6 +181,7 @@ class URRealtimeClient(URTcpClient):
 
                 with self._state_cond:
                     self._latest_packet = packet
+                    self._t_qdq_us = monotonic_us()
                     self._latest_state = state
                     self._last_error = None
                     self._frame_count += 1
@@ -270,7 +273,7 @@ class URRealtimeClient(URTcpClient):
         """一次读取同一帧的状态、接收时刻、帧计数和错误。"""
         with self._state_cond:
             return {
-                "state": self._latest_state,
+                "state": self._latest_state, "t_qdq_us": self._t_qdq_us,
                 "received_time": self._last_update_time,
                 "received_monotonic": self._last_update_monotonic,
                 "frame_count": self._frame_count,

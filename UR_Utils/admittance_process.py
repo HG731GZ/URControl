@@ -134,7 +134,7 @@ def _process_main(arguments, event_writer, status_slot, reference_slot, stop_eve
                 backend.request_stop()
         reference_sequence, reference = reference_slot.read(reference_sequence)
         if reference is not None and not stop_event.is_set() and not backend._stop_requested.is_set():
-            backend.submit_reference(reference["q"], source_seq=reference["source_seq"])
+            backend.submit_reference(reference["q"], source_seq=reference["source_seq"], udp_identity=reference["udp_identity"])
         with backend._state_lock():
             lifecycle = tuple(backend._status[name] for name in
                               ("active", "phase", "exit_reason", "last_error", "stopping")) + (worker_failed.is_set(),)
@@ -189,7 +189,7 @@ def _process_main(arguments, event_writer, status_slot, reference_slot, stop_eve
 class AdmittanceProcess:
     """父进程代理保持原控制 API，任何未确认故障仍占有执行权。"""
 
-    def __init__(self, robot_ip, reference_source, space, *, q_master=None, source_seq=None,
+    def __init__(self, robot_ip, reference_source, space, *, q_master=None, source_seq=None, udp_identity=(0, 0),
                  config=None, stop_event=None, log_sink=None):
         self.robot_ip = robot_ip
         self.reference_source = reference_source
@@ -220,7 +220,7 @@ class AdmittanceProcess:
         self._submitted_seq = source_seq
         self._submitted_q = None if q_master is None else list(q_master)
         self._arguments = {"robot_ip": robot_ip, "reference_source": reference_source, "space": space,
-                           "q_master": self._submitted_q, "source_seq": source_seq, "config": self.parameters}
+                           "q_master": self._submitted_q, "source_seq": source_seq, "udp_identity": udp_identity, "config": self.parameters}
         self._status = idle_admittance_status()
         self._status.update(active=True, starting=True, stopped_confirmed=False, phase=0,
                             phase_name="启动中", parameters=self.parameters, reference_source=reference_source,
@@ -324,7 +324,7 @@ class AdmittanceProcess:
                       "phase": status["phase"], "load": status["load"]}
         return deepcopy(result)
 
-    def submit_reference(self, q, *, source_seq: int) -> bool:
+    def submit_reference(self, q, *, source_seq: int, udp_identity=(0, 0)) -> bool:
         """覆盖最新待采用目标；异步停止开始后返回 False，不向已停止的本轮继续提交。"""
         if self.reference_source != "teleop":
             raise RuntimeError("定点柔顺期间不能提交主端关节目标")
@@ -335,7 +335,7 @@ class AdmittanceProcess:
             raise ValueError("主端源帧序号不能倒退")
         if sequence == self._submitted_seq and values.tolist() != self._submitted_q:
             raise ValueError("同一主端帧序号不能对应不同关节目标")
-        if self._reference_slot.publish({"q": values.tolist(), "source_seq": sequence}):
+        if self._reference_slot.publish({"q": values.tolist(), "source_seq": sequence, "udp_identity": udp_identity}):
             self._submitted_seq, self._submitted_q = sequence, values.tolist()
             return True
         return False

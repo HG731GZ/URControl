@@ -18,6 +18,7 @@ from impedance_lifecycle import ImpedanceIntegration
 from ui_classic_window import Ui_MainWindow
 from UR_Utils.URRealtimeMonitor import URRealtimeMonitor
 from UR_Utils.URRTDEController import URRTDEController
+from UR_Utils.udp_events import new_session, monotonic_us
 from UR_Utils.URUdpClient import URUDPClient
 from UR_Utils.ur5e_visualizer import UR5eDualVisualizer
 from window_display import configure_high_dpi
@@ -35,6 +36,12 @@ class ManualRecord:
 
 class ManualWindow(ImpedanceIntegration, QtWidgets.QMainWindow):
     """使用真实反馈和正式集成层；自动操作仅限命令行明确选定的这一轮。"""
+
+    def pack_master(self, q, mode, qd):
+        """人工发布器每次运行中序号单调递增，临近发送采集整数微秒。"""
+        self.master_seq += 1
+        return URUDPClient.pack_command(q, mode, [0.0]*3, qd,
+                                        master_session=self.master_session, cmd_seq=self.master_seq, t1_us=monotonic_us())
 
     def __init__(self, args, center, before):
         super().__init__()
@@ -78,6 +85,8 @@ class ManualWindow(ImpedanceIntegration, QtWidgets.QMainWindow):
                     self.realtime_client.close()
                     raise RuntimeError('组合目标未通过控制器安全检查：' + str(check))
                 planned.append(target)
+        self.master_session = new_session()
+        self.master_seq = 0
         self.udp_client = URUDPClient(bind_host='127.0.0.1', bind_port=args.port)
         self.udp_client.start()
         self.collector = ManualRecord(args.output, dict(scenario=args.scenario,
@@ -162,11 +171,11 @@ class ManualWindow(ImpedanceIntegration, QtWidgets.QMainWindow):
                         speed = -.01*(math.pi/2)*math.sin(math.pi*elapsed/2)
                         qd = [speed*(1 if j%2 == 0 else -1) for j in range(6)]
                     if self.args.scenario == 'mode' and elapsed >= 1 and not mode_event_sent:
-                        sock.sendto(URUDPClient.pack_command(q,0,[0.0]*3,qd),('127.0.0.1',self.args.port))
+                        sock.sendto(self.pack_master(q, 0, qd),('127.0.0.1',self.args.port))
                         mode_event_sent = True
                     stream_paused = (self.args.scenario == 'dropout' and elapsed >= 1) or (self.args.scenario == 'sync-dropout' and elapsed >= .15)
                     if not stream_paused:
-                        sock.sendto(URUDPClient.pack_command(q,1,[0.0]*3,qd),('127.0.0.1',self.args.port))
+                        sock.sendto(self.pack_master(q, 1, qd),('127.0.0.1',self.args.port))
                     next_send += 1/self.args.hz
                     delay = next_send-time.monotonic()
                     if delay < -0.1:

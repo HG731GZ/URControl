@@ -10,6 +10,7 @@ from UR_Utils.impedance_sources import TrajectorySource
 from UR_Utils.rtde_script_transport import ScriptRTDE, ScriptClient
 from UR_Utils.control_stop import confirm_stopped
 from impedance_logger import ImpedanceLogger
+from UR_Utils.udp_events import monotonic_us, applied_event
 
 
 def idle_impedance_status():
@@ -235,7 +236,7 @@ class URImpedanceController:
         last_adopted = 0
         last_torque_seq = 0
         last_acceleration_seq = 0
-        torques = {"measured": None, "command": None, "acceleration": None}
+        torques = {"measured": None, "command": None, "acceleration": None, "applied": None}
         torques_updated = False
         player = None
         ready = False
@@ -259,6 +260,7 @@ class URImpedanceController:
                     break
                 if state.timestamp <= last_timestamp:
                     continue
+                sample_us = monotonic_us()
                 last_timestamp = state.timestamp
                 last_feedback = now
                 measured = protocol.decode_compensated_torque(state, self.run_id, last_torque_seq, now)
@@ -271,6 +273,10 @@ class URImpedanceController:
                     last_acceleration_seq = acceleration["sample_seq"]
                     torques["acceleration"] = acceleration
                     torques_updated = True
+                if measured is not None:
+                    measured["t_tau_us"] = sample_us
+                if acceleration is not None:
+                    acceleration["t_ddq_us"] = sample_us
                 standard = {name: getattr(state, name) for name in standard_fields}
                 standard["joint_acceleration"] = acceleration
                 if self.source == "teleop":
@@ -296,7 +302,7 @@ class URImpedanceController:
                     last_cycle = sample["cycle_seq"]
                     commanding = sample["phase"] in ("RAMPING", "RUNNING", "ENDING") and not sample["final"]
                     torques["command"] = (
-                        {"values_nm": sample["tau_cmd"], "received_monotonic_s": now}
+                        {"values_nm": sample["tau_cmd"], "received_monotonic_s": now, "t_tau_us": sample_us}
                         if commanding and state.runtime_state == 2 else None
                     )
                     torques_updated = True
@@ -476,6 +482,11 @@ class URImpedanceController:
                     self.status["source_age_s"] = age
                 self._send(packet)
                 if teleop and new_target:
+                    event = applied_event(frame.udp_identity, frame.q_rad, "impedance.send_prepared 返回成功")
+                    torques["applied"] = event
+                    self.status["udp_applied"] = event
+                    torques_updated = True
+                    self.publish_torque(torques)
                     self.logger.record("rtde_send", dict(
                         reference_seq=reference_seq, source_seq=frame.source_seq,
                         send_start_monotonic_s=send_started, send_done_monotonic_s=time.monotonic()))
